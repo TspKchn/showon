@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Installer V.1.0.1
+# ShowOn Script Installer V.1.0.1 (fixed index.html)
 # Author: TspKchn
 # =====================================================
 
@@ -244,6 +244,74 @@ EOF
 
     ln -sf /etc/nginx/sites-available/server_checker /etc/nginx/sites-enabled/server_checker
     nginx -t && systemctl reload nginx
+
+    # -----------------------------
+    # index.html
+    # -----------------------------
+    cat >"$WWW_DIR/index.html" <<EOF
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>ShowOn Dashboard ${VERSION}</title>
+  <style>
+    body { background:#111; color:#fff; font-family:Arial,sans-serif; padding:20px; }
+    h1 { color:#0f0; }
+    .card { background:#222; padding:15px; margin-bottom:20px; border-radius:8px; }
+    table { width:100%; border-collapse:collapse; margin-top:10px; }
+    th, td { border:1px solid #444; padding:8px; text-align:center; }
+    th { background:#333; }
+    .spinner {border:4px solid #333;border-top:4px solid #0f0;border-radius:50%;width:20px;height:20px;animation:spin 1s linear infinite;margin:auto;}
+    @keyframes spin {100% {transform:rotate(360deg);}}
+    @media (max-width:600px){body{font-size:14px;} h1{font-size:18px;} table{font-size:12px;}}
+  </style>
+</head>
+<body>
+  <h1>ShowOn Dashboard <span style="color:#0ff;">${VERSION}</span></h1>
+
+  <div class="card">
+    <h2>Online Summary</h2>
+    <table>
+      <thead>
+        <tr><th>Total</th><th>SSH</th><th>OpenVPN</th><th>Dropbear</th><th>V2Ray</th></tr>
+      </thead>
+      <tbody>
+        <tr id="summary"><td colspan="5"><div class="spinner"></div></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>System & Network</h2>
+    <div id="system"><div class="spinner"></div></div>
+  </div>
+
+  <script>
+    async function loadData() {
+      try {
+        const res = await fetch('./online_app.json?_='+Date.now());
+        const d = await res.json();
+        document.getElementById("summary").innerHTML =
+          \`<td>\${d.total}</td><td>\${d.ssh}</td><td>\${d.openvpn}</td><td>\${d.dropbear}</td><td>\${d.v2ray}</td>\`;
+      } catch { document.getElementById("summary").innerHTML = '<td colspan="5">Error</td>'; }
+
+      try {
+        const r2 = await fetch('./sysinfo.json?_='+Date.now());
+        const s = await r2.json();
+        document.getElementById("system").innerHTML =
+          \`<b>Uptime:</b> \${s.uptime}<br>
+           <b>CPU:</b> \${s.cpu_usage}<br>
+           <b>RAM:</b> \${s.ram_usage}<br>
+           <b>Disk:</b> \${s.disk_usage}\`;
+      } catch { document.getElementById("system").innerHTML = 'Error'; }
+    }
+    loadData(); setInterval(loadData,5000);
+  </script>
+</body>
+</html>
+EOF
+    chmod 644 "$WWW_DIR/index.html"
+    chown www-data:www-data "$WWW_DIR/index.html"
 
     # -----------------------------
     # Detect Mode
