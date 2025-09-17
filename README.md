@@ -31,7 +31,7 @@ ShowOn คือสคริปต์สำหรับตรวจสอบจ�
 ## 🚀 Installation
 
 ```bash
-wget https://github.com/TspKchn/showon/raw/refs/heads/main/Install -O Install
+wget -O Install https://github.com/TspKchn/showon/raw/refs/heads/main/Install
 chmod +x Install
 ./Install
 
