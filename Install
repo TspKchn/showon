@@ -1,228 +1,202 @@
 #!/bin/bash
+# =====================================================
+# Script: Show Online Users (SSH / OpenVPN / Dropbear / V2Ray via 3x-ui)
+# Version: V.1.0.0 (Stable)
+# Author : ChatGPT
+# Support: Ubuntu 18.04 - 24.04
+# =====================================================
+
 VERSION="V.1.0.0"
-VERSION_FILE="/usr/local/bin/showon_version"
-INSTALL_PATH="/usr/local/bin/install-online-check.sh"
-MENU_PATH="/usr/local/bin/showon"
+INSTALL_PATH="/usr/local/bin"
+SERVICE_PATH="/etc/systemd/system"
+NGINX_HTML="/var/www/html/server"
+ONLINE_JSON="$NGINX_HTML/online_app.json"
 GITHUB_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install"
 
-# -------------------------------
-# Save Last Update (local)
-# -------------------------------
-save_last_update() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S')" > $VERSION_FILE
-}
-
-# -------------------------------
-# Detect X-UI Panel URL
-# -------------------------------
+# ==========================
+# Detect Panel IP + Port
+# ==========================
 detect_panel_url() {
-    IP=$(hostname -I | awk '{print $1}')
-    DB_PATH="/etc/x-ui/x-ui.db"
-    CONF_PATH="/usr/local/x-ui/bin/config.json"
-    PORT="88"
-
-    if [ -f "$DB_PATH" ]; then
-        PORT=$(sqlite3 "$DB_PATH" "SELECT port FROM settings LIMIT 1;" 2>/dev/null)
-    elif [ -f "$CONF_PATH" ]; then
-        PORT=$(jq -r '.port' "$CONF_PATH" 2>/dev/null)
+    local ip=$(hostname -I | awk '{print $1}')
+    local port=""
+    if command -v sqlite3 >/dev/null 2>&1 && [ -f "/etc/x-ui/x-ui.db" ]; then
+        port=$(sqlite3 /etc/x-ui/x-ui.db "SELECT port FROM panel LIMIT 1;" 2>/dev/null)
     fi
-
-    if [ -z "$PORT" ] || [ "$PORT" == "null" ]; then
-        PORT="88"
+    if [ -z "$port" ] && [ -f "/usr/local/x-ui/bin/config.json" ]; then
+        port=$(jq -r '.inbounds[0].port // empty' /usr/local/x-ui/bin/config.json 2>/dev/null)
     fi
-
-    PANEL_URL="https://$IP:$PORT"
-    SHOW_URL="https://$IP:82/server/"
+    [ -z "$port" ] && port=88
+    PANEL_URL="https://${ip}:${port}"
 }
 
-# -------------------------------
-# Get GitHub Info
-# -------------------------------
-get_github_info() {
-    LATEST_VERSION=$(curl -fsSL "$GITHUB_RAW" | grep -m1 'VERSION=' | cut -d'"' -f2)
-    LATEST_DATE=$(curl -fsSL "$GITHUB_RAW" | grep -m1 '# Last Update:' | cut -d':' -f2- | xargs)
-}
-
-# -------------------------------
-# Install Function
-# -------------------------------
-install_script() {
-    echo "[INFO] Updating system..."
+# ==========================
+# Install dependencies
+# ==========================
+install_requirements() {
     apt update -y && apt upgrade -y
-    apt install -y iproute2 curl jq net-tools nginx sqlite3 bc
+    apt install -y curl jq sqlite3 net-tools iproute2 nginx
+}
 
-    echo "[INFO] Setting up Nginx..."
-    mkdir -p /var/www/html/server
-    cat >/etc/nginx/sites-available/server_checker <<EOF
+# ==========================
+# Setup Nginx
+# ==========================
+setup_nginx() {
+    mkdir -p "$NGINX_HTML"
+    cat > /etc/nginx/sites-available/server_checker <<EOF
 server {
     listen 82 default_server;
     server_name _;
-    root /var/www/html/server;
+
+    root $NGINX_HTML;
     index index.html;
+
     location / {
         try_files \$uri \$uri/ =404;
     }
 }
 EOF
-
     ln -sf /etc/nginx/sites-available/server_checker /etc/nginx/sites-enabled/server_checker
     rm -f /etc/nginx/sites-enabled/default
+    nginx -t && systemctl restart nginx || fix_nginx
+}
+
+fix_nginx() {
+    rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/server_checker.bak*
     nginx -t && systemctl restart nginx
+    systemctl enable nginx
+}
 
-    read -p "Enter X-UI Panel Username: " USERNAME
-    read -p "Enter X-UI Panel Password: " PASSWORD
-
-    # -------------------------------
-    # online-check.sh
-    # -------------------------------
-    cat > $INSTALL_PATH <<EOF
+# ==========================
+# Online Check Script
+# ==========================
+install_online_check() {
+    cat > $INSTALL_PATH/online-check.sh <<'EOF'
 #!/bin/bash
-PANEL_URL="$PANEL_URL"
-USERNAME="$USERNAME"
-PASSWORD="$PASSWORD"
-OUTPUT="/var/www/html/server/online_app.json"
+set -e
+USERNAME=$(cat /etc/showon_user 2>/dev/null || echo "admin")
+PASSWORD=$(cat /etc/showon_pass 2>/dev/null || echo "admin")
+PANEL_URL=$(grep 'PANEL_URL=' /usr/local/bin/install-online-check.sh 2>/dev/null | cut -d'"' -f2)
 
-while true; do
-    COOKIE=\$(curl -sk -c - -X POST "\$PANEL_URL/login" \
-        -H "Content-Type: application/json" \
-        -d "{\"username\":\"\$USERNAME\",\"password\":\"\$PASSWORD\"}" | grep 3x-ui | awk '{print \$7}')
+fun_online() {
+    SSH_ON=$(ss -nt state established | grep ':22 ' | wc -l)
+    OPENVPN_ON=0
+    [ -f /etc/openvpn/server/openvpn-status.log ] && OPENVPN_ON=$(grep -c "10." /etc/openvpn/server/openvpn-status.log)
+    DROPBEAR_ON=$(pgrep dropbear | wc -l)
 
-    ONLINE=\$(curl -sk -b "3x-ui=\$COOKIE" -X POST "\$PANEL_URL/panel/inbound/onlines")
+    COOKIE=$(curl -sk -c - -X POST "$PANEL_URL/login" \
+      -H "Content-Type: application/json" \
+      -d "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" | grep 3x-ui | awk '{print $7}')
 
-    # System Info
-    CPU=\$(top -bn1 | grep "Cpu(s)" | awk '{print 100-\$8}')
-    RAM=\$(free -m | awk '/Mem:/ {printf "%.2f", \$3/\$2*100}')
-    DISK=\$(df -h / | awk 'NR==2 {print \$5}')
-    UPTIME=\$(uptime -p)
+    V2RAY_ON=0; V2RAY_TRAFFIC_DOWN=0; V2RAY_TRAFFIC_UP=0
+    if [ -n "$COOKIE" ]; then
+        ONLINE=$(curl -sk -X POST -b "3x-ui=$COOKIE" "$PANEL_URL/panel/inbound/onlines" \
+            -H "Accept: application/json, text/plain, */*" \
+            -H "Content-Type: application/x-www-form-urlencoded; charset=UTF-8" \
+            -H "X-Requested-With: XMLHttpRequest")
+        V2RAY_ON=$(echo "$ONLINE" | jq '.obj | length' 2>/dev/null || echo 0)
 
-    echo "{\\"total\\":\$(echo \$ONLINE | jq '.obj | length'), \\
-            \\"clients\\":\$ONLINE, \\
-            \\"cpu\\":\$CPU, \\"ram\\":\$RAM, \\"disk\\":\\"$DISK\\", \\"uptime\\":\\"$UPTIME\\"}" > \$OUTPUT
-    sleep 5
-done
+        TRAFFIC=$(curl -sk -b "3x-ui=$COOKIE" "$PANEL_URL/panel/api/inbounds/list")
+        V2RAY_TRAFFIC_DOWN=$(echo "$TRAFFIC" | jq '[.obj[0].clientStats[].down] | add' 2>/dev/null || echo 0)
+        V2RAY_TRAFFIC_UP=$(echo "$TRAFFIC" | jq '[.obj[0].clientStats[].up] | add' 2>/dev/null || echo 0)
+    fi
+
+    JSON="{\"total\":$((SSH_ON+OPENVPN_ON+DROPBEAR_ON+V2RAY_ON)),\"ssh\":$SSH_ON,\"openvpn\":$OPENVPN_ON,\"dropbear\":$DROPBEAR_ON,\"v2ray\":$V2RAY_ON,\"down\":$V2RAY_TRAFFIC_DOWN,\"up\":$V2RAY_TRAFFIC_UP}"
+    echo "$JSON" > /var/www/html/server/online_app.json
+}
+fun_online
+EOF
+    chmod +x $INSTALL_PATH/online-check.sh
+
+    cat > $SERVICE_PATH/online-check.service <<EOF
+[Unit]
+Description=Online Users Checker
+After=network.target
+
+[Service]
+ExecStart=$INSTALL_PATH/online-check.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
-    chmod +x $INSTALL_PATH
-    save_last_update
+    systemctl daemon-reexec
+    systemctl enable online-check
+    systemctl restart online-check
+}
 
-    # -------------------------------
-    # index.html
-    # -------------------------------
-    cat > /var/www/html/server/index.html <<'EOF'
+# ==========================
+# Dashboard HTML
+# ==========================
+install_dashboard() {
+    cat > $NGINX_HTML/index.html <<'EOF'
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Show Online Users</title>
+<title>Online Users Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
-  body { font-family: Arial, sans-serif; background: #f5f5f5; color: #333; margin:20px;}
-  h1 { text-align:center; }
-  .info { margin:20px auto; width:80%; }
-  table { width:100%; border-collapse: collapse; margin-bottom:20px;}
-  th, td { border:1px solid #ccc; padding:10px; text-align:center; }
-  canvas { max-width:800px; margin:20px auto; display:block; }
+ body { font-family: Arial, sans-serif; margin: 20px; background: #f4f4f9; color: #333; }
+ .card { background: #fff; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 0 10px rgba(0,0,0,0.1);}
+ canvas { max-width: 100%; }
 </style>
 </head>
 <body>
-<h1>Online Users Dashboard</h1>
-<div class="info">
-  <table>
-    <tr><th>Total Online</th><th>CPU %</th><th>RAM %</th><th>Disk</th><th>Uptime</th></tr>
-    <tr><td id="total">0</td><td id="cpu">0</td><td id="ram">0</td><td id="disk">0</td><td id="uptime">-</td></tr>
-  </table>
-</div>
-<canvas id="onlineChart"></canvas>
+<h2>🌐 Online Users Dashboard</h2>
+<div class="card"><b>Summary:</b>
+  <div id="summary"></div></div>
+<div class="card"><canvas id="barChart"></canvas></div>
+<div class="card"><canvas id="trafficChart"></canvas></div>
+<div class="card"><pre id="sysinfo"></pre></div>
 <script>
-let ctx = document.getElementById('onlineChart').getContext('2d');
-let chart = new Chart(ctx, {
-  type: 'bar',
-  data: { labels: [], datasets: [{label:'Clients Online', data:[], backgroundColor:'blue'}]},
-  options: {responsive:true, scales:{y:{beginAtZero:true}}}
-});
 async function fetchData(){
-  try{
-    let res = await fetch('online_app.json?_='+Date.now());
-    let data = await res.json();
-    document.getElementById('total').innerText = data.total;
-    document.getElementById('cpu').innerText = data.cpu;
-    document.getElementById('ram').innerText = data.ram;
-    document.getElementById('disk').innerText = data.disk;
-    document.getElementById('uptime').innerText = data.uptime;
-    chart.data.labels = data.clients;
-    chart.data.datasets[0].data = Array(data.clients.length).fill(1);
-    chart.update();
-  }catch(e){console.error(e);}
+  const res = await fetch('online_app.json'); 
+  const data = await res.json();
+  document.getElementById("summary").innerText = JSON.stringify(data,null,2);
+
+  barChart.data.datasets[0].data=[data.ssh,data.openvpn,data.dropbear,data.v2ray];
+  barChart.update();
+
+  trafficChart.data.datasets[0].data.push(data.down/1024/1024);
+  trafficChart.data.datasets[1].data.push(data.up/1024/1024);
+  trafficChart.data.labels.push(new Date().toLocaleTimeString());
+  trafficChart.update();
 }
+const barChart=new Chart(document.getElementById('barChart'),{
+ type:'bar',
+ data:{labels:['SSH','OpenVPN','Dropbear','V2Ray'],datasets:[{label:'Users Online',data:[0,0,0,0],backgroundColor:['#36a2eb','#ff6384','#ff9f40','#4bc0c0']}]}
+});
+const trafficChart=new Chart(document.getElementById('trafficChart'),{
+ type:'line',
+ data:{labels:[],datasets:[
+   {label:'Download MB',data:[],borderColor:'#36a2eb',fill:false},
+   {label:'Upload MB',data:[],borderColor:'#ff6384',fill:false}]}
+});
 setInterval(fetchData,5000);
-fetchData();
 </script>
 </body>
 </html>
 EOF
-
-    echo "[INFO] Install completed!"
 }
 
-# -------------------------------
-# Restart Services
-# -------------------------------
-restart_all(){ systemctl restart nginx; echo "[INFO] Restarted nginx!"; }
-
-# -------------------------------
-# Uninstall
-# -------------------------------
-uninstall_script(){
-    rm -f $INSTALL_PATH $VERSION_FILE $MENU_PATH
-    rm -f /etc/nginx/sites-available/server_checker /etc/nginx/sites-enabled/server_checker
-    systemctl restart nginx
-    echo "[INFO] Uninstalled!"
-}
-
-# -------------------------------
-# Update
-# -------------------------------
-update_script(){
-    curl -fsSL "$GITHUB_RAW" -o $MENU_PATH
-    chmod +x $MENU_PATH
-    save_last_update
-    echo "[INFO] Updated!"
-}
-
-# -------------------------------
-# Logs
-# -------------------------------
-view_logs(){ journalctl -u nginx --no-pager -n 20; }
-
-# -------------------------------
-# Fix Nginx
-# -------------------------------
-fix_nginx(){
-    rm -f /etc/nginx/sites-enabled/server_checker.bak*
-    rm -f /etc/nginx/sites-available/server_checker.bak*
-    nginx -t && systemctl restart nginx
-    echo "[INFO] Fixed Nginx!"
-}
-
-# -------------------------------
+# ==========================
 # Menu
-# -------------------------------
-while true; do
+# ==========================
+menu_showon() {
     detect_panel_url
-    get_github_info
-    [ -f "$VERSION_FILE" ] && LAST_UPDATE=$(cat $VERSION_FILE) || LAST_UPDATE="N/A"
-
     clear
     echo "===================================="
     echo "     Menu Script Show Online User"
     echo " Installed : $VERSION"
-    echo " Last Update: $LAST_UPDATE"
+    echo " Last Update: $(date '+%Y-%m-%d %H:%M:%S')"
     echo "------------------------------------"
     echo " 3X-UI Panel URL : $PANEL_URL"
-    echo " Show Online URL : $SHOW_URL"
+    echo " Show Online URL : https://$(hostname -I | awk '{print $1}'):82/server/"
     echo "------------------------------------"
-    echo " Latest GitHub Version: $LATEST_VERSION"
-    echo " Latest Update Date   : $LATEST_DATE"
+    echo " Latest GitHub Version: $(curl -s $GITHUB_RAW | grep 'VERSION=' | head -n1 | cut -d'\"' -f2)"
+    echo " Latest Update Date   : $(curl -sI $GITHUB_RAW | grep -i Last-Modified | cut -d':' -f2- | xargs)"
     echo "===================================="
     echo "1). Install Script"
     echo "2). Restart All Service"
@@ -232,15 +206,22 @@ while true; do
     echo "6). Fix Nginx"
     echo "0). Exit"
     echo "------------------------------------"
-    read -p "Select option: " opt
+    read -rp "Select option: " opt
     case $opt in
-        1) install_script ;;
-        2) restart_all ;;
-        3) uninstall_script ;;
-        4) update_script ;;
-        5) view_logs ;;
-        6) fix_nginx ;;
-        0) exit 0 ;;
+        1) install_requirements; setup_nginx; install_online_check; install_dashboard; menu_showon ;;
+        2) systemctl restart online-check nginx; menu_showon ;;
+        3) systemctl stop online-check nginx; systemctl disable online-check nginx; exit ;;
+        4) bash <(curl -fsSL $GITHUB_RAW); exit ;;
+        5) journalctl -u online-check --no-pager | tail -n 50; read -n1 -r ;;
+        6) fix_nginx; menu_showon ;;
+        0) exit ;;
+        *) menu_showon ;;
     esac
-    read -p "Press enter to continue..."
-done
+}
+
+# ==========================
+# Main
+# ==========================
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    menu_showon
+fi
