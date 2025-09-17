@@ -1,11 +1,12 @@
 #!/bin/bash
 VERSION="V.1.0.0"
 VERSION_FILE="/usr/local/bin/showon_version"
-GITHUB_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install"
 INSTALL_PATH="/usr/local/bin/install-online-check.sh"
+MENU_PATH="/usr/local/bin/showon"
+GITHUB_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install"
 
 # -------------------------------
-# Save Last Update
+# Save Last Update (local)
 # -------------------------------
 save_last_update() {
     echo "$(date '+%Y-%m-%d %H:%M:%S')" > $VERSION_FILE
@@ -35,12 +36,11 @@ detect_panel_url() {
 }
 
 # -------------------------------
-# Get GitHub Latest Version & Update Date
+# Get GitHub Info
 # -------------------------------
 get_github_info() {
     LATEST_VERSION=$(curl -fsSL "$GITHUB_RAW" | grep -m1 'VERSION=' | cut -d'"' -f2)
-    LATEST_DATE=$(curl -sI "$GITHUB_RAW" | grep -i Last-Modified | cut -d: -f2- | \
-        xargs -I{} date -d "{}" "+%Y-%m-%d %H:%M:%S")
+    LATEST_DATE=$(curl -fsSL "$GITHUB_RAW" | grep -m1 '# Last Update:' | cut -d':' -f2- | xargs)
 }
 
 # -------------------------------
@@ -69,24 +69,28 @@ EOF
     rm -f /etc/nginx/sites-enabled/default
     nginx -t && systemctl restart nginx
 
+    # ขอ username + password
+    read -p "Enter X-UI Panel Username: " USERNAME
+    read -p "Enter X-UI Panel Password: " PASSWORD
+
     # สคริปต์ตรวจออนไลน์
-    cat > $INSTALL_PATH <<'EOF'
+    cat > $INSTALL_PATH <<EOF
 #!/bin/bash
 # Online check script
+# Last Update: $(date '+%Y-%m-%d %H:%M:%S')
 
-PANEL_URL="__PANEL_URL__"
-USERNAME="__USERNAME__"
-PASSWORD="__PASSWORD__"
+PANEL_URL="$PANEL_URL"
+USERNAME="$USERNAME"
+PASSWORD="$PASSWORD"
 OUTPUT="/var/www/html/server/online_app.json"
 
-COOKIE=$(curl -sk -c - -X POST "$PANEL_URL/login" \
+COOKIE=\$(curl -sk -c - -X POST "\$PANEL_URL/login" \
     -H "Content-Type: application/json" \
-    -d "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" | \
-    grep 3x-ui | awk '{print $7}')
+    -d "{\"username\":\"\$USERNAME\",\"password\":\"\$PASSWORD\"}" | grep 3x-ui | awk '{print \$7}')
 
-ONLINE=$(curl -sk -b "3x-ui=$COOKIE" -X POST "$PANEL_URL/panel/inbound/onlines")
+ONLINE=\$(curl -sk -b "3x-ui=\$COOKIE" -X POST "\$PANEL_URL/panel/inbound/onlines")
 
-echo "{\"v2ray\":$(echo $ONLINE | jq '.obj | length'),\"clients\":$ONLINE}" > $OUTPUT
+echo "{\\"v2ray\\":\$(echo \$ONLINE | jq '.obj | length'),\\"clients\\":\$ONLINE}" > \$OUTPUT
 EOF
 
     chmod +x $INSTALL_PATH
@@ -106,8 +110,7 @@ restart_all() {
 # Uninstall Script
 # -------------------------------
 uninstall_script() {
-    rm -f $INSTALL_PATH
-    rm -f $VERSION_FILE
+    rm -f $INSTALL_PATH $VERSION_FILE $MENU_PATH
     rm -f /etc/nginx/sites-available/server_checker
     rm -f /etc/nginx/sites-enabled/server_checker
     systemctl restart nginx
@@ -118,8 +121,8 @@ uninstall_script() {
 # Update Script
 # -------------------------------
 update_script() {
-    curl -fsSL "$GITHUB_RAW" -o $INSTALL_PATH
-    chmod +x $INSTALL_PATH
+    curl -fsSL "$GITHUB_RAW" -o $MENU_PATH
+    chmod +x $MENU_PATH
     save_last_update
     echo "[INFO] Script updated!"
 }
