@@ -35,11 +35,13 @@ show_menu() {
     # Check update
     LATEST_VERSION=$(curl -s "$REPO_URL" | grep -m1 "VERSION=" | cut -d'"' -f2)
     if [[ -n "$LATEST_VERSION" && "$LATEST_VERSION" != "$VERSION" ]]; then
-        echo -e "${YELLOW}[UPDATE AVAILABLE]${NC} New version: ${LATEST_VERSION}"
-        read -p "Press Enter to update now..." _
+        echo -e "${YELLOW}[UPDATE AVAILABLE]${NC} Latest: ${LATEST_VERSION} (Current: ${VERSION})"
+        read -p "Press Enter to update now, or Ctrl+C to cancel..." _
         wget -q -O /root/Install "$REPO_URL"
         chmod +x /root/Install
-        exec /root/Install
+        echo -e "${GREEN}[SUCCESS]${NC} Updated to ${LATEST_VERSION}"
+        echo -e "${CYAN}[INFO]${NC} Please run 'showon' again to load the new version."
+        exit 0
     else
         echo -e "${GREEN}[INFO]${NC} You are using the latest version."
     fi
@@ -289,7 +291,7 @@ uninstall_script() {
 # ==========================
 # Create showon command
 # ==========================
-cat >"$SHOWON_CMD" <<EOF
+cat >"$SHOWON_CMD" <<'EOF'
 #!/bin/bash
 bash /root/Install
 EOF
