@@ -1,187 +1,217 @@
 #!/bin/bash
+# ==========================================
+# Show Online User Script - V.1.0.0
+# Compatible: Ubuntu 18.04 - 24.04
+# Author: ChatGPT (Customized for TspKchn)
+# ==========================================
+
 VERSION="V.1.0.0"
-INSTALL_DATE=$(date '+%Y-%m-%d %H:%M:%S')
-GITHUB_URL="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install"
-SERVICE_NAME="online-check.service"
-SHOWON_CMD="/usr/local/bin/showon"
+INSTALL_PATH="/usr/local/bin"
+CONF_FILE="$INSTALL_PATH/showon.conf"
+SERVICE_FILE="/etc/systemd/system/online-check.service"
+WWW_DIR="/var/www/html/server"
+ONLINE_JSON="$WWW_DIR/online_app.json"
+UPDATE_LOG="/var/log/showon_update.log"
 
-# === DEPENDENCIES ===
-install_deps() {
-  echo "[INFO] Installing dependencies..."
+# -------------------------------
+# ฟังก์ชัน: แสดงข้อความสี
+# -------------------------------
+info(){ echo -e "\e[32m[INFO]\e[0m $1"; }
+error(){ echo -e "\e[31m[ERROR]\e[0m $1"; }
+success(){ echo -e "\e[36m[SUCCESS]\e[0m $1"; }
+
+# -------------------------------
+# ฟังก์ชัน: อัปเดตระบบ + ติดตั้งแพ็กเกจ
+# -------------------------------
+install_deps(){
+  info "Updating system..."
   apt update -y && apt upgrade -y
-  apt install -y curl jq net-tools iproute2 sqlite3 nginx bc || true
+  apt install -y curl jq bc sqlite3 iproute2 net-tools nginx
 }
 
-# === DETECT PANEL URL ===
-detect_panel() {
-  LOCAL_IP=$(hostname -I | awk '{print $1}')
-  PANEL_PORT=$(sqlite3 /etc/x-ui/x-ui.db "SELECT port FROM panel LIMIT 1;" 2>/dev/null || echo "")
-  [[ -z "$PANEL_PORT" ]] && PANEL_PORT=$(grep -oP '(?<="port":)[0-9]+' /usr/local/x-ui/bin/config.json 2>/dev/null | head -n1)
-  [[ -z "$PANEL_PORT" ]] && PANEL_PORT=88
-  PANEL_URL="https://${LOCAL_IP}:${PANEL_PORT}"
-  SHOW_URL="https://${LOCAL_IP}:82/server/"
+# -------------------------------
+# ฟังก์ชัน: ตรวจสอบ X-UI Panel Port
+# -------------------------------
+detect_panel(){
+  # 1) หา port จาก sqlite db
+  DB="/etc/x-ui/x-ui.db"
+  if [[ -f "$DB" ]]; then
+    PORT=$(sqlite3 "$DB" "select port from settings limit 1;")
+  fi
+  # 2) หา port จาก config.json
+  if [[ -z "$PORT" && -f /etc/x-ui/config.json ]]; then
+    PORT=$(jq -r '.webPort' /etc/x-ui/config.json 2>/dev/null)
+  fi
+  # 3) ค่า default
+  [[ -z "$PORT" ]] && PORT=88
+
+  IP=$(hostname -I | awk '{print $1}')
+  PANEL_URL="https://${IP}:${PORT}"
+  echo "PANEL_URL=\"$PANEL_URL\"" > "$CONF_FILE"
+  echo "USERNAME=\"$USERNAME\"" >> "$CONF_FILE"
+  echo "PASSWORD=\"$PASSWORD\"" >> "$CONF_FILE"
 }
 
-# === NGINX ===
-setup_nginx() {
-  echo "[INFO] Setting up Nginx..."
-  mkdir -p /var/www/html/server
-  cat >/etc/nginx/sites-available/server_checker <<EOF
+# -------------------------------
+# ฟังก์ชัน: ตั้งค่า Nginx
+# -------------------------------
+setup_nginx(){
+  info "Setting up Nginx..."
+  mkdir -p $WWW_DIR
+  cat > /etc/nginx/sites-available/server_checker <<EOF
 server {
     listen 82 default_server;
-    root /var/www/html/server;
+    server_name _;
+    root $WWW_DIR;
     index index.html;
     location / {
-        try_files \$uri \$uri/ =404;
+        autoindex on;
     }
 }
 EOF
-  ln -sf /etc/nginx/sites-available/server_checker /etc/nginx/sites-enabled/server_checker
+  ln -sf /etc/nginx/sites-available/server_checker /etc/nginx/sites-enabled/
+  rm -f /etc/nginx/sites-enabled/default
   nginx -t && systemctl restart nginx
 }
 
-# === ONLINE CHECK SCRIPT ===
-setup_checker() {
-  echo "[INFO] Setting up online-check service..."
-  cat >/usr/local/bin/online-check.sh <<'EOF'
+# -------------------------------
+# ฟังก์ชัน: เขียนสคริปต์ตรวจสอบออนไลน์
+# -------------------------------
+setup_online_check(){
+cat > $INSTALL_PATH/online-check.sh <<'EOF'
 #!/bin/bash
 set -e
-PANEL_URL=$(grep "3X-UI Panel URL" /usr/local/bin/showon | awk '{print $6}')
-USERNAME=$(grep "USERNAME=" /usr/local/bin/showon | awk -F'"' '{print $2}')
-PASSWORD=$(grep "PASSWORD=" /usr/local/bin/showon | awk -F'"' '{print $2}')
+CONF_FILE="/usr/local/bin/showon.conf"
+. $CONF_FILE
 
-while true; do
-  COOKIE=$(curl -sk -c - -X POST "$PANEL_URL/login" \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" | grep 3x-ui | awk '{print $7}' | cut -d';' -f1)
+# Login เพื่อเอา cookie
+COOKIE=$(curl -sk -c - -X POST "$PANEL_URL/login" \
+  -H "Content-Type: application/json" \
+  -d "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" \
+  | grep 3x-ui | awk '{print $7}' | sed 's/;//')
 
-  CLIENTS=$(curl -sk -b "3x-ui=$COOKIE" -X POST "$PANEL_URL/panel/inbound/onlines" \
-    -H "Content-Type: application/x-www-form-urlencoded" | jq -r '.obj')
+# ยิงไปที่ onlines
+RES=$(curl -sk -b "3x-ui=$COOKIE" -X POST "$PANEL_URL/panel/inbound/onlines")
 
-  ONLINE_COUNT=$(echo "$CLIENTS" | jq 'length')
-  UP=$(cat /proc/net/dev | awk '/eth0/ {print $2}')
-  DOWN=$(cat /proc/net/dev | awk '/eth0/ {print $10}')
-  CPU=$(top -bn1 | grep "Cpu(s)" | awk '{print 100-$8"%"}')
-  RAM=$(free -m | awk '/Mem/ {printf "%d/%dMB (%.0f%%)", $3,$2,$3*100/$2 }')
-  UPTIME=$(uptime -p)
+SSH=$(ss -nt state established | grep -c ':22 ')
+DROP=$(pgrep dropbear | wc -l)
+OVPN=$(grep -c 'CLIENT_LIST' /etc/openvpn/server/openvpn-status.log 2>/dev/null || echo 0)
+V2R=$(echo "$RES" | jq '.obj | length')
 
-  cat >/var/www/html/server/online_app.json <<JSON
-{"total":$ONLINE_COUNT,"upload":$UP,"download":$DOWN,
-"cpu":"$CPU","ram":"$RAM","uptime":"$UPTIME"}
-JSON
-
-  cat >/var/www/html/server/index.html <<HTML
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<title>Online Users</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<style>
-:root { --bg:#f4f4f9; --text:#000; --card:#fff; }
-[data-theme="dark"] { --bg:#1e1e1e; --text:#fff; --card:#2c2c2c; }
-body { font-family:Arial,sans-serif; background:var(--bg); color:var(--text); margin:20px; transition:0.3s;}
-.card { background:var(--card); padding:20px; margin:10px; border-radius:10px; box-shadow:0 2px 5px rgba(0,0,0,0.1);}
-#toggle { position:fixed; top:10px; right:10px; cursor:pointer; padding:8px 14px; border-radius:6px; background:#666; color:#fff; }
-</style>
-</head>
-<body>
-<button id="toggle">🌓</button>
-<div class="card"><h2>Online Clients: $ONLINE_COUNT</h2></div>
-<div class="card"><canvas id="clientChart"></canvas></div>
-<div class="card"><canvas id="trafficChart"></canvas></div>
-<div class="card"><h3>System Info</h3>
-<p><b>CPU:</b> $CPU</p><p><b>RAM:</b> $RAM</p><p><b>Uptime:</b> $UPTIME</p></div>
-<script>
-const prefersDark=window.matchMedia("(prefers-color-scheme: dark)").matches;
-if(prefersDark) document.documentElement.setAttribute("data-theme","dark");
-document.getElementById("toggle").onclick=()=>{document.documentElement.toggleAttribute("data-theme");};
-
-// === Client Online (Horizontal Bar) ===
-new Chart(document.getElementById('clientChart'),{type:'bar',
- data:{labels:['Clients'],datasets:[{label:'Online',data:[$ONLINE_COUNT],backgroundColor:'#ff9800'}]},
- options:{indexAxis:'y',scales:{x:{ticks:{color:'var(--text)'}},y:{ticks:{color:'var(--text)'}}},plugins:{legend:{labels:{color:'var(--text)'}}}}});
-
-// === Upload / Download ===
-new Chart(document.getElementById('trafficChart'),{type:'bar',
- data:{labels:['Upload','Download'],datasets:[{label:'Bytes',data:[$UP,$DOWN],backgroundColor:['#2196f3','#4caf50']}]},
- options:{scales:{x:{ticks:{color:'var(--text)'}},y:{ticks:{color:'var(--text)'}}},plugins:{legend:{labels:{color:'var(--text)'}}}}});
-</script>
-</body>
-</html>
-HTML
-  sleep 5
-done
+jq -n --argjson ssh "$SSH" --argjson drop "$DROP" \
+      --argjson ovpn "$OVPN" --argjson v2r "$V2R" \
+      '{total:($ssh+$drop+$ovpn+$v2r),ssh:$ssh,dropbear:$drop,openvpn:$ovpn,v2ray:$v2r}' \
+      > /var/www/html/server/online_app.json
 EOF
 
-  chmod +x /usr/local/bin/online-check.sh
+chmod +x $INSTALL_PATH/online-check.sh
 
-  cat >/etc/systemd/system/$SERVICE_NAME <<EOF
+# สร้าง service
+cat > $SERVICE_FILE <<EOF
 [Unit]
 Description=Online Users Checker
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/online-check.sh
+ExecStart=$INSTALL_PATH/online-check.sh
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
-  systemctl daemon-reexec
-  systemctl enable $SERVICE_NAME --now
+
+systemctl daemon-reexec
+systemctl enable online-check.service
+systemctl restart online-check.service
 }
 
-# === MENU ===
-show_menu() {
-  detect_panel
-  LATEST_VERSION=$(curl -s $GITHUB_URL | grep -m1 '^VERSION=' | awk -F'"' '{print $2}')
-  LATEST_DATE=$(curl -sI $GITHUB_URL | grep -i '^last-modified:' | sed 's/Last-Modified: //I')
-  LATEST_DATE_FMT=$(date -d "$LATEST_DATE" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "")
-
+# -------------------------------
+# ฟังก์ชัน: แสดงเมนูหลัก
+# -------------------------------
+show_menu(){
   clear
+  source $CONF_FILE
+  IP=$(hostname -I | awk '{print $1}')
+  SHOW_URL="https://${IP}:82/server/"
   echo "===================================="
   echo "     Menu Script Show Online User"
   echo " Installed : $VERSION"
-  echo " Last Update: $INSTALL_DATE"
+  echo " Last Update: $(date '+%Y-%m-%d %H:%M:%S')"
   echo "------------------------------------"
   echo " 3X-UI Panel URL : $PANEL_URL"
   echo " Show Online URL : $SHOW_URL"
   echo "------------------------------------"
-  echo " Latest GitHub Version: $LATEST_VERSION"
-  echo " Latest Update Date   : $LATEST_DATE_FMT"
-  echo "===================================="
-  echo "1). Install Script"
-  echo "2). Restart All Service"
-  echo "3). Uninstall"
-  echo "4). Update"
-  echo "5). View Update Logs"
-  echo "6). Fix Nginx"
-  echo "0). Exit"
+  echo " 1). Install Script"
+  echo " 2). Restart All Service"
+  echo " 3). Uninstall"
+  echo " 4). Update"
+  echo " 5). View Update Logs"
+  echo " 6). Fix Nginx"
+  echo " 0). Exit"
   echo "------------------------------------"
-  read -p "Select option: " choice
-  case $choice in
-    1) echo "[INFO] Starting Install..."; install_deps; setup_nginx; setup_checker; echo "[SUCCESS] Install complete!";;
-    2) echo "[INFO] Restarting services..."; systemctl restart $SERVICE_NAME nginx;;
-    3) echo "[INFO] Uninstalling..."; systemctl disable $SERVICE_NAME --now; rm -f /usr/local/bin/online-check.sh $SHOWON_CMD; echo "[SUCCESS] Uninstalled.";;
-    4) echo "[INFO] Updating script..."; bash <(curl -fsSL $GITHUB_URL);;
-    5) journalctl -u $SERVICE_NAME -n 50 --no-pager;;
-    6) echo "[INFO] Fixing Nginx..."; nginx -t && systemctl restart nginx && echo "[OK] Nginx fixed." || echo "[ERR] Nginx config error.";;
-    0) exit 0;;
-    *) echo "[ERROR] Invalid choice: $choice";;
+  read -p "Select option: " opt
+  case $opt in
+    1) main_install ;;
+    2) systemctl restart online-check nginx ;;
+    3) uninstall ;;
+    4) update_script ;;
+    5) cat $UPDATE_LOG ;;
+    6) fix_nginx ;;
+    0) exit 0 ;;
+    *) echo "Invalid choice."; sleep 2 ;;
   esac
 }
 
-# === INSTALL MENU COMMAND ===
-install_showon_cmd() {
-  cat >$SHOWON_CMD <<EOF
-#!/bin/bash
-bash /root/Install
-EOF
-  chmod +x $SHOWON_CMD
+# -------------------------------
+# ฟังก์ชัน: ติดตั้งหลัก
+# -------------------------------
+main_install(){
+  install_deps
+  read -p "กรอก X-UI panel username: " USERNAME
+  read -p "กรอก X-UI panel password: " PASSWORD
+  detect_panel
+  setup_nginx
+  setup_online_check
+  success "Install complete!"
 }
 
-# RUN
-install_showon_cmd
-show_menu
+# -------------------------------
+# ฟังก์ชัน: Uninstall
+# -------------------------------
+uninstall(){
+  systemctl disable --now online-check.service
+  rm -f $SERVICE_FILE $INSTALL_PATH/online-check.sh $CONF_FILE
+  rm -rf $WWW_DIR
+  success "Uninstalled!"
+}
+
+# -------------------------------
+# ฟังก์ชัน: Update
+# -------------------------------
+update_script(){
+  bash <(curl -fsSL https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install) update
+  echo "$(date '+%Y-%m-%d %H:%M:%S') - Updated to latest" >> $UPDATE_LOG
+}
+
+# -------------------------------
+# ฟังก์ชัน: Fix Nginx
+# -------------------------------
+fix_nginx(){
+  rm -f /etc/nginx/sites-enabled/server_checker*
+  rm -f /etc/nginx/sites-available/server_checker*
+  setup_nginx
+  success "Nginx fixed!"
+}
+
+# -------------------------------
+# Main
+# -------------------------------
+if [[ "$1" == "update" ]]; then
+  detect_panel
+  setup_nginx
+  setup_online_check
+  exit 0
+fi
+
+while true; do show_menu; done
