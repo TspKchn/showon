@@ -1,347 +1,377 @@
 #!/bin/bash
-# ==========================================
-# Show Online User Script - V.1.0.0 (Stable)
+# Show Online User - V.1.0.0 (Stable, compact)
 # Ubuntu 18.04 - 24.04
-# ==========================================
+set -euo pipefail
 
 VERSION="V.1.0.0"
-GITHUB_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install"
+RAW_URL="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install"
 
-# Paths
-BIN_DIR="/usr/local/bin"
-CONF_FILE="$BIN_DIR/showon.conf"
-INSTALL_FILE="$BIN_DIR/Install"
-SERVICE_FILE="/etc/systemd/system/online-check.service"
-WWW_BASE="/var/www/html"
-WWW_DIR="$WWW_BASE/server"
-JSON_FILE="$WWW_DIR/online_app.json"
-LOG_FILE="/var/log/showon_update.log"
-META_FILE="$BIN_DIR/showon.meta"
-SHOWON_CMD="$BIN_DIR/showon"
+WWW_DIR="/var/www/html/server"
+SERVICE="/etc/systemd/system/online-check.service"
+CHECK_BIN="/usr/local/bin/online-check.sh"
+ENV_FILE="/etc/x-ui/panel.env"
+MENU_BIN="/usr/local/bin/showon"
 
-info(){ echo -e "\e[32m[INFO]\e[0m $1"; }
-warn(){ echo -e "\e[33m[WARN]\e[0m $1"; }
-err(){  echo -e "\e[31m[ERROR]\e[0m $1"; }
+green(){ echo -e "\e[32m$*\e[0m"; }
+red(){ echo -e "\e[31m$*\e[0m"; }
+info(){ echo -e "\e[36m[INFO]\e[0m $*"; }
 
-ensure_self() {
-  # สร้าง/อัปเดตตัวสคริปต์หลักที่ /usr/local/bin/Install เพื่อให้ 'showon' เรียกใช้ได้เสมอ
-  mkdir -p "$BIN_DIR"
-  curl -fsSL "$GITHUB_RAW" -o "$INSTALL_FILE" || true
-  chmod +x "$INSTALL_FILE" || true
-  # คำสั่ง showon
-  cat >"$SHOWON_CMD" <<EOF
-#!/bin/bash
-bash $INSTALL_FILE
-EOF
-  chmod +x "$SHOWON_CMD" || true
+detect_panel_url() {
+  local port=""
+  if [[ -f /etc/x-ui/x-ui.db ]]; then
+    port=$(sqlite3 /etc/x-ui/x-ui.db "SELECT port FROM settings LIMIT 1;" 2>/dev/null || true)
+  fi
+  if [[ -z "${port:-}" && -f /etc/x-ui/config.json ]]; then
+    port=$(jq -r '.webPort // .port // empty' /etc/x-ui/config.json 2>/dev/null || true)
+  fi
+  if [[ -z "${port:-}" && -f /usr/local/x-ui/bin/config.json ]]; then
+    port=$(jq -r '.webPort // .port // empty' /usr/local/x-ui/bin/config.json 2>/dev/null || true)
+  fi
+  [[ -z "${port:-}" ]] && port=88
+  local ip; ip=$(hostname -I | awk '{print $1}')
+  PANEL_URL="https://${ip}:${port}"
+  SHOW_URL="http://${ip}:82/server/"
 }
 
-install_deps() {
-  info "Installing dependencies..."
-  apt update -y && apt upgrade -y
-  apt install -y curl jq sqlite3 iproute2 net-tools nginx bc || true
+latest_remote_version() {
+  curl -fsSL "$RAW_URL" | sed -n 's/^VERSION="\([^"]*\)".*/\1/p' | head -n1
+}
+latest_remote_date() {
+  local lm
+  lm=$(curl -fsSI "$RAW_URL" | awk -F': ' 'BEGIN{IGNORECASE=1}/^Last-Modified:/{print $2;exit}')
+  if [[ -n "${lm:-}" ]]; then date -d "$lm" "+%Y-%m-%d %H:%M:%S" 2>/dev/null || echo "N/A"; else echo "N/A"; fi
 }
 
-# ----- Detect Panel URL (DB -> config -> 88) -----
-detect_panel() {
-  local PORT=""
-  # 1) sqlite (ลองหลายตาราง)
-  for SQL in \
-    "SELECT port FROM panel LIMIT 1;" \
-    "SELECT webPort FROM settings LIMIT 1;" \
-    "SELECT value FROM settings WHERE key='webPort' LIMIT 1;";
-  do
-    PORT=$(sqlite3 /etc/x-ui/x-ui.db "$SQL" 2>/dev/null | head -n1)
-    [[ -n "$PORT" ]] && break
-  done
-  # 2) config files
-  [[ -z "$PORT" ]] && PORT=$(jq -r '.webPort // empty' /etc/x-ui/config.json 2>/dev/null | head -n1)
-  [[ -z "$PORT" ]] && PORT=$(grep -oP '(?<="port":)[0-9]+' /usr/local/x-ui/bin/config.json 2>/dev/null | head -n1)
-  # 3) fallback
-  [[ -z "$PORT" ]] && PORT=88
-
-  local IP
-  IP=$(hostname -I | awk '{print $1}')
-  PANEL_URL="https://${IP}:${PORT}"
+setup_deps() {
+  info "Updating system & installing deps..."
+  apt update -y
+  apt install -y curl jq sqlite3 bc iproute2 net-tools nginx
 }
 
-write_conf() {
-  mkdir -p "$BIN_DIR"
-  cat >"$CONF_FILE" <<EOF
-PANEL_URL="$PANEL_URL"
-USERNAME="$USERNAME"
-PASSWORD="$PASSWORD"
-EOF
-}
-
-fix_nginx() {
-  info "Fixing Nginx config..."
+setup_nginx() {
+  info "Configuring Nginx (port 82, HTTP only)..."
   mkdir -p "$WWW_DIR"
-  # เคลียร์ config ที่ชนพอร์ต 82 ทั้งหมด
-  rm -f /etc/nginx/sites-enabled/server_checker* /etc/nginx/sites-available/server_checker*
-  # สร้าง server ใหม่ (รองรับ /server/ )
+  # cleanup duplicate default_server on 82
+  find /etc/nginx/sites-enabled -maxdepth 1 -type l -name "server_checker*" -exec rm -f {} \; || true
+  find /etc/nginx/sites-available -maxdepth 1 -type f -name "server_checker*" -exec rm -f {} \; || true
+
   cat >/etc/nginx/sites-available/server_checker <<EOF
 server {
     listen 82 default_server;
     server_name _;
-    root $WWW_BASE;
+    root /var/www/html;
     index index.html;
-
     location /server/ {
         alias $WWW_DIR/;
         autoindex on;
+        default_type application/json;
     }
 }
 EOF
   ln -sf /etc/nginx/sites-available/server_checker /etc/nginx/sites-enabled/server_checker
-  nginx -t && systemctl restart nginx || err "Nginx config test failed."
+  # remove default if it also uses default_server conflicts
+  rm -f /etc/nginx/sites-enabled/default || true
+  nginx -t && systemctl restart nginx
 }
 
-write_dashboard() {
-  # สร้าง index.html (Dark/Light + Chart.js + Auto-refresh 5s)
-  mkdir -p "$WWW_DIR"
+write_index() {
+  # Simple, fast, dark UI with Chart.js (summary + system info). Refresh 5s.
   cat >"$WWW_DIR/index.html" <<'EOF'
-<!DOCTYPE html>
-<html lang="th">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Show Online Users</title>
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Show Online User</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
-:root{--bg:#f6f7fb;--card:#ffffff;--tx:#111;--muted:#666;--accent:#4f46e5;}
-[data-theme="dark"]{--bg:#0f1115;--card:#161a22;--tx:#e5e7eb;--muted:#9ca3af;--accent:#60a5fa;}
-*{box-sizing:border-box} body{margin:0;font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Ubuntu;
-background:var(--bg);color:var(--tx);}
-.header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;}
-.title{font-size:20px;font-weight:700}
-.badge{background:var(--accent);color:#fff;padding:4px 10px;border-radius:999px;font-size:12px;margin-left:8px}
-.toggle{cursor:pointer;border:none;border-radius:8px;background:var(--card);color:var(--tx);padding:8px 12px}
-.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px;padding:0 20px 20px}
-.card{grid-column:span 12;background:var(--card);border-radius:14px;padding:16px;border:1px solid rgba(0,0,0,0.06)}
-@media(min-width:900px){.span4{grid-column:span 4}.span6{grid-column:span 6}.span8{grid-column:span 8}}
-.kv{display:flex;gap:12px;flex-wrap:wrap}
-.kv div{background:rgba(0,0,0,0.04);color:var(--tx);border-radius:10px;padding:8px 12px}
-[data-theme="dark"] .kv div{background:rgba(255,255,255,0.06)}
-.big{font-size:36px;font-weight:800}
-.small{font-size:12px;color:var(--muted)}
-.table{width:100%;border-collapse:collapse;margin-top:6px}
-.table th,.table td{padding:10px;border-bottom:1px dashed rgba(0,0,0,0.08)}
-[data-theme="dark"] .table th,[data-theme="dark"] .table td{border-bottom:1px dashed rgba(255,255,255,0.08)}
-.footer{padding:0 20px 30px;color:var(--muted);font-size:12px}
+ body{margin:24px;background:#0b0b0b;color:#eaeaea;font:14px/1.5 system-ui,Arial}
+ h1{font-size:24px;margin:0 0 16px}
+ .row{display:grid;grid-template-columns:1fr;gap:16px;max-width:1000px}
+ .card{background:#151515;border:1px solid #222;border-radius:12px;padding:16px}
+ table{width:100%;border-collapse:collapse}
+ th,td{border:1px solid #333;padding:8px;text-align:center}
+ th{background:#222}
+ .muted{color:#9aa}
+ .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+ @media(min-width:900px){.row{grid-template-columns:1fr 1fr}}
 </style>
-</head>
-<body>
-  <div class="header">
-    <div class="title">Show Online Users <span id="ver" class="badge">V.1.0.0</span></div>
-    <button id="toggle" class="toggle">🌓 Theme</button>
+</head><body>
+<h1>Show Online User</h1>
+<div class="row">
+  <div class="card">
+    <h3>Summary</h3>
+    <table><thead><tr><th>Total</th><th>SSH</th><th>OpenVPN</th><th>Dropbear</th><th>V2Ray</th></tr></thead>
+    <tbody id="sum"><tr><td colspan="5" class="muted">loading...</td></tr></tbody></table>
+    <canvas id="bar" height="120"></canvas>
+    <div class="muted" id="ts"></div>
   </div>
-
-  <div class="grid">
-    <div class="card span4">
-      <div class="big" id="total">0</div>
-      <div class="small">Online Users (Total)</div>
-      <div class="kv" style="margin-top:8px">
-        <div>SSH: <b id="ssh">0</b></div>
-        <div>OpenVPN: <b id="openvpn">0</b></div>
-        <div>Dropbear: <b id="dropbear">0</b></div>
-        <div>V2Ray: <b id="v2ray">0</b></div>
+  <div class="card">
+    <h3>System Info</h3>
+    <div class="grid-2">
+      <div>
+        <div id="uptime"></div>
+        <div id="cpu"></div>
+        <div id="mem"></div>
+      </div>
+      <div>
+        <div id="iface"></div>
+        <div id="dl"></div>
+        <div id="ul"></div>
       </div>
     </div>
-
-    <div class="card span8">
-      <canvas id="clientsBar"></canvas>
-    </div>
-
-    <div class="card span6">
-      <canvas id="trafficLine"></canvas>
-    </div>
-
-    <div class="card span6">
-      <div class="kv">
-        <div>CPU: <b id="cpu">-</b></div>
-        <div>RAM: <b id="ram">-</b></div>
-        <div>Uptime: <b id="uptime">-</b></div>
-      </div>
-      <table class="table">
-        <thead><tr><th>Metric</th><th>Value</th></tr></thead>
-        <tbody>
-          <tr><td>Upload (bytes)</td><td id="up">0</td></tr>
-          <tr><td>Download (bytes)</td><td id="down">0</td></tr>
-        </tbody>
-      </table>
-    </div>
   </div>
-
-  <div class="footer">
-    Auto refresh every 5s • Dark/Light follows system (toggle to override)
-  </div>
-
+</div>
 <script>
-const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-if(prefersDark) document.documentElement.setAttribute('data-theme','dark');
-document.getElementById('toggle').onclick=()=>document.documentElement.toggleAttribute('data-theme');
-
-let tLabels=[], upData=[], downData=[];
-const clientsBar = new Chart(document.getElementById('clientsBar'), {
-  type:'bar',
-  data:{labels:['Online Clients'],datasets:[{label:'Count',data:[0],backgroundColor:'#60a5fa'}]},
-  options:{indexAxis:'y',plugins:{legend:{labels:{color:getCSS('--tx')}}},scales:{x:{ticks:{color:getCSS('--tx')}},y:{ticks:{color:getCSS('--tx')}}}}
-});
-const trafficLine = new Chart(document.getElementById('trafficLine'),{
-  type:'line',
-  data:{labels:tLabels,datasets:[{label:'Upload',data:upData},{label:'Download',data:downData}]},
-  options:{plugins:{legend:{labels:{color:getCSS('--tx')}}},scales:{x:{ticks:{color:getCSS('--tx')}},y:{ticks:{color:getCSS('--tx')}}}}
-});
-
-function getCSS(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim();}
-
-async function fetchData(){
-  try{
-    const res = await fetch('online_app.json?_=' + Date.now());
-    const j = await res.json();
-    // numbers
-    setText('total', j.total); setText('ssh', j.ssh); setText('openvpn', j.openvpn); setText('dropbear', j.dropbear); setText('v2ray', j.v2ray);
-    setText('cpu', j.cpu); setText('ram', j.ram); setText('uptime', j.uptime);
-    setText('up', j.upload); setText('down', j.download);
-    // bar (clients)
-    clientsBar.data.datasets[0].data = [ j.v2ray ];
-    clientsBar.update();
-    // line (traffic history, keep last 30 points)
-    const ts = new Date().toLocaleTimeString();
-    tLabels.push(ts); upData.push(j.upload); downData.push(j.download);
-    if(tLabels.length>30){ tLabels.shift(); upData.shift(); downData.shift(); }
-    trafficLine.update();
-  }catch(e){ console.error(e); }
+let chart;
+async function load(){
+  const res=await fetch('online_app.json?_='+Date.now());
+  const j=await res.json();
+  const sumEl=document.getElementById('sum');
+  sumEl.innerHTML=`<tr>
+    <td>${j.total??0}</td><td>${j.ssh??0}</td><td>${j.openvpn??0}</td>
+    <td>${j.dropbear??0}</td><td>${j.v2ray??0}</td>
+  </tr>`;
+  const labels=['SSH','OpenVPN','Dropbear','V2Ray'];
+  const data=[j.ssh??0,j.openvpn??0,j.dropbear??0,j.v2ray??0];
+  if(!chart){
+    chart=new Chart(document.getElementById('bar'),{
+      type:'bar',
+      data:{labels,datasets:[{label:'Online',data}]},
+      options:{responsive:true,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true}}}
+    });
+  }else{
+    chart.data.datasets[0].data=data; chart.update();
+  }
+  document.getElementById('ts').textContent='Updated: '+(new Date()).toLocaleString();
+  document.getElementById('uptime').textContent='Uptime: '+(j.system?.uptime||'-');
+  document.getElementById('cpu').textContent='Load Avg: '+(j.system?.cpu_load||'-');
+  document.getElementById('mem').textContent='Memory: '+(j.system?.mem_used||'-')+' / '+(j.system?.mem_total||'-');
+  document.getElementById('iface').textContent='IFACE: '+(j.network?.iface||'-');
+  document.getElementById('dl').textContent='Download: '+(j.network?.download||'-');
+  document.getElementById('ul').textContent='Upload: '+(j.network?.upload||'-');
 }
-function setText(id, val){ document.getElementById(id).textContent = val; }
-setInterval(fetchData, 5000); fetchData();
+setInterval(load,5000); load();
 </script>
-</body>
-</html>
+</body></html>
 EOF
-
-  # สร้าง JSON เริ่มต้น
-  cat >"$JSON_FILE" <<JSON
-{"total":0,"ssh":0,"openvpn":0,"dropbear":0,"v2ray":0,"upload":0,"download":0,"cpu":"-","ram":"-","uptime":"-"}
-JSON
 }
 
 write_checker() {
-  # online-check: loop ทุก 5 วิ เขียน JSON โดยดึง V2Ray online จาก /panel/inbound/onlines
-  cat >"$BIN_DIR/online-check.sh" <<'EOF'
+  # looped checker with self-healing nginx; reads panel creds from /etc/x-ui/panel.env
+  cat >"$CHECK_BIN" <<'EOF'
 #!/bin/bash
-set -e
-CONF="/usr/local/bin/showon.conf"
-[[ -f "$CONF" ]] || { echo "Missing $CONF"; exit 1; }
-. "$CONF"
-
+set -euo pipefail
+ENV_FILE="/etc/x-ui/panel.env"
 OUT="/var/www/html/server/online_app.json"
-IFACE=$(ip route get 1.1.1.1 2>/dev/null | awk '/dev/ {for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}'); [[ -z "$IFACE" ]] && IFACE=eth0
+
+# self-heal nginx quick check
+heal_nginx(){
+  if ! nginx -t >/dev/null 2>&1; then
+    rm -f /etc/nginx/sites-enabled/server_checker* /etc/nginx/sites-available/server_checker* || true
+    cat >/etc/nginx/sites-available/server_checker <<NG
+server {
+    listen 82 default_server;
+    server_name _;
+    root /var/www/html;
+    index index.html;
+    location /server/ { alias /var/www/html/server/; autoindex on; default_type application/json; }
+}
+NG
+    ln -sf /etc/nginx/sites-available/server_checker /etc/nginx/sites-enabled/server_checker
+    systemctl restart nginx || true
+  fi
+  systemctl is-active --quiet nginx || systemctl restart nginx || true
+}
+
+load_env(){
+  if [[ -f "$ENV_FILE" ]]; then
+    # shellcheck disable=SC1090
+    . "$ENV_FILE"
+  else
+    echo '{"total":0,"ssh":0,"openvpn":0,"dropbear":0,"v2ray":0}' > "$OUT"
+    exit 0
+  fi
+}
+
+cookie_login(){
+  # get Set-Cookie 3x-ui=...
+  local ck
+  ck=$(curl -sk -D - "$PANEL_URL/login" \
+      -H 'Content-Type: application/json' \
+      --data "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" \
+      | sed -n 's/^Set-Cookie: 3x-ui=\([^;]*\).*/\1/p' | head -n1)
+  echo -n "$ck"
+}
+
+count_v2ray(){
+  local c="$1"
+  if [[ -z "$c" ]]; then echo 0; return; fi
+  curl -sk -X POST -b "3x-ui=$c" "$PANEL_URL/panel/inbound/onlines" \
+    -H 'Accept: application/json, text/plain, */*' \
+    -H 'Content-Type: application/x-www-form-urlencoded; charset=UTF-8' \
+    -H 'X-Requested-With: XMLHttpRequest' \
+    | jq -r '.obj | length' 2>/dev/null || echo 0
+}
+
+json_out(){
+  local ssh="$1" ovpn="$2" drp="$3" v2="$4" up="$5" load="$6" mu="$7" mt="$8" iface="$9" rx="${10}" tx="${11}"
+  jq -n \
+    --argjson ssh "$ssh" --argjson ovpn "$ovpn" --argjson drp "$drp" --argjson v2 "$v2" \
+    --arg uptime "$up" --arg load "$load" --arg mu "$mu" --arg mt "$mt" \
+    --arg iface "$iface" --arg dl "$rx" --arg ul "$tx" \
+    '{
+      total: ($ssh + $ovpn + $drp + $v2),
+      ssh:$ssh, openvpn:$ovpn, dropbear:$drp, v2ray:$v2,
+      system:{uptime:$uptime, cpu_load:$load, mem_used:$mu, mem_total:$mt},
+      network:{iface:$iface, download:$dl, upload:$ul}
+    }' > "$OUT"
+}
 
 while true; do
-  # SSH
-  SSH=$(ss -nt state established 2>/dev/null | grep -c ':22 ' || echo 0)
-  # OpenVPN
-  OVPN=0; [[ -f /etc/openvpn/server/openvpn-status.log ]] && OVPN=$(grep -c '^CLIENT_LIST' /etc/openvpn/server/openvpn-status.log || echo 0)
-  # Dropbear
-  DROP=$(pgrep dropbear >/dev/null && ps aux | grep '[d]ropbear' | wc -l || echo 0)
+  heal_nginx
+  load_env
 
-  # Login 3x-ui (cookie)
-  COOKIE=$(curl -sk -c - -X POST "$PANEL_URL/login" \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" | grep 3x-ui | awk '{print $7}' | sed 's/;//')
-  # Query online clients
-  V2R=$(curl -sk -b "3x-ui=$COOKIE" -X POST "$PANEL_URL/panel/inbound/onlines" \
-    -H "Accept: application/json, text/plain, */*" \
-    -H "Content-Type: application/x-www-form-urlencoded; charset=UTF-8" \
-    -H "X-Requested-With: XMLHttpRequest" | jq -r '.obj | length' 2>/dev/null)
-  [[ -z "$V2R" || "$V2R" = "null" ]] && V2R=0
+  # sessions
+  ssh_on=$(ss -nt state established 2>/dev/null | grep -c ':22 ' || true)
+  [[ "$ssh_on" =~ ^[0-9]+$ ]] || ssh_on=0
+  ovpn_on=$(grep -c '^CLIENT_LIST' /etc/openvpn/server/openvpn-status.log 2>/dev/null || echo 0)
+  drp_on=$(pgrep dropbear >/dev/null 2>&1 && ps aux | grep '[d]ropbear' | wc -l || echo 0)
 
-  # Traffic (bytes) - ค่ารวมจาก /proc/net/dev (ปล่อยให้กราฟเก็บเป็น time-series ฝั่งหน้าเว็บ)
-  RX=$(awk -v IF="$IFACE" '$1 ~ IF":" {gsub(":","",$1); print $2}' /proc/net/dev 2>/dev/null)
-  TX=$(awk -v IF="$IFACE" '$1 ~ IF":" {gsub(":","",$1); print $10}' /proc/net/dev 2>/dev/null)
-  [[ -z "$RX" ]] && RX=0; [[ -z "$TX" ]] && TX=0
+  # v2ray
+  CK=$(cookie_login)
+  v2_on=$(count_v2ray "$CK")
+  [[ "$v2_on" =~ ^[0-9]+$ ]] || v2_on=0
 
-  # System info
-  CPU_PCT=$(LC_ALL=C top -bn1 | awk -F'[, ]+' '/Cpu\(s\)/ {printf "%.1f%%", 100-$8}')
-  RAM=$(free -m | awk '/Mem/ {printf "%d/%dMB (%.0f%%)", $3,$2,($3*100/$2)}')
-  UPTIME=$(uptime -p)
+  # system info
+  up=$(uptime -p 2>/dev/null || echo "-")
+  load=$(awk '{printf "%s %s %s",$1,$2,$3}' /proc/loadavg)
+  mu=$(free -m | awk '/Mem:/ {print $3" MB"}')
+  mt=$(free -m | awk '/Mem:/ {print $2" MB"}')
+  iface=$(ip route | awk '/^default/ {print $5;exit}')
+  [[ -z "$iface" ]] && iface="eth0"
+  rx_b=$(cat /sys/class/net/$iface/statistics/rx_bytes 2>/dev/null || echo 0)
+  tx_b=$(cat /sys/class/net/$iface/statistics/tx_bytes 2>/dev/null || echo 0)
+  rx_mb=$(awk -v b="$rx_b" 'BEGIN{printf "%.2f MB", b/1024/1024}')
+  tx_mb=$(awk -v b="$tx_b" 'BEGIN{printf "%.2f MB", b/1024/1024}')
 
-  TOTAL=$((SSH+OVPN+DROP+V2R))
-  jq -n \
-    --argjson total "$TOTAL" \
-    --argjson ssh "$SSH" \
-    --argjson openvpn "$OVPN" \
-    --argjson dropbear "$DROP" \
-    --argjson v2ray "$V2R" \
-    --argjson upload "$TX" \
-    --argjson download "$RX" \
-    --arg cpu "$CPU_PCT" \
-    --arg ram "$RAM" \
-    --arg uptime "$UPTIME" \
-    '{total:$total, ssh:$ssh, openvpn:$openvpn, dropbear:$dropbear, v2ray:$v2ray, upload:$upload, download:$download, cpu:$cpu, ram:$ram, uptime:$uptime}' \
-    > "$OUT" 2>/dev/null || true
-
+  json_out "$ssh_on" "$ovpn_on" "$drp_on" "$v2_on" "$up" "$load" "$mu" "$mt" "$iface" "$rx_mb" "$tx_mb"
   sleep 5
 done
 EOF
-  chmod +x "$BIN_DIR/online-check.sh"
+  chmod +x "$CHECK_BIN"
 }
 
-write_service() {
-  cat >"$SERVICE_FILE" <<EOF
+setup_service() {
+  cat >"$SERVICE" <<EOF
 [Unit]
-Description=ShowOn - Online Users Checker
-After=network.target
+Description=Online Users Checker (self-healing)
+After=network-online.target
+Wants=network-online.target
 
 [Service]
-ExecStart=$BIN_DIR/online-check.sh
+ExecStart=$CHECK_BIN
 Restart=always
-RestartSec=3
+RestartSec=5
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
 
 [Install]
 WantedBy=multi-user.target
 EOF
-  systemctl daemon-reexec
-  systemctl enable online-check.service --now
+  systemctl daemon-reload
+  systemctl enable --now online-check.service
 }
 
-write_meta() {
-  mkdir -p "$(dirname "$META_FILE")"
-  date '+%Y-%m-%d %H:%M:%S' > "$META_FILE"
-}
-
-github_latest() {
-  local ver datehdr
-  ver=$(curl -fsSL "$GITHUB_RAW" | grep -m1 '^VERSION=' | awk -F'"' '{print $2}')
-  datehdr=$(curl -fsSI "$GITHUB_RAW" | awk -F': ' 'tolower($1)=="last-modified"{print $2}' | tr -d '\r')
-  if [[ -n "$datehdr" ]]; then
-    date -d "$datehdr" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo ""
-  else
-    echo ""
+ensure_menu_command() {
+  # install this menu to /usr/local/bin/showon if not there
+  if [[ ! -x "$MENU_BIN" ]]; then
+    cp -f "$0" "$MENU_BIN" || true
+    chmod +x "$MENU_BIN" || true
   fi
-  echo "$ver"
 }
 
-menu() {
-  detect_panel
-  local LAST_INSTALL=""; [[ -f "$META_FILE" ]] && LAST_INSTALL=$(cat "$META_FILE")
-  local gh_date gh_ver
-  gh_date=$(github_latest | head -n1)
-  gh_ver=$(github_latest | tail -n1)
+install_all() {
+  setup_deps
+  detect_panel_url
+  echo ""
+  info "3X-UI Panel URL detected: $PANEL_URL"
+  read -rp "กรอก X-UI panel username: " USERNAME
+  read -rp "กรอก X-UI panel password: " PASSWORD
 
+  mkdir -p "$(dirname "$ENV_FILE")"
+  cat >"$ENV_FILE" <<EOF
+PANEL_URL="$PANEL_URL"
+USERNAME="$USERNAME"
+PASSWORD="$PASSWORD"
+EOF
+
+  setup_nginx
+  write_index
+  write_checker
+  setup_service
+  ensure_menu_command
+  green "[SUCCESS] Installed. Open: $SHOW_URL"
+}
+
+restart_all() {
+  systemctl restart online-check.service || true
+  systemctl restart nginx || true
+  info "Services restarted."
+}
+
+uninstall_all() {
+  systemctl disable --now online-check.service || true
+  rm -f "$SERVICE" "$CHECK_BIN" "$ENV_FILE"
+  rm -f /etc/nginx/sites-enabled/server_checker /etc/nginx/sites-available/server_checker
+  systemctl restart nginx || true
+  rm -rf "$WWW_DIR"
+  info "Uninstalled."
+}
+
+fix_nginx() {
+  setup_nginx
+  info "Nginx fixed."
+}
+
+update_self() {
+  bash <(curl -fsSL "$RAW_URL") --post-update || true
+}
+
+post_update() {
+  # re-detect panel (port may change), keep saved creds if exists
+  detect_panel_url
+  if [[ -f "$ENV_FILE" ]]; then
+    # rewrite only PANEL_URL to keep username/password
+    . "$ENV_FILE"
+    cat >"$ENV_FILE" <<EOF
+PANEL_URL="$PANEL_URL"
+USERNAME="$USERNAME"
+PASSWORD="$PASSWORD"
+EOF
+  fi
+  write_index
+  write_checker
+  setup_service
+  ensure_menu_command
+  info "Update applied."
+}
+
+print_menu() {
+  detect_panel_url
+  local lv ld
+  lv=$(latest_remote_version || echo "")
+  ld=$(latest_remote_date || echo "N/A")
   clear
   echo "===================================="
   echo "     Menu Script Show Online User"
   echo " Installed : $VERSION"
-  echo " Last Update: ${LAST_INSTALL:-$(date '+%Y-%m-%d %H:%M:%S')}"
+  echo " Last Update: $(date '+%Y-%m-%d %H:%M:%S')"
   echo "------------------------------------"
   echo " 3X-UI Panel URL : $PANEL_URL"
-  echo " Show Online URL : http://$(hostname -I | awk '{print $1}'):82/server/"
+  echo " Show Online URL : $SHOW_URL"
   echo "------------------------------------"
-  echo " Latest GitHub Version: ${gh_ver:-N/A}"
-  echo " Latest Update Date   : ${gh_date:-N/A}"
+  echo " Latest GitHub Version: ${lv:-N/A}"
+  echo " Latest Update Date   : ${ld}"
   echo "===================================="
   echo "1). Install Script"
   echo "2). Restart All Service"
@@ -351,56 +381,30 @@ menu() {
   echo "6). Fix Nginx"
   echo "0). Exit"
   echo "------------------------------------"
-  read -p "Select option: " opt
-  case "$opt" in
-    1)
-      install_deps
-      read -p "กรอก X-UI panel username: " USERNAME
-      read -p "กรอก X-UI panel password: " PASSWORD
-      detect_panel
-      write_conf
-      fix_nginx
-      write_dashboard
-      write_checker
-      write_service
-      write_meta
-      info "Install complete."; sleep 1
-      ;;
-    2) systemctl restart online-check nginx; info "Services restarted."; sleep 1 ;;
-    3)
-      systemctl disable --now online-check.service 2>/dev/null || true
-      rm -f "$SERVICE_FILE" "$BIN_DIR/online-check.sh" "$CONF_FILE" "$META_FILE"
-      rm -rf "$WWW_DIR"
-      systemctl restart nginx || true
-      info "Uninstalled."; sleep 1
-      ;;
-    4)
-      info "Updating from GitHub..."
-      curl -fsSL "$GITHUB_RAW" -o "$INSTALL_FILE" && chmod +x "$INSTALL_FILE"
-      echo "$(date '+%Y-%m-%d %H:%M:%S') - Updated" >> "$LOG_FILE"
-      bash "$INSTALL_FILE"
-      ;;
-    5) [[ -f "$LOG_FILE" ]] && cat "$LOG_FILE" || echo "No update logs."; read -p "Press Enter..." ;;
-    6) fix_nginx; info "Nginx fixed."; sleep 1 ;;
-    0) exit 0 ;;
-    *) echo "Invalid choice."; sleep 1 ;;
-  esac
 }
 
-# ---------- Entry ----------
-ensure_self
+view_logs() {
+  journalctl -u online-check.service -n 100 --no-pager || true
+}
 
-# โหมด update เงียบ (สำหรับภายหลังถ้าต้องการ)
-if [[ "$1" == "update" ]]; then
-  detect_panel
-  [[ -f "$CONF_FILE" ]] && . "$CONF_FILE"
-  fix_nginx
-  write_dashboard
-  write_checker
-  write_service
-  write_meta
-  exit 0
-fi
-
-# เริ่มเมนู
-menu
+case "${1:-}" in
+  install) install_all ;;
+  --post-update) post_update ;;
+  *) # interactive menu
+    ensure_menu_command
+    while true; do
+      print_menu
+      read -rp "Select option: " opt
+      case "$opt" in
+        1) install_all ;;
+        2) restart_all ;;
+        3) uninstall_all ;;
+        4) update_self ;;
+        5) view_logs ;;
+        6) fix_nginx ;;
+        0) exit 0 ;;
+        *) red "Invalid choice." ; sleep 1 ;;
+      esac
+    done
+  ;;
+esac
