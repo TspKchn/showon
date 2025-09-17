@@ -338,7 +338,7 @@ menu() {
   echo " Last Update: ${LAST_INSTALL:-$(date '+%Y-%m-%d %H:%M:%S')}"
   echo "------------------------------------"
   echo " 3X-UI Panel URL : $PANEL_URL"
-  echo " Show Online URL : https://$(hostname -I | awk '{print $1}'):82/server/"
+  echo " Show Online URL : http://$(hostname -I | awk '{print $1}'):82/server/"
   echo "------------------------------------"
   echo " Latest GitHub Version: ${gh_ver:-N/A}"
   echo " Latest Update Date   : ${gh_date:-N/A}"
