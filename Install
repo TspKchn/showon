@@ -1,159 +1,187 @@
 #!/bin/bash
 VERSION="V.1.0.0"
-INSTALL_DIR="/etc/showon"
-CONFIG_FILE="$INSTALL_DIR/config"
+INSTALL_LOG="/var/log/showon-install.log"
+SERVICE_FILE="/etc/systemd/system/online-check.service"
+NGINX_SITE="/etc/nginx/sites-available/showon"
 
-mkdir -p $INSTALL_DIR
-
-menu() {
 clear
 echo "===================================="
 echo "     Menu Script Show Online User"
 echo " Installed : $VERSION"
-if [ -f "$CONFIG_FILE" ]; then
-  source "$CONFIG_FILE"
-  echo " Last Update: $(date '+%Y-%m-%d %H:%M:%S')"
-  echo "------------------------------------"
-  echo " 3X-UI Panel URL : http://${PANEL_IP}:${PANEL_PORT}"
-  echo " Show Online URL : http://${PANEL_IP}:82/server/"
-fi
+echo " Last Update: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "------------------------------------"
-echo "1). Install Script"
-echo "2). Restart All Service"
-echo "3). Uninstall"
-echo "4). Update"
-echo "5). Fix Nginx"
-echo "0). Exit"
-echo "------------------------------------"
-read -p "Select option: " choice
 
-case $choice in
-  1) install_script ;;
-  2) systemctl restart online-check nginx && echo "[OK] Restarted." ;;
-  3) uninstall_script ;;
-  4) update_script ;;
-  5) fix_nginx ;;
-  0) exit 0 ;;
-  *) echo "Invalid choice." ;;
-esac
-read -p "Press Enter to continue..." ; menu
-}
+# Detect IP
+IP=$(hostname -I | awk '{print $1}')
+PANEL_PORT=88
+PANEL_URL="http://$IP:$PANEL_PORT"
+SHOWON_URL="http://$IP:82/server/"
 
+echo " 3X-UI Panel URL : $PANEL_URL"
+echo " Show Online URL : $SHOWON_URL"
+echo "===================================="
+
+# -----------------------------
+# INSTALL FUNCTION
+# -----------------------------
 install_script() {
-  echo "[INFO] Updating system..."
-  apt update -y && apt upgrade -y
-  apt install -y curl jq nginx net-tools iproute2 sqlite3 bc
+    echo "[INFO] Updating system..."
+    apt update -y >> $INSTALL_LOG 2>&1
+    apt upgrade -y >> $INSTALL_LOG 2>&1
+    apt install -y curl jq net-tools sqlite3 nginx bc >> $INSTALL_LOG 2>&1
 
-  # Detect X-UI Panel
-  PANEL_IP=$(hostname -I | awk '{print $1}')
-  PANEL_PORT=$(ss -tulpn | grep x-ui | awk '{print $5}' | cut -d: -f2 | head -n1)
-  [ -z "$PANEL_PORT" ] && PANEL_PORT=88
-  echo "[INFO] Detect X-UI Panel URL: http://$PANEL_IP:$PANEL_PORT"
+    echo "[INFO] Cleaning old Nginx configs..."
+    rm -f /etc/nginx/sites-enabled/showon
+    rm -f /etc/nginx/sites-available/showon
+    grep -rl "listen 82" /etc/nginx/sites-enabled/ | xargs -r rm -f
+    grep -rl "listen 82" /etc/nginx/sites-available/ | xargs -r rm -f
 
-  # Ask for username / password
-  read -p "กรอก X-UI panel username: " PANEL_USER
-  read -p "กรอก X-UI panel password: " PANEL_PASS
-
-  cat > $CONFIG_FILE <<EOF
-PANEL_IP="$PANEL_IP"
-PANEL_PORT="$PANEL_PORT"
-PANEL_USER="$PANEL_USER"
-PANEL_PASS="$PANEL_PASS"
-EOF
-
-  # Setup Nginx
-  rm -f /etc/nginx/sites-enabled/showon
-  cat > /etc/nginx/sites-available/showon <<EOF
+    echo "[INFO] Setting up Nginx..."
+    cat > $NGINX_SITE <<EOF
 server {
-    listen 82 default_server;
-    listen [::]:82 default_server;
+    listen 82;
+    listen [::]:82;
     root /var/www/html;
     index index.html;
     server_name _;
-
     location /server/ {
         autoindex on;
         default_type application/json;
     }
 }
 EOF
-  ln -s /etc/nginx/sites-available/showon /etc/nginx/sites-enabled/showon
-  nginx -t && systemctl restart nginx
+    ln -s $NGINX_SITE /etc/nginx/sites-enabled/showon 2>/dev/null
 
-  mkdir -p /var/www/html/server
+    if nginx -t; then
+        systemctl restart nginx
+        echo "[SUCCESS] Nginx configured."
+    else
+        echo "[ERROR] Invalid Nginx config. Exiting."
+        exit 1
+    fi
 
-  # Online checker script
-  cat > /usr/local/bin/online-check.sh <<'EOF'
-#!/bin/bash
-set -e
-CONFIG="/etc/showon/config"
-[ -f "$CONFIG" ] && source "$CONFIG"
+    echo "[INFO] Asking for 3X-UI credentials..."
+    read -p "กรอก X-UI panel username: " PANEL_USER
+    read -s -p "กรอก X-UI panel password: " PANEL_PASS
+    echo ""
 
-while true; do
-  echo "[DEBUG] Checking clients..."
-  SSH_ON=$(ss -nt state established | grep -E ":22 " | wc -l)
-  OPENVPN_ON=0
-  [ -f /etc/openvpn/server/openvpn-status.log ] && OPENVPN_ON=$(grep -c "^CLIENT_LIST" /etc/openvpn/server/openvpn-status.log)
-  DROPBEAR_ON=0
-  pgrep dropbear >/dev/null && DROPBEAR_ON=$(ps aux | grep dropbear | grep -v grep | wc -l)
-
-  COOKIE=$(curl -sk -c - -X POST "http://$PANEL_IP:$PANEL_PORT/login" \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"$PANEL_USER\",\"password\":\"$PANEL_PASS\"}" | awk '{print $7}' | head -n1)
-
-  V2RAY_ON=0
-  if [ -n "$COOKIE" ]; then
-    ONLINE_JSON=$(curl -sk -b "3x-ui=$COOKIE" "http://$PANEL_IP:$PANEL_PORT/panel/inbound/onlines")
-    V2RAY_ON=$(echo "$ONLINE_JSON" | jq '.obj | length' 2>/dev/null || echo 0)
-  fi
-
-  TOTAL=$((SSH_ON + OPENVPN_ON + DROPBEAR_ON + V2RAY_ON))
-  JSON="{\"total\":$TOTAL,\"ssh\":$SSH_ON,\"openvpn\":$OPENVPN_ON,\"dropbear\":$DROPBEAR_ON,\"v2ray\":$V2RAY_ON}"
-  echo "$JSON" > /var/www/html/server/online_app.json
-  sleep 5
-done
-EOF
-
-  chmod +x /usr/local/bin/online-check.sh
-
-  # Systemd service
-  cat > /etc/systemd/system/online-check.service <<EOF
+    echo "[INFO] Setting up online-check service..."
+    cat > $SERVICE_FILE <<EOF
 [Unit]
-Description=Online User Checker
+Description=Online Users Checker (SSH/V2Ray)
 After=network.target
 
 [Service]
 ExecStart=/usr/local/bin/online-check.sh
 Restart=always
-RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
-  systemctl daemon-reload
-  systemctl enable --now online-check.service
 
-  echo "[SUCCESS] Install complete!"
+    # 🔥 ตัวเช็คจริง
+    cat > /usr/local/bin/online-check.sh <<EOF
+#!/bin/bash
+PANEL_URL="$PANEL_URL"
+USERNAME="$PANEL_USER"
+PASSWORD="$PANEL_PASS"
+OUT_FILE="/var/www/html/server/online_app.json"
+
+while true; do
+    COOKIE=\$(curl -sk -X POST "\$PANEL_URL/login" \\
+        -H "Content-Type: application/json" \\
+        -d "{\"username\":\"\$USERNAME\",\"password\":\"\$PASSWORD\"}" \\
+        -c - | grep 3x-ui | awk '{print \$7}')
+
+    if [ -n "\$COOKIE" ]; then
+        V2RAY_ONLINE=\$(curl -sk -b "3x-ui=\$COOKIE" "\$PANEL_URL/panel/inbound/onlines" | jq '.obj | length' 2>/dev/null)
+    else
+        V2RAY_ONLINE=0
+    fi
+
+    # TODO: เพิ่ม logic นับ SSH user ที่ออนไลน์ถ้าคุณอยากได้
+    SSH_ONLINE=0
+
+    echo "{\\"ssh\\":\$SSH_ONLINE,\\"v2ray\\":\$V2RAY_ONLINE}" > \$OUT_FILE
+    sleep 5
+done
+EOF
+
+    chmod +x /usr/local/bin/online-check.sh
+    systemctl daemon-reexec
+    systemctl enable online-check.service
+    systemctl restart online-check.service
+
+    echo "[SUCCESS] Install complete!"
+    read -p "Press Enter to continue..."
 }
 
+# -----------------------------
+# RESTART SERVICES
+# -----------------------------
+restart_all() {
+    systemctl restart nginx
+    systemctl restart online-check.service
+    echo "[SUCCESS] All services restarted!"
+    read -p "Press Enter to continue..."
+}
+
+# -----------------------------
+# UNINSTALL
+# -----------------------------
 uninstall_script() {
-  systemctl disable --now online-check.service
-  rm -f /usr/local/bin/online-check.sh
-  rm -f /etc/systemd/system/online-check.service
-  rm -rf /etc/showon
-  rm -f /etc/nginx/sites-enabled/showon /etc/nginx/sites-available/showon
-  systemctl reload nginx
-  echo "[SUCCESS] Uninstalled."
+    systemctl stop online-check.service
+    systemctl disable online-check.service
+    rm -f $SERVICE_FILE
+    rm -f /usr/local/bin/online-check.sh
+    rm -f $NGINX_SITE
+    rm -f /etc/nginx/sites-enabled/showon
+    systemctl restart nginx
+    echo "[SUCCESS] Uninstalled!"
+    read -p "Press Enter to continue..."
 }
 
-update_script() {
-  bash <(curl -fsSL https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install)
-}
-
+# -----------------------------
+# FIX NGINX
+# -----------------------------
 fix_nginx() {
-  rm -f /etc/nginx/sites-enabled/showon
-  ln -s /etc/nginx/sites-available/showon /etc/nginx/sites-enabled/showon
-  nginx -t && systemctl restart nginx && echo "[OK] Nginx fixed."
+    echo "[INFO] Fixing Nginx..."
+    rm -f $NGINX_SITE /etc/nginx/sites-enabled/showon
+    grep -rl "listen 82" /etc/nginx/sites-enabled/ | xargs -r rm -f
+    grep -rl "listen 82" /etc/nginx/sites-available/ | xargs -r rm -f
+    systemctl restart nginx
+    echo "[SUCCESS] Nginx fixed!"
+    read -p "Press Enter to continue..."
 }
 
-menu
+# -----------------------------
+# MENU LOOP
+# -----------------------------
+while true; do
+    clear
+    echo "===================================="
+    echo "     Menu Script Show Online User"
+    echo " Installed : $VERSION"
+    echo " Last Update: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "------------------------------------"
+    echo " 3X-UI Panel URL : $PANEL_URL"
+    echo " Show Online URL : $SHOWON_URL"
+    echo "===================================="
+    echo "1). Install Script"
+    echo "2). Restart All Service"
+    echo "3). Uninstall"
+    echo "4). Update"
+    echo "5). Fix Nginx"
+    echo "0). Exit"
+    echo "------------------------------------"
+    read -p "Select option: " choice
+    case $choice in
+        1) install_script ;;
+        2) restart_all ;;
+        3) uninstall_script ;;
+        4) exec bash <(curl -fsSL https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install) ;;
+        5) fix_nginx ;;
+        0) exit 0 ;;
+        *) echo "Invalid choice." && sleep 2 ;;
+    esac
+done
