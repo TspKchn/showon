@@ -27,11 +27,11 @@ NC="\e[0m" # No Color
 # Auto Update Function
 # =====================================================
 check_update_auto() {
-    LATEST_VERSION=$(curl -s "$REPO_URL/Install" | grep -m1 '^VERSION=' | cut -d'"' -f2)
+    LATEST_VERSION=$(curl -s --max-time 3 "$REPO_URL/Install" | grep -m1 '^VERSION=' | cut -d'"' -f2)
 
     if [ -z "$LATEST_VERSION" ]; then
-        echo -e "${YELLOW}[WARN]${NC} Cannot fetch latest version."
-        return
+        echo -e "${YELLOW}[WARN]${NC} Cannot fetch latest version (skip update check)."
+        return 0
     fi
 
     if [ "$VERSION" != "$LATEST_VERSION" ]; then
@@ -41,8 +41,8 @@ check_update_auto() {
         curl -o /root/Install -s "$REPO_URL/Install"
         chmod +x /root/Install
         echo -e "${GREEN}[SUCCESS]${NC} Updated to $LATEST_VERSION"
-        echo -e "${CYAN}[INFO] Restarting ShowOn...${NC}"
-        exec /root/Install
+        echo -e "${CYAN}[INFO] Please run 'showon' again to load the new version.${NC}"
+        exit 0
     fi
 }
 
@@ -64,7 +64,7 @@ show_menu() {
         1) install_script ;;
         2) uninstall_script ;;
         0) exit 0 ;;
-        *) echo -e "${RED}[ERROR]${NC} Invalid choice..."; sleep 2; show_menu ;;
+        *) echo -e "${RED}[ERROR]${NC} Invalid choice..."; sleep 1; show_menu ;;
     esac
 }
 
@@ -75,7 +75,7 @@ install_script() {
     echo -e "${CYAN}[INFO]${NC} Installing ShowOn Script $VERSION ..."
 
     apt update -y && apt upgrade -y
-    apt install -y curl jq net-tools psmisc nginx iproute2
+    apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates
 
     mkdir -p "$WWW_DIR"
     chmod -R 755 "$WWW_DIR"
