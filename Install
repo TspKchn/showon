@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Installer V.1.0.1 (fixed index.html)
+# ShowOn Script Installer V.1.0.1 (Full)
 # Author: TspKchn
 # =====================================================
 
@@ -22,6 +22,7 @@ SCRIPT_ONLINE="/usr/local/bin/online-check.sh"
 SCRIPT_SYSINFO="/usr/local/bin/sysinfo.sh"
 SERVICE_ONLINE="/etc/systemd/system/online-check.service"
 SERVICE_SYSINFO="/etc/systemd/system/sysinfo.service"
+CONF_FILE="/etc/showon.conf"
 
 # ==========================
 # Menu Function
@@ -74,29 +75,41 @@ install_script() {
     chmod -R 755 "$WWW_DIR"
 
     # -----------------------------
-    # Ask for 3x-ui Config
+    # Detect Mode + Ask Config
     # -----------------------------
-    read -p "Enter 3x-ui IP (default 127.0.0.1): " PANEL_IP
-    PANEL_IP=${PANEL_IP:-127.0.0.1}
+    if [ -f /etc/x-ui/x-ui.db ]; then
+        # Mode 1: 3x-ui
+        read -p "Enter 3x-ui IP (default 127.0.0.1): " PANEL_IP
+        PANEL_IP=${PANEL_IP:-127.0.0.1}
 
-    read -p "Enter 3x-ui Port (default 88): " PANEL_PORT
-    PANEL_PORT=${PANEL_PORT:-88}
+        read -p "Enter 3x-ui Port (default 88): " PANEL_PORT
+        PANEL_PORT=${PANEL_PORT:-88}
 
-    PANEL_URL="https://${PANEL_IP}:${PANEL_PORT}"
-    echo -e "${CYAN}[INFO]${NC} Using PANEL_URL = $PANEL_URL"
+        PANEL_URL="https://${PANEL_IP}:${PANEL_PORT}"
+        echo -e "${CYAN}[INFO]${NC} Using PANEL_URL = $PANEL_URL"
 
-    read -p "Enter 3x-ui username: " USERNAME
-    read -p "Enter 3x-ui password: " PASSWORD
+        read -p "Enter 3x-ui username: " USERNAME
+        read -p "Enter 3x-ui password: " PASSWORD
 
-    # Save config
-    CONF_FILE="/etc/showon.conf"
-    cat >"$CONF_FILE" <<EOF
+        cat >"$CONF_FILE" <<EOF
 PANEL_URL="$PANEL_URL"
 USERNAME="$USERNAME"
 PASSWORD="$PASSWORD"
 WWW_DIR="$WWW_DIR"
 EOF
-    chmod 600 "$CONF_FILE"
+        chmod 600 "$CONF_FILE"
+
+    elif [ -f /usr/local/etc/xray/config.json ] || [ -f /etc/xray/config.json ]; then
+        # Mode 2/3: Xray-core → ไม่ต้องถามอะไร
+        cat >"$CONF_FILE" <<EOF
+WWW_DIR="$WWW_DIR"
+EOF
+        chmod 600 "$CONF_FILE"
+
+    else
+        echo -e "${YELLOW}[WARN]${NC} ไม่พบทั้ง 3x-ui หรือ Xray-core config.json"
+        sleep 2
+    fi
 
     # -----------------------------
     # online-check.sh
@@ -314,7 +327,7 @@ EOF
     chown www-data:www-data "$WWW_DIR/index.html"
 
     # -----------------------------
-    # Detect Mode
+    # Detect Mode Print
     # -----------------------------
     if [ -f /etc/x-ui/x-ui.db ]; then
         echo -e "${GREEN}[SUCCESS]${NC} Detected mode: 3x-ui"
@@ -343,7 +356,7 @@ uninstall_script() {
 
     rm -f "$SERVICE_ONLINE" "$SERVICE_SYSINFO"
     rm -f "$SCRIPT_ONLINE" "$SCRIPT_SYSINFO"
-    rm -f /etc/showon.conf
+    rm -f "$CONF_FILE"
     rm -rf "$WWW_DIR"
     rm -f /etc/nginx/sites-available/server_checker
     rm -f /etc/nginx/sites-enabled/server_checker
