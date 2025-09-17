@@ -1,11 +1,12 @@
 #!/bin/bash
 # =====================================================
-# Show Online User Script - V.1.0.6
+# Show Online User Script - V.1.0.7
 # Author: ChatGPT
 # =====================================================
 
-VERSION="V.1.0.6"
-GITHUB_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install"
+VERSION="V.1.0.7"
+GITHUB_REPO="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main"
+INSTALL_PATH="/usr/local/bin/showon"
 
 set -e
 
@@ -25,7 +26,6 @@ detect_panel_url() {
     [ -z "$port" ] && port=88
 
     PANEL_URL="https://${ip}:${port}"
-    echo "[INFO] Detect X-UI Panel URL: $PANEL_URL"
 }
 
 # ---------- Install ----------
@@ -35,6 +35,7 @@ install_script() {
     apt install -y curl jq net-tools iproute2 sqlite3 bc sysstat nginx
 
     detect_panel_url
+    echo "[INFO] Detected X-UI Panel URL: $PANEL_URL"
 
     read -p "กรอก X-UI panel username: " USERNAME
     read -p "กรอก X-UI panel password: " PASSWORD
@@ -70,20 +71,21 @@ install_script() {
 <pre id="sysinfo">Loading...</pre>
 <script>
 async function fetchData(){
-  let res = await fetch('online_app.json');
-  let data = await res.json();
+  try {
+    let res = await fetch('online_app.json');
+    let data = await res.json();
+    let clients = data.clients || [];
+    document.querySelector("#clientTable tbody").innerHTML =
+      clients.map(c=>`<tr><td>${c}</td></tr>`).join("");
 
-  let clients = data.clients || [];
-  document.querySelector("#clientTable tbody").innerHTML = 
-    clients.map(c=>`<tr><td>${c}</td></tr>`).join("");
+    onlineChart.data.labels = ['SSH','OpenVPN','Dropbear','V2Ray'];
+    onlineChart.data.datasets[0].data = [data.ssh,data.openvpn,data.dropbear,data.v2ray];
+    onlineChart.update();
 
-  onlineChart.data.labels = ['SSH','OpenVPN','Dropbear','V2Ray'];
-  onlineChart.data.datasets[0].data = [data.ssh,data.openvpn,data.dropbear,data.v2ray];
-  onlineChart.update();
-
-  let sys = await fetch('sysinfo.json').then(r=>r.json());
-  document.getElementById("sysinfo").textContent =
-    `Uptime: ${sys.uptime}\nCPU: ${sys.cpu_usage}\nRAM: ${sys.ram_usage}\nDisk: ${sys.disk_usage}`;
+    let sys = await fetch('sysinfo.json').then(r=>r.json());
+    document.getElementById("sysinfo").textContent =
+      `Uptime: ${sys.uptime}\nCPU: ${sys.cpu_usage}\nRAM: ${sys.ram_usage}\nDisk: ${sys.disk_usage}`;
+  } catch(e) { console.error("Error fetching data", e); }
 }
 let ctx=document.getElementById('onlineChart').getContext('2d');
 let onlineChart=new Chart(ctx,{
@@ -176,27 +178,44 @@ EOF
 # ---------- Menu ----------
 menu_showon() {
   clear
+  NOW=$(date '+%Y-%m-%d %H:%M:%S')
+  detect_panel_url
+
+  LATEST=$(curl -fsSL $GITHUB_REPO/VERSION 2>/dev/null || echo "Unknown")
+  LATEST_DATE=$(curl -fsSL $GITHUB_REPO/UPDATED 2>/dev/null || echo "Unknown")
+
+  echo "===================================="
   echo "     Menu Script Show Online User"
   echo " Installed : $VERSION"
-  echo " Last Update: $(date '+%Y-%m-%d %H:%M:%S')"
+  echo " Last Update: $NOW"
   echo "------------------------------------"
-  detect_panel_url
   echo " Panel URL : $PANEL_URL"
+  echo "------------------------------------"
+  echo " Latest GitHub Version: $LATEST"
+  echo " Latest Update Date   : $LATEST_DATE"
   echo "===================================="
   echo "1). Install Script"
   echo "2). Restart All Service"
   echo "3). Uninstall"
   echo "4). Update"
-  echo "5). Fix Nginx"
+  echo "5). View Update Logs"
+  echo "6). Fix Nginx"
   echo "0). Exit"
   echo "------------------------------------"
   read -p "Select option: " opt
-  case \$opt in
+  case $opt in
     1) install_script ;;
     2) systemctl restart online-check sysinfo-gen nginx ;;
     3) systemctl disable --now online-check sysinfo-gen nginx; rm -rf /var/www/html/server ;;
-    4) bash <(curl -fsSL $GITHUB_RAW) ;;
-    5) nginx -t && systemctl restart nginx ;;
+    4)
+       echo "[INFO] Updating showon script..."
+       curl -fsSL $GITHUB_REPO/Install -o $INSTALL_PATH
+       chmod +x $INSTALL_PATH
+       echo "[DONE] Updated to latest version. Please run: showon"
+       exit 0
+       ;;
+    5) journalctl -u online-check.service -n 50 --no-pager ;;
+    6) nginx -t && systemctl restart nginx ;;
     0) exit ;;
     *) echo "Invalid option" ;;
   esac
