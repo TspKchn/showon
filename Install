@@ -2,10 +2,11 @@
 # =====================================================
 # ShowOn Installer Script
 # Version: V.1.0.0
-# จะติดตั้งเมนู showon (Install/Uninstall/Exit)
+# Author: TspKchn
 # =====================================================
 
 VERSION="V.1.0.0"
+REPO_URL="https://github.com/TspKchn/showon/raw/refs/heads/main"
 
 SHOWON_CMD="/usr/local/bin/showon"
 CONF_FILE="/etc/showon.conf"
@@ -15,26 +16,63 @@ SCRIPT_SYSINFO="/usr/local/bin/sysinfo.sh"
 SERVICE_ONLINE="/etc/systemd/system/online-check.service"
 SERVICE_SYSINFO="/etc/systemd/system/sysinfo.service"
 
+# 🎨 Define Colors
+RED="\e[31m"
+GREEN="\e[32m"
+YELLOW="\e[33m"
+CYAN="\e[36m"
+NC="\e[0m" # No Color
+
+# =====================================================
+# Auto Update Function
+# =====================================================
+check_update_auto() {
+    LATEST_VERSION=$(curl -s "$REPO_URL/Install" | grep -m1 '^VERSION=' | cut -d'"' -f2)
+
+    if [ -z "$LATEST_VERSION" ]; then
+        echo -e "${YELLOW}[WARN]${NC} Cannot fetch latest version."
+        return
+    fi
+
+    if [ "$VERSION" != "$LATEST_VERSION" ]; then
+        echo -e "${YELLOW}[UPDATE AVAILABLE]${NC} Latest: ${GREEN}$LATEST_VERSION${NC} (Current: ${RED}$VERSION${NC})"
+        echo -e "${CYAN}Press Enter to update now, or Ctrl+C to cancel...${NC}"
+        read
+        curl -o /root/Install -s "$REPO_URL/Install"
+        chmod +x /root/Install
+        echo -e "${GREEN}[SUCCESS]${NC} Updated to $LATEST_VERSION"
+        echo -e "${CYAN}[INFO] Restarting ShowOn...${NC}"
+        exec /root/Install
+    fi
+}
+
+# =====================================================
+# Menu
+# =====================================================
 show_menu() {
     clear
-    echo "==============================="
-    echo "   ShowOn Script Manager $VERSION"
-    echo "==============================="
-    echo "1) Install Script"
-    echo "2) Uninstall Script"
-    echo "0) Exit"
-    echo "==============================="
+    echo -e "${CYAN}==============================="
+    echo -e "   ShowOn Script Manager $VERSION"
+    echo -e "===============================${NC}"
+    check_update_auto
+    echo -e "${GREEN}1) Install Script${NC}"
+    echo -e "${RED}2) Uninstall Script${NC}"
+    echo -e "${YELLOW}0) Exit${NC}"
+    echo -e "${CYAN}===============================${NC}"
     read -p "Choose an option [0,1,2]: " choice
     case $choice in
         1) install_script ;;
         2) uninstall_script ;;
         0) exit 0 ;;
-        *) echo "Invalid choice..."; sleep 2; show_menu ;;
+        *) echo -e "${RED}[ERROR]${NC} Invalid choice..."; sleep 2; show_menu ;;
     esac
 }
 
+# =====================================================
+# Install Script
+# =====================================================
 install_script() {
-    echo "[INFO] Installing ShowOn Script $VERSION ..."
+    echo -e "${CYAN}[INFO]${NC} Installing ShowOn Script $VERSION ..."
 
     apt update -y && apt upgrade -y
     apt install -y curl jq net-tools psmisc nginx iproute2
@@ -50,7 +88,7 @@ install_script() {
     PANEL_PORT=${PANEL_PORT:-88}
 
     PANEL_URL="https://${PANEL_IP}:${PANEL_PORT}"
-    echo "[INFO] Using PANEL_URL = $PANEL_URL"
+    echo -e "${CYAN}[INFO]${NC} Using PANEL_URL = $PANEL_URL"
 
     read -p "Enter 3x-ui username: " USERNAME
     read -p "Enter 3x-ui password: " PASSWORD
@@ -231,14 +269,17 @@ EOF
     systemctl enable --now sysinfo.service
     systemctl enable nginx
 
-    echo "[SUCCESS] Installed ShowOn $VERSION"
-    echo "Open: http://$(hostname -I | awk '{print $1}'):82/server/"
+    echo -e "${GREEN}[SUCCESS]${NC} Installed ShowOn $VERSION"
+    echo -e "${CYAN}[INFO]${NC} Open: http://$(hostname -I | awk '{print $1}'):82/server/"
     read -p "Press Enter to return to menu..." dummy
     show_menu
 }
 
+# =====================================================
+# Uninstall Script
+# =====================================================
 uninstall_script() {
-    echo "[INFO] Uninstalling ShowOn Script $VERSION ..."
+    echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script $VERSION ..."
 
     systemctl stop online-check.service sysinfo.service 2>/dev/null || true
     systemctl disable online-check.service sysinfo.service 2>/dev/null || true
@@ -253,14 +294,17 @@ uninstall_script() {
     systemctl daemon-reload
     systemctl restart nginx
 
-    echo "[SUCCESS] Uninstalled ShowOn $VERSION"
+    echo -e "${GREEN}[SUCCESS]${NC} Uninstalled ShowOn $VERSION"
     read -p "Press Enter to reboot..." dummy
     reboot
 }
 
+# =====================================================
 # Create showon command
-cat >"$SHOWON_CMD" <<'EOF'
+# =====================================================
+cat >"$SHOWON_CMD" <<EOF
 #!/bin/bash
+echo -e "${CYAN}ShowOn Script Manager $VERSION${NC}"
 bash /root/Install
 EOF
 chmod +x "$SHOWON_CMD"
