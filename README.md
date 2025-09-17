@@ -34,7 +34,7 @@ ShowOn คือสคริปต์สำหรับตรวจสอบจ�
 wget -O Install https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install
 chmod +x Install
 ./Install
-
+```
 จากนั้นใช้คำสั่ง:
 
 showon
