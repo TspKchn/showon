@@ -241,17 +241,24 @@ EOF
 </head>
 <body>
   <h1>ShowOn Dashboard <span style="color:#0ff;">${VERSION}</span></h1>
+
   <div class="card">
     <h2>Online Summary</h2>
     <table>
-      <thead><tr><th>Total</th><th>SSH</th><th>OpenVPN</th><th>Dropbear</th><th>V2Ray</th></tr></thead>
-      <tbody><tr id="summary"><td colspan="5"><div class="spinner"></div></td></tr></tbody>
+      <thead>
+        <tr><th>Total</th><th>SSH</th><th>OpenVPN</th><th>Dropbear</th><th>V2Ray</th></tr>
+      </thead>
+      <tbody>
+        <tr id="summary"><td colspan="5"><div class="spinner"></div></td></tr>
+      </tbody>
     </table>
   </div>
+
   <div class="card">
     <h2>System & Network</h2>
     <div id="system"><div class="spinner"></div></div>
   </div>
+
   <script>
     async function loadData() {
       try {
@@ -260,11 +267,15 @@ EOF
         document.getElementById("summary").innerHTML =
           \`<td>\${d.total}</td><td>\${d.ssh}</td><td>\${d.openvpn}</td><td>\${d.dropbear}</td><td>\${d.v2ray}</td>\`;
       } catch { document.getElementById("summary").innerHTML = '<td colspan="5">Error</td>'; }
+
       try {
         const r2 = await fetch('./sysinfo.json?_='+Date.now());
         const s = await r2.json();
         document.getElementById("system").innerHTML =
-          \`<b>Uptime:</b> \${s.uptime}<br><b>CPU:</b> \${s.cpu_usage}<br><b>RAM:</b> \${s.ram_usage}<br><b>Disk:</b> \${s.disk_usage}\`;
+          \`<b>Uptime:</b> \${s.uptime}<br>
+           <b>CPU:</b> \${s.cpu_usage}<br>
+           <b>RAM:</b> \${s.ram_usage}<br>
+           <b>Disk:</b> \${s.disk_usage}\`;
       } catch { document.getElementById("system").innerHTML = 'Error'; }
     }
     loadData(); setInterval(loadData,5000);
@@ -272,6 +283,9 @@ EOF
 </body>
 </html>
 EOF
+
+    chmod 644 "$WWW_DIR/index.html"
+    chown www-data:www-data "$WWW_DIR/index.html"
 
     echo -e "${GREEN}[SUCCESS]${NC} Installed ShowOn ${VERSION}"
     echo -e "${CYAN}[INFO]${NC} Open: http://$(hostname -I | awk '{print $1}'):82/server/"
