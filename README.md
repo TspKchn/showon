@@ -9,7 +9,7 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Status](https://img.shields.io/badge/status-stable-success)
 
-ShowOn คือสคริปต์สำหรับตรวจสอบจำนวนผู้ใช้งาน **SSH / OpenVPN / Dropbear / V2Ray (3x-ui)**  
+ShowOn คือสคริปต์สำหรับตรวจสอบจำนวนผู้ใช้งาน **SSH / OpenVPN / Dropbear / V2Ray (ทุกระบบ)**  
 พร้อมทั้งแสดงข้อมูล **System Info** (Uptime, CPU, RAM, Disk) แบบเรียลไทม์  
 ผ่าน **Nginx Web UI (Port 82)**
 
