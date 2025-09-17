@@ -15,7 +15,6 @@ apt install -y curl jq net-tools psmisc nginx iproute2
 WWW_DIR="/var/www/html/server"
 SCRIPT_PATH="/usr/local/bin/online-check.sh"
 SERVICE_FILE="/etc/systemd/system/online-check.service"
-TIMER_FILE="/etc/systemd/system/online-check.timer"
 
 mkdir -p "$WWW_DIR"
 chmod -R 755 "$WWW_DIR"
@@ -24,16 +23,13 @@ chmod -R 755 "$WWW_DIR"
 # ลบ nginx config ซ้ำพอร์ต 82
 # -----------------------------
 echo "[INFO] Cleaning duplicate nginx configs on port 82..."
-grep -Rl "listen 82" /etc/nginx/sites-enabled/ /etc/nginx/sites-available/ 2>/dev/null | while read -r f; do
-  # เก็บไฟล์อื่นไว้ แต่ถ้าชนพอร์ต 82 ให้ถอดลิงก์ที่ enabled ออก
-  if [[ "$f" == /etc/nginx/sites-enabled/* ]]; then
-    echo " - Removing enabled site: $f"
+grep -Rl "listen 82" /etc/nginx/sites-enabled/ /etc/nginx/sites-available/ | while read -r f; do
+    echo " - Removing $f"
     rm -f "$f"
-  fi
 done
 
 # -----------------------------
-# เขียนสคริปต์ online-check (แบบที่คุณส่งมา)
+# เขียนสคริปต์ online-check
 # -----------------------------
 cat >"$SCRIPT_PATH" <<'EOF'
 #!/bin/bash
@@ -110,7 +106,7 @@ EOF
 # -----------------------------
 # systemd timer (ทุก 1 นาที)
 # -----------------------------
-cat >"$TIMER_FILE" <<'EOF'
+cat >/etc/systemd/system/online-check.timer <<'EOF'
 [Unit]
 Description=Run online-check.service every 1 min
 
@@ -122,35 +118,19 @@ OnUnitActiveSec=60
 WantedBy=timers.target
 EOF
 
-systemctl daemon-reexec
-systemctl enable --now online-check.service
-systemctl enable --now online-check.timer
-
 # -----------------------------
-# nginx site ใหม่ (root = /var/www/html + เสิร์ฟผ่าน /server/)
+# nginx site ใหม่
 # -----------------------------
 cat >/etc/nginx/sites-available/server_checker <<'EOF'
 server {
     listen 82 default_server;
-    listen [::]:82 default_server;
     server_name _;
 
-    # root หลักเป็น /var/www/html เพื่อให้ path /server/... ชี้ไปที่ /var/www/html/server/...
-    root /var/www/html;
+    root /var/www/html/server;
     index index.html;
 
-    # ให้เข้าผ่าน http://IP:82/server/ และไฟล์ภายใต้โฟลเดอร์ server
-    location /server/ {
+    location / {
         autoindex on;
-        add_header Cache-Control "no-store";
-        try_files $uri $uri/ /server/index.html;
-    }
-
-    # ไม่ cache ไฟล์ JSON (โดยเฉพาะ online_app.json)
-    location ~* \.json$ {
-        default_type application/json;
-        add_header Cache-Control "no-store";
-        try_files $uri =404;
     }
 }
 EOF
@@ -159,8 +139,15 @@ ln -sf /etc/nginx/sites-available/server_checker /etc/nginx/sites-enabled/server
 
 nginx -t && systemctl restart nginx
 
+# -----------------------------
+# enable services
+# -----------------------------
+systemctl daemon-reexec
+systemctl enable --now online-check.service
+systemctl enable --now online-check.timer
+systemctl enable nginx
+
 echo "--------------------------------------"
 echo "[SUCCESS] Installation completed!"
-echo "JSON URL : http://$(hostname -I | awk '{print $1}'):82/server/online_app.json"
-echo "Folder   : /var/www/html/server"
+echo "Check JSON: http://$(hostname -I | awk '{print $1}'):82/online_app.json"
 echo "--------------------------------------"
