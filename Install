@@ -7,8 +7,9 @@ SHOWON_CMD="/usr/local/bin/showon"
 
 # === DEPENDENCIES ===
 install_deps() {
+  echo "[INFO] Installing dependencies..."
   apt update -y && apt upgrade -y
-  apt install -y curl jq net-tools iproute2 sqlite3 nginx bc
+  apt install -y curl jq net-tools iproute2 sqlite3 nginx bc || true
 }
 
 # === DETECT PANEL URL ===
@@ -23,6 +24,7 @@ detect_panel() {
 
 # === NGINX ===
 setup_nginx() {
+  echo "[INFO] Setting up Nginx..."
   mkdir -p /var/www/html/server
   cat >/etc/nginx/sites-available/server_checker <<EOF
 server {
@@ -40,32 +42,35 @@ EOF
 
 # === ONLINE CHECK SCRIPT ===
 setup_checker() {
+  echo "[INFO] Setting up online-check service..."
   cat >/usr/local/bin/online-check.sh <<'EOF'
 #!/bin/bash
-PANEL_URL=$(grep "3X-UI Panel URL" /usr/local/bin/showon | awk '{print $5}')
+set -e
+PANEL_URL=$(grep "3X-UI Panel URL" /usr/local/bin/showon | awk '{print $6}')
 USERNAME=$(grep "USERNAME=" /usr/local/bin/showon | awk -F'"' '{print $2}')
 PASSWORD=$(grep "PASSWORD=" /usr/local/bin/showon | awk -F'"' '{print $2}')
 
-COOKIE=$(curl -sk -c - -X POST "$PANEL_URL/login" \
-  -H "Content-Type: application/json" \
-  -d "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" | grep 3x-ui | awk '{print $7}' | cut -d';' -f1)
+while true; do
+  COOKIE=$(curl -sk -c - -X POST "$PANEL_URL/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" | grep 3x-ui | awk '{print $7}' | cut -d';' -f1)
 
-CLIENTS=$(curl -sk -b "3x-ui=$COOKIE" -X POST "$PANEL_URL/panel/inbound/onlines" \
-  -H "Content-Type: application/x-www-form-urlencoded" | jq -r '.obj')
+  CLIENTS=$(curl -sk -b "3x-ui=$COOKIE" -X POST "$PANEL_URL/panel/inbound/onlines" \
+    -H "Content-Type: application/x-www-form-urlencoded" | jq -r '.obj')
 
-ONLINE_COUNT=$(echo "$CLIENTS" | jq 'length')
-UP=$(cat /proc/net/dev | awk '/eth0/ {print $2}')
-DOWN=$(cat /proc/net/dev | awk '/eth0/ {print $10}')
-CPU=$(top -bn1 | grep "Cpu(s)" | awk '{print 100-$8"%"}')
-RAM=$(free -m | awk '/Mem/ {printf "%d/%dMB (%.0f%%)", $3,$2,$3*100/$2 }')
-UPTIME=$(uptime -p)
+  ONLINE_COUNT=$(echo "$CLIENTS" | jq 'length')
+  UP=$(cat /proc/net/dev | awk '/eth0/ {print $2}')
+  DOWN=$(cat /proc/net/dev | awk '/eth0/ {print $10}')
+  CPU=$(top -bn1 | grep "Cpu(s)" | awk '{print 100-$8"%"}')
+  RAM=$(free -m | awk '/Mem/ {printf "%d/%dMB (%.0f%%)", $3,$2,$3*100/$2 }')
+  UPTIME=$(uptime -p)
 
-cat >/var/www/html/server/online_app.json <<JSON
-{"total":$ONLINE_COUNT,"clients":$CLIENTS,"upload":$UP,"download":$DOWN,
+  cat >/var/www/html/server/online_app.json <<JSON
+{"total":$ONLINE_COUNT,"upload":$UP,"download":$DOWN,
 "cpu":"$CPU","ram":"$RAM","uptime":"$UPTIME"}
 JSON
 
-cat >/var/www/html/server/index.html <<HTML
+  cat >/var/www/html/server/index.html <<HTML
 <!DOCTYPE html>
 <html>
 <head>
@@ -73,57 +78,42 @@ cat >/var/www/html/server/index.html <<HTML
 <title>Online Users</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
-:root {
-  --bg: #f4f4f9;
-  --text: #000;
-  --card: #fff;
-}
-[data-theme="dark"] {
-  --bg: #1e1e1e;
-  --text: #fff;
-  --card: #2c2c2c;
-}
-body { font-family: Arial, sans-serif; background:var(--bg); color:var(--text); margin:20px; transition:0.3s;}
+:root { --bg:#f4f4f9; --text:#000; --card:#fff; }
+[data-theme="dark"] { --bg:#1e1e1e; --text:#fff; --card:#2c2c2c; }
+body { font-family:Arial,sans-serif; background:var(--bg); color:var(--text); margin:20px; transition:0.3s;}
 .card { background:var(--card); padding:20px; margin:10px; border-radius:10px; box-shadow:0 2px 5px rgba(0,0,0,0.1);}
-h2,h3 {margin-top:0;}
 #toggle { position:fixed; top:10px; right:10px; cursor:pointer; padding:8px 14px; border-radius:6px; background:#666; color:#fff; }
 </style>
 </head>
 <body>
 <button id="toggle">🌓</button>
 <div class="card"><h2>Online Clients: $ONLINE_COUNT</h2></div>
-
-<div class="card"><canvas id="barChart"></canvas></div>
+<div class="card"><canvas id="clientChart"></canvas></div>
 <div class="card"><canvas id="trafficChart"></canvas></div>
-
-<div class="card">
-<h3>System Info</h3>
-<p><b>CPU:</b> $CPU</p>
-<p><b>RAM:</b> $RAM</p>
-<p><b>Uptime:</b> $UPTIME</p>
-</div>
-
+<div class="card"><h3>System Info</h3>
+<p><b>CPU:</b> $CPU</p><p><b>RAM:</b> $RAM</p><p><b>Uptime:</b> $UPTIME</p></div>
 <script>
 const prefersDark=window.matchMedia("(prefers-color-scheme: dark)").matches;
 if(prefersDark) document.documentElement.setAttribute("data-theme","dark");
-document.getElementById("toggle").onclick=()=> {
-  document.documentElement.toggleAttribute("data-theme");
-};
+document.getElementById("toggle").onclick=()=>{document.documentElement.toggleAttribute("data-theme");};
 
-const ctx=document.getElementById('barChart');
-new Chart(ctx,{type:'bar',
-  data:{labels:$CLIENTS,datasets:[{label:'Online Users',data:$CLIENTS.map(()=>1),backgroundColor:'#4caf50'}]},
-  options:{indexAxis:'y',scales:{x:{ticks:{color:'var(--text)'}},y:{ticks:{color:'var(--text)'}}},plugins:{legend:{labels:{color:'var(--text)'}}}}});
+// === Client Online (Horizontal Bar) ===
+new Chart(document.getElementById('clientChart'),{type:'bar',
+ data:{labels:['Clients'],datasets:[{label:'Online',data:[$ONLINE_COUNT],backgroundColor:'#ff9800'}]},
+ options:{indexAxis:'y',scales:{x:{ticks:{color:'var(--text)'}},y:{ticks:{color:'var(--text)'}}},plugins:{legend:{labels:{color:'var(--text)'}}}}});
 
-const tctx=document.getElementById('trafficChart');
-new Chart(tctx,{type:'line',
-  data:{labels:['Upload','Download'],datasets:[{label:'Traffic Bytes',data:[$UP,$DOWN],borderColor:'#2196f3',backgroundColor:'#2196f3'}]},
-  options:{plugins:{legend:{labels:{color:'var(--text)'}}},scales:{x:{ticks:{color:'var(--text)'}},y:{ticks:{color:'var(--text)'}}}}});
+// === Upload / Download ===
+new Chart(document.getElementById('trafficChart'),{type:'bar',
+ data:{labels:['Upload','Download'],datasets:[{label:'Bytes',data:[$UP,$DOWN],backgroundColor:['#2196f3','#4caf50']}]},
+ options:{scales:{x:{ticks:{color:'var(--text)'}},y:{ticks:{color:'var(--text)'}}},plugins:{legend:{labels:{color:'var(--text)'}}}}});
 </script>
 </body>
 </html>
 HTML
+  sleep 5
+done
 EOF
+
   chmod +x /usr/local/bin/online-check.sh
 
   cat >/etc/systemd/system/$SERVICE_NAME <<EOF
@@ -172,14 +162,14 @@ show_menu() {
   echo "------------------------------------"
   read -p "Select option: " choice
   case $choice in
-    1) install_deps; setup_nginx; setup_checker ;;
-    2) systemctl restart $SERVICE_NAME nginx ;;
-    3) systemctl disable $SERVICE_NAME --now; rm -f /usr/local/bin/online-check.sh $SHOWON_CMD; echo "Uninstalled." ;;
-    4) bash <(curl -fsSL $GITHUB_URL) ;;
-    5) journalctl -u $SERVICE_NAME -n 50 --no-pager ;;
-    6) nginx -t && systemctl restart nginx && echo "[OK] Nginx fixed." || echo "[ERR] Nginx config error." ;;
-    0) exit 0 ;;
-    *) echo "Invalid choice." ;;
+    1) echo "[INFO] Starting Install..."; install_deps; setup_nginx; setup_checker; echo "[SUCCESS] Install complete!";;
+    2) echo "[INFO] Restarting services..."; systemctl restart $SERVICE_NAME nginx;;
+    3) echo "[INFO] Uninstalling..."; systemctl disable $SERVICE_NAME --now; rm -f /usr/local/bin/online-check.sh $SHOWON_CMD; echo "[SUCCESS] Uninstalled.";;
+    4) echo "[INFO] Updating script..."; bash <(curl -fsSL $GITHUB_URL);;
+    5) journalctl -u $SERVICE_NAME -n 50 --no-pager;;
+    6) echo "[INFO] Fixing Nginx..."; nginx -t && systemctl restart nginx && echo "[OK] Nginx fixed." || echo "[ERR] Nginx config error.";;
+    0) exit 0;;
+    *) echo "[ERROR] Invalid choice: $choice";;
   esac
 }
 
