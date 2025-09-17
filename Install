@@ -11,38 +11,59 @@ set -e
 
 echo "[INFO] Updating system..."
 apt update -y && apt upgrade -y
-
-# ติดตั้งแพ็กเกจที่จำเป็น
 apt install -y curl jq net-tools iproute2 nginx
 
-# ติดตั้งสคริปต์ตรวจสอบออนไลน์
-cat >/usr/local/bin/online-check.sh <<'EOF'
+# -----------------------------
+# Detect 3x-ui IP & Port
+# -----------------------------
+PANEL_PORT=$(ss -tulpn | grep x-ui | awk '{print $5}' | cut -d':' -f2 | head -n1)
+if [ -z "$PANEL_PORT" ]; then
+    echo "[ERROR] ไม่พบ x-ui กำลังรัน! ตรวจสอบก่อนนะครับ"
+    exit 1
+fi
+PANEL_IP=$(hostname -I | awk '{print $1}')
+PANEL_URL="https://$PANEL_IP:$PANEL_PORT"
+
+echo "[INFO] Detect X-UI Panel URL: $PANEL_URL"
+
+# -----------------------------
+# Ask user input
+# -----------------------------
+read -p "กรอก X-UI panel username: " USERNAME
+read -p "กรอก X-UI panel password: " PASSWORD
+
+# -----------------------------
+# Create online-check.sh
+# -----------------------------
+cat >/usr/local/bin/online-check.sh <<EOF
 #!/bin/bash
-PANEL_URL="https://bm.xq-vpn.com:88"
-USERNAME="admin"
-PASSWORD=".Xq@25042561."
+PANEL_URL="$PANEL_URL"
+USERNAME="$USERNAME"
+PASSWORD="$PASSWORD"
 
 echo "[DEBUG] Checking V2Ray clients..."
 
-COOKIE=$(curl -sk -c - -X POST "$PANEL_URL/login" \
+COOKIE=\$(curl -sk -c - -X POST "\$PANEL_URL/login" \
   -H "Content-Type: application/json" \
-  -d "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" \
+  -d "{\"username\":\"\$USERNAME\",\"password\":\"\$PASSWORD\"}" \
   | grep 3x-ui | cut -f7)
 
-ONLINE_JSON=$(curl -sk -b "3x-ui=$COOKIE" -X POST "$PANEL_URL/panel/inbound/onlines")
+ONLINE_JSON=\$(curl -sk -b "3x-ui=\$COOKIE" -X POST "\$PANEL_URL/panel/inbound/onlines")
 
-ONLINE_COUNT=$(echo "$ONLINE_JSON" | jq '.obj | length')
+ONLINE_COUNT=\$(echo "\$ONLINE_JSON" | jq '.obj | length')
 
 cat >/var/www/html/server/online_app.json <<EOL
-{"total":$ONLINE_COUNT}
+{"total":\$ONLINE_COUNT}
 EOL
 
-echo "[INFO] Updated /var/www/html/server/online_app.json ($ONLINE_COUNT clients online)"
+echo "[INFO] Updated /var/www/html/server/online_app.json (\$ONLINE_COUNT clients online)"
 EOF
 
 chmod +x /usr/local/bin/online-check.sh
 
-# ตั้งค่า systemd
+# -----------------------------
+# Create systemd service
+# -----------------------------
 cat >/etc/systemd/system/online-check.service <<'EOF'
 [Unit]
 Description=Online Users Checker (3x-ui)
@@ -60,10 +81,11 @@ EOF
 systemctl daemon-reexec
 systemctl enable --now online-check.service
 
-# สร้างโฟลเดอร์ web
+# -----------------------------
+# Create Web Folder
+# -----------------------------
 mkdir -p /var/www/html/server
 
-# index.html + กราฟ
 cat >/var/www/html/server/index.html <<'EOF'
 <!DOCTYPE html>
 <html lang="en">
@@ -128,7 +150,9 @@ cat >/var/www/html/server/index.html <<'EOF'
 </html>
 EOF
 
-# ตั้งค่า nginx
+# -----------------------------
+# Nginx Config
+# -----------------------------
 cat >/etc/nginx/sites-available/server_checker <<'EOF'
 server {
     listen 82 default_server;
@@ -146,7 +170,9 @@ rm -f /etc/nginx/sites-enabled/default
 
 nginx -t && systemctl restart nginx
 
-# ติดตั้งเมนู showon
+# -----------------------------
+# Create Menu showon
+# -----------------------------
 cat >/usr/local/bin/showon <<'EOF'
 #!/bin/bash
 INSTALL_FILE="/usr/local/bin/install-online-check.sh"
