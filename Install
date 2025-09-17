@@ -1,58 +1,46 @@
 #!/bin/bash
-# ============================================
-# Script: Show Online User + System Info
-# Version: V.1.0.0 (Stable Release)
-# Author: ChatGPT + TspKchn
-# ============================================
-
 VERSION="V.1.0.0"
+UPDATE_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 GITHUB_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install"
+LOG_FILE="/var/log/showon_update.log"
 
-set -e
-
-# -----------------------------
-# Detect Panel IP & Port
-# -----------------------------
-detect_panel_url() {
-  PANEL_IP=$(hostname -I | awk '{print $1}')
-
-  # 1) DB check
-  DB_PORT=$(sqlite3 /etc/x-ui/x-ui.db "select port from settings;" 2>/dev/null | head -n1 || echo "")
-  
-  if [ -n "$DB_PORT" ]; then
-    PANEL_PORT=$DB_PORT
-  elif [ -f /usr/local/x-ui/bin/config.json ]; then
-    PANEL_PORT=$(jq -r '.inbounds[0].port' /usr/local/x-ui/bin/config.json 2>/dev/null || echo "88")
-  else
-    PANEL_PORT=88
-  fi
-
-  PANEL_URL="https://$PANEL_IP:$PANEL_PORT"
-  echo "[INFO] Detect X-UI Panel URL: $PANEL_URL"
-}
-
-# -----------------------------
-# Install dependencies
-# -----------------------------
-install_packages() {
+# ==============================
+# Update system
+# ==============================
+update_system() {
   echo "[INFO] Updating system..."
   apt update -y && apt upgrade -y
-  apt install -y curl jq net-tools iproute2 sqlite3 nginx
+  apt install -y curl jq sqlite3 net-tools iproute2 nginx
 }
 
-# -----------------------------
+# ==============================
+# Detect X-UI Panel URL
+# ==============================
+detect_panel_url() {
+  local ip=$(hostname -I | awk '{print $1}')
+  local port=""
+
+  # 1) Try DB
+  if [ -f /etc/x-ui/x-ui.db ]; then
+    port=$(sqlite3 /etc/x-ui/x-ui.db "SELECT port FROM settings LIMIT 1;" 2>/dev/null)
+  fi
+  # 2) Try config.json
+  if [ -z "$port" ] && [ -f /etc/x-ui/config.json ]; then
+    port=$(jq -r '.webPort // empty' /etc/x-ui/config.json 2>/dev/null)
+  fi
+  # 3) Default
+  [ -z "$port" ] && port="88"
+
+  PANEL_URL="https://${ip}:${port}"
+  SHOW_URL="https://${ip}:82/server/"
+}
+
+# ==============================
 # Setup Nginx
-# -----------------------------
+# ==============================
 setup_nginx() {
   echo "[INFO] Setting up Nginx..."
-
-  # Remove old configs using port 82
-  grep -l "listen 82" /etc/nginx/sites-enabled/* 2>/dev/null | while read f; do
-    echo "[WARN] Removing duplicate config: $f"
-    rm -f "$f"
-  done
-  grep -l "listen 82" /etc/nginx/sites-available/* 2>/dev/null | while read f; do
-    echo "[WARN] Removing duplicate config: $f"
+  find /etc/nginx/sites-enabled/ /etc/nginx/sites-available/ -type f -exec grep -l "listen 82" {} \; 2>/dev/null | while read f; do
     rm -f "$f"
   done
 
@@ -76,200 +64,121 @@ EOF
 
   ln -sf /etc/nginx/sites-available/server_checker /etc/nginx/sites-enabled/server_checker
   nginx -t && systemctl restart nginx
-  echo "[INFO] Nginx reloaded successfully"
 }
 
-# -----------------------------
-# Online Checker Service
-# -----------------------------
-setup_online_checker() {
-  cat > /usr/local/bin/online-check.sh <<'EOF'
-#!/bin/bash
-set -e
-
-PANEL_IP=$(hostname -I | awk '{print $1}')
-PANEL_URL="https://$PANEL_IP:88"
-USERNAME="admin"
-PASSWORD="admin"
-
-COOKIE=""
-
-login_panel() {
-  COOKIE=$(curl -sk -c - -X POST "$PANEL_URL/login" \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" \
-    | grep 3x-ui | awk '{print $7}' || echo "")
-}
-
-get_v2ray_online() {
-  [[ -z "$COOKIE" ]] && login_panel
-  curl -sk -b "3x-ui=$COOKIE" -X POST "$PANEL_URL/panel/inbound/onlines" \
-    -H "Content-Type: application/x-www-form-urlencoded; charset=UTF-8" \
-    | jq -r '.obj | length' 2>/dev/null || echo 0
-}
-
-while true; do
-  SSH=$(ss -nt state established 2>/dev/null | grep -E ":22 " | wc -l)
-  OVPN=0
-  [ -f /etc/openvpn/server/openvpn-status.log ] && OVPN=$(grep -c "^CLIENT_LIST" /etc/openvpn/server/openvpn-status.log)
-
-  DROPBEAR=0
-  pgrep dropbear >/dev/null && DROPBEAR=$(ps aux | grep dropbear | grep -v grep | wc -l)
-
-  V2RAY=$(get_v2ray_online)
-
-  TOTAL=$((SSH + OVPN + DROPBEAR + V2RAY))
-
-  JSON="{\"total\":$TOTAL,\"ssh\":$SSH,\"openvpn\":$OVPN,\"dropbear\":$DROPBEAR,\"v2ray\":$V2RAY}"
-  echo "$JSON" > /var/www/html/server/online_app.json
-
-  sleep 5
-done
-EOF
-
-  chmod +x /usr/local/bin/online-check.sh
-
-  cat > /etc/systemd/system/online-check.service <<EOF
-[Unit]
-Description=Online Users Checker
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/online-check.sh
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  systemctl daemon-reload
-  systemctl enable --now online-check.service
-}
-
-# -----------------------------
-# SysInfo Generator
-# -----------------------------
-setup_sysinfo() {
-  cat > /usr/local/bin/sysinfo-gen.sh <<'EOF'
-#!/bin/bash
-while true; do
-  UPTIME=$(uptime -p | cut -d' ' -f2-)
-  CPU=$(top -bn1 | grep "Cpu(s)" | awk '{print 100-$8"%"}')
-  RAM=$(free -m | awk '/Mem:/ {print $3" / "$2" MB"}')
-  DISK=$(df -h / | awk 'NR==2 {print $3" / "$2}')
-
-  JSON="{\"uptime\":\"$UPTIME\",\"cpu_usage\":\"$CPU\",\"ram_usage\":\"$RAM\",\"disk_usage\":\"$DISK\"}"
-  echo "$JSON" > /var/www/html/server/sysinfo.json
-
-  sleep 5
-done
-EOF
-
-  chmod +x /usr/local/bin/sysinfo-gen.sh
-
-  cat > /etc/systemd/system/sysinfo-gen.service <<EOF
-[Unit]
-Description=System Info Generator
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/sysinfo-gen.sh
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  systemctl daemon-reload
-  systemctl enable --now sysinfo-gen.service
-}
-
-# -----------------------------
-# HTML Dashboard
-# -----------------------------
-setup_dashboard() {
+# ==============================
+# Create HTML Dashboard
+# ==============================
+create_dashboard() {
   cat > /var/www/html/server/index.html <<'EOF'
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-<meta charset="UTF-8">
-<title>สถานะผู้ใช้ออนไลน์</title>
+<meta charset="utf-8">
+<title>Online Users Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
-body { font-family: Arial, sans-serif; margin: 20px; background: #f4f4f4; }
-h1 { text-align: center; }
-table { width: 80%; margin: auto; border-collapse: collapse; background: #fff; }
-th, td { border: 1px solid #ccc; padding: 10px; text-align: center; }
+body { font-family: Arial, sans-serif; margin: 20px; background: #111; color: #eee; }
+h2 { color: #ff9800; }
+.card { background: #222; padding: 15px; margin: 10px 0; border-radius: 10px; box-shadow: 0 0 10px #000; }
+table { width: 100%; border-collapse: collapse; }
+table, th, td { border: 1px solid #444; }
+th, td { padding: 8px; text-align: center; }
+th { background: #333; }
 </style>
 </head>
 <body>
-<h1>สถานะผู้ใช้ออนไลน์</h1>
-<table>
-<thead>
-<tr><th>ทั้งหมด</th><th>SSH</th><th>OpenVPN</th><th>Dropbear</th><th>V2Ray</th></tr>
-</thead>
-<tbody>
-<tr><td id="total">0</td><td id="ssh">0</td><td id="openvpn">0</td><td id="dropbear">0</td><td id="v2ray">0</td></tr>
-</tbody>
-</table>
-<h2 style="text-align:center">System Info</h2>
-<ul style="width:60%;margin:auto;background:#fff;padding:10px;">
-  <li id="uptime"></li>
-  <li id="cpu"></li>
-  <li id="ram"></li>
-  <li id="disk"></li>
-</ul>
-<script>
-async function fetchData(){
-  let u = await fetch('online_app.json?_=' + Date.now()); let uj = await u.json();
-  document.getElementById('total').textContent = uj.total;
-  document.getElementById('ssh').textContent = uj.ssh;
-  document.getElementById('openvpn').textContent = uj.openvpn;
-  document.getElementById('dropbear').textContent = uj.dropbear;
-  document.getElementById('v2ray').textContent = uj.v2ray;
+<h2>VPN Online Users</h2>
+<div class="card">
+  <p><b>SSH:</b> <span id="ssh">0</span> | 
+     <b>OpenVPN:</b> <span id="openvpn">0</span> | 
+     <b>Dropbear:</b> <span id="dropbear">0</span> | 
+     <b>V2Ray:</b> <span id="v2ray">0</span></p>
+</div>
 
-  let s = await fetch('sysinfo.json?_=' + Date.now()); let sj = await s.json();
-  document.getElementById('uptime').textContent = "Uptime: " + sj.uptime;
-  document.getElementById('cpu').textContent = "CPU Usage: " + sj.cpu_usage;
-  document.getElementById('ram').textContent = "RAM Usage: " + sj.ram_usage;
-  document.getElementById('disk').textContent = "Disk Usage: " + sj.disk_usage;
+<div class="card">
+  <h3>Online Clients</h3>
+  <table>
+    <thead><tr><th>Email</th><th>Upload (MB)</th><th>Download (MB)</th></tr></thead>
+    <tbody id="client-table"></tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>V2Ray Traffic</h3>
+  <canvas id="trafficChart"></canvas>
+</div>
+
+<div class="card">
+  <h3>System Info</h3>
+  <pre id="sysinfo"></pre>
+</div>
+
+<script>
+async function fetchData() {
+  const res = await fetch("online_app.json?_=" + Date.now());
+  const data = await res.json();
+  document.getElementById("ssh").innerText = data.ssh;
+  document.getElementById("openvpn").innerText = data.openvpn;
+  document.getElementById("dropbear").innerText = data.dropbear;
+  document.getElementById("v2ray").innerText = data.v2ray;
+
+  let table = "";
+  data.clients.forEach(c => {
+    table += `<tr><td>${c.email}</td><td>${(c.up/1048576).toFixed(2)}</td><td>${(c.down/1048576).toFixed(2)}</td></tr>`;
+  });
+  document.getElementById("client-table").innerHTML = table;
+
+  document.getElementById("sysinfo").innerText = data.sysinfo;
+  return data;
 }
-setInterval(fetchData, 5000); fetchData();
+
+let chart;
+async function updateChart() {
+  const data = await fetchData();
+  const ctx = document.getElementById("trafficChart").getContext("2d");
+  if (!chart) {
+    chart = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: data.clients.map(c => c.email),
+        datasets: [
+          { label: "Upload (MB)", data: data.clients.map(c => c.up/1048576), backgroundColor: "orange" },
+          { label: "Download (MB)", data: data.clients.map(c => c.down/1048576), backgroundColor: "lime" }
+        ]
+      },
+      options: { responsive: true, scales: { x: { stacked: true }, y: { stacked: true } } }
+    });
+  } else {
+    chart.data.labels = data.clients.map(c => c.email);
+    chart.data.datasets[0].data = data.clients.map(c => c.up/1048576);
+    chart.data.datasets[1].data = data.clients.map(c => c.down/1048576);
+    chart.update();
+  }
+}
+setInterval(updateChart, 5000);
+updateChart();
 </script>
 </body>
 </html>
 EOF
 }
 
-# -----------------------------
-# Show Menu
-# -----------------------------
-menu_showon() {
+# ==============================
+# Menu
+# ==============================
+show_menu() {
   clear
-  NOW=$(date '+%Y-%m-%d %H:%M:%S')
-  detect_panel_url
-
-  LATEST=$(curl -fsSL https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/VERSION 2>/dev/null || echo "Unknown")
-  LATEST_RAW=$(curl -sI https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install | grep -i '^last-modified:' | cut -d' ' -f2-)
-  if [ -n "$LATEST_RAW" ]; then
-    LATEST_DATE=$(date -d "$LATEST_RAW" '+%Y-%m-%d %H:%M:%S')
-  else
-    LATEST_DATE="Unknown"
-  fi
-
-  SERVER_IP=$(hostname -I | awk '{print $1}')
-
   echo "===================================="
   echo "     Menu Script Show Online User"
   echo " Installed : $VERSION"
-  echo " Last Update: $NOW"
+  echo " Last Update: $UPDATE_DATE"
   echo "------------------------------------"
   echo " 3X-UI Panel URL : $PANEL_URL"
-  echo " Show Online URL : http://$SERVER_IP:82/server/"
+  echo " Show Online URL : $SHOW_URL"
   echo "------------------------------------"
-  echo " Latest GitHub Version: $LATEST"
-  echo " Latest Update Date   : $LATEST_DATE"
+  echo " Latest GitHub Version: $(curl -fsSL $GITHUB_RAW | grep VERSION= | head -1 | cut -d'\"' -f2)"
+  echo " Latest Update Date   : $(curl -fsSL $GITHUB_RAW | grep UPDATE_DATE= | head -1 | cut -d'\"' -f2)"
   echo "===================================="
   echo "1). Install Script"
   echo "2). Restart All Service"
@@ -279,31 +188,24 @@ menu_showon() {
   echo "6). Fix Nginx"
   echo "0). Exit"
   echo "------------------------------------"
-  read -p "Select option: " opt
-  case $opt in
-    1) install_packages; setup_nginx; setup_online_checker; setup_sysinfo; setup_dashboard ;;
-    2) systemctl restart online-check sysinfo-gen nginx ;;
-    3) systemctl disable --now online-check sysinfo-gen nginx; rm -rf /var/www/html/server ;;
-    4) echo "[INFO] Updating showon script..."; curl -fsSL $GITHUB_RAW -o /usr/local/bin/showon; chmod +x /usr/local/bin/showon; echo "[DONE] Updated! run: showon"; exit 0 ;;
-    5) journalctl -u online-check.service -n 50 --no-pager ;;
-    6) nginx -t && systemctl restart nginx ;;
-    0) exit ;;
-    *) echo "Invalid option" ;;
+  read -p "Select option: " choice
+
+  case $choice in
+    1) update_system; detect_panel_url; setup_nginx; create_dashboard ;;
+    2) systemctl restart online-check.service nginx ;;
+    3) systemctl disable --now online-check.service; rm -f /usr/local/bin/online-check.sh ;;
+    4) curl -fsSL $GITHUB_RAW -o /usr/local/bin/install-online-check.sh; bash /usr/local/bin/install-online-check.sh; echo "$(date '+%Y-%m-%d %H:%M:%S') Updated" >> $LOG_FILE ;;
+    5) cat $LOG_FILE ;;
+    6) setup_nginx ;;
+    0) exit 0 ;;
   esac
 }
 
-# -----------------------------
-# Entry
-# -----------------------------
-if [[ "$0" == *"showon"* ]]; then
-  menu_showon
-else
-  install_packages
-  setup_nginx
-  setup_online_checker
-  setup_sysinfo
-  setup_dashboard
-  cp "$0" /usr/local/bin/showon
-  chmod +x /usr/local/bin/showon
-  echo "[SUCCESS] Installed. Run 'showon' to open menu."
-fi
+# ==============================
+# Main
+# ==============================
+update_system
+detect_panel_url
+setup_nginx
+create_dashboard
+show_menu
