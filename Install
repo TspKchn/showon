@@ -1,1 +1,223 @@
-test
+#!/bin/bash
+set -e
+
+echo "[INFO] Updating system..."
+apt update -y && apt upgrade -y
+apt install -y nginx jq curl iproute2 net-tools
+
+# ===============================
+# Config File
+# ===============================
+CONFIG_FILE="/etc/online-check.conf"
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "[SETUP] Please enter X-UI panel info"
+    read -p "Enter Panel Username: " USERNAME
+    read -p "Enter Panel Password: " PASSWORD
+
+    # หา IP และ PORT ของ x-ui
+    PANEL_IP=$(hostname -I | awk '{print $1}')
+    CONFIG_JSON="/usr/local/x-ui/bin/config.json"
+    if [ -f "$CONFIG_JSON" ]; then
+        PANEL_PORT=$(jq -r '.inbounds[] | select(.protocol=="http") | .port' "$CONFIG_JSON")
+    else
+        read -p "Enter Panel Port (default 88): " PANEL_PORT
+        PANEL_PORT=${PANEL_PORT:-88}
+    fi
+
+    echo "PANEL_URL=\"https://${PANEL_IP}:${PANEL_PORT}\"" > $CONFIG_FILE
+    echo "USERNAME=\"$USERNAME\"" >> $CONFIG_FILE
+    echo "PASSWORD=\"$PASSWORD\"" >> $CONFIG_FILE
+    echo "[OK] Config saved to $CONFIG_FILE"
+fi
+
+# โหลด config
+source $CONFIG_FILE
+
+# ===============================
+# Nginx Setup
+# ===============================
+echo "[INFO] Setting up nginx..."
+mkdir -p /var/www/html/server
+
+NGINX_CONF="/etc/nginx/sites-available/server_checker"
+if [ -f "$NGINX_CONF" ]; then
+    mv "$NGINX_CONF" "${NGINX_CONF}.bak.$(date +%s)"
+fi
+
+cat > $NGINX_CONF <<EOF
+server {
+    listen 82 default_server;
+    listen [::]:82 default_server;
+
+    root /var/www/html;
+    index index.html;
+
+    server_name _;
+
+    location /server/ {
+        autoindex on;
+    }
+}
+EOF
+
+ln -sf $NGINX_CONF /etc/nginx/sites-enabled/server_checker
+nginx -t && systemctl restart nginx
+
+# ===============================
+# Online Check Script
+# ===============================
+echo "[INFO] Creating /usr/local/bin/online-check.sh..."
+cat > /usr/local/bin/online-check.sh <<'EOF'
+#!/bin/bash
+set -e
+CONFIG_FILE="/etc/online-check.conf"
+source $CONFIG_FILE
+
+OUTPUT="/var/www/html/server/online_app.json"
+
+while true; do
+    echo "[DEBUG] Checking online users..."
+
+    # SSH
+    SSH_ON=$(ss -nt state established 2>/dev/null | grep -E ":22 " | wc -l || echo 0)
+
+    # OpenVPN
+    OVPN_ON=0
+    if [ -f /etc/openvpn/server/openvpn-status.log ]; then
+        OVPN_ON=$(grep -c "^CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || echo 0)
+    fi
+
+    # Dropbear
+    DROP_ON=0
+    if pgrep dropbear >/dev/null; then
+        DROP_ON=$(ps aux | grep dropbear | grep -v grep | wc -l || echo 0)
+    fi
+
+    # V2Ray (login cookie)
+    COOKIE=$(curl -sk -c - -X POST "$PANEL_URL/login" \
+      -H "Content-Type: application/json" \
+      -d "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" | awk '/3x-ui/ {print $7}' | head -n1)
+
+    V2RAY_ON=0
+    if [ -n "$COOKIE" ]; then
+        ONLINE_JSON=$(curl -sk -X POST "$PANEL_URL/panel/inbound/onlines" \
+          -H "Content-Type: application/x-www-form-urlencoded; charset=UTF-8" \
+          -b "3x-ui=$COOKIE")
+        V2RAY_ON=$(echo "$ONLINE_JSON" | jq '.obj | length' 2>/dev/null || echo 0)
+    fi
+
+    TOTAL=$((SSH_ON + OVPN_ON + DROP_ON + V2RAY_ON))
+    JSON="{\"total\":$TOTAL,\"ssh\":$SSH_ON,\"openvpn\":$OVPN_ON,\"dropbear\":$DROP_ON,\"v2ray\":$V2RAY_ON}"
+
+    echo "$JSON" > $OUTPUT
+    sleep 5
+done
+EOF
+
+chmod +x /usr/local/bin/online-check.sh
+
+# ===============================
+# Systemd Service
+# ===============================
+echo "[INFO] Creating systemd service..."
+cat > /etc/systemd/system/online-check.service <<EOF
+[Unit]
+Description=Online Users Checker (SSH/OpenVPN/Dropbear/V2Ray via 3x-ui API)
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/online-check.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now online-check.service
+
+# ===============================
+# HTML Dashboard
+# ===============================
+echo "[INFO] Creating HTML dashboard..."
+cat > /var/www/html/server/index.html <<'EOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Online Users Status</title>
+<style>
+  body { font-family: Arial, sans-serif; background: #f5f5f5; color: #333; padding: 20px; }
+  h1 { text-align: center; }
+  table { width: 60%; margin: auto; border-collapse: collapse; }
+  th, td { border: 1px solid #ccc; padding: 10px; text-align: center; }
+  th { background: #eee; }
+</style>
+</head>
+<body>
+<h1>Online Users (Realtime)</h1>
+<table>
+  <thead><tr><th>Total</th><th>SSH</th><th>OpenVPN</th><th>Dropbear</th><th>V2Ray</th></tr></thead>
+  <tbody><tr><td id="total">0</td><td id="ssh">0</td><td id="ovpn">0</td><td id="drop">0</td><td id="v2ray">0</td></tr></tbody>
+</table>
+<script>
+async function fetchData(){
+  try {
+    const res = await fetch('online_app.json?_=' + Date.now());
+    const data = await res.json();
+    document.getElementById('total').textContent = data.total;
+    document.getElementById('ssh').textContent = data.ssh;
+    document.getElementById('ovpn').textContent = data.openvpn;
+    document.getElementById('drop').textContent = data.dropbear;
+    document.getElementById('v2ray').textContent = data.v2ray;
+  } catch(e){ console.error(e); }
+}
+setInterval(fetchData, 5000); fetchData();
+</script>
+</body>
+</html>
+EOF
+
+# ===============================
+# ShowOn Menu
+# ===============================
+echo "[INFO] Creating showon menu..."
+cat > /usr/local/bin/showon <<'EOF'
+#!/bin/bash
+INSTALL_SCRIPT="/usr/local/bin/install-online-check.sh"
+
+menu() {
+    clear
+    echo "====================================="
+    echo "      Menu Script Show Online User"
+    echo "====================================="
+    echo "1). Install Script"
+    echo "2). Restart All Service"
+    echo "3). Uninstall"
+    echo "4). Update"
+    echo "0). Exit"
+    echo "====================================="
+    read -p "Choose option: " choice
+
+    case $choice in
+        1) bash "$INSTALL_SCRIPT" ;;
+        2) systemctl restart nginx && systemctl restart online-check.service && echo "[OK] Restarted." ;;
+        3) systemctl stop online-check.service; systemctl disable online-check.service; rm -f /etc/systemd/system/online-check.service; rm -f /usr/local/bin/online-check.sh; rm -rf /var/www/html/server; systemctl daemon-reload; echo "[OK] Uninstalled." ;;
+        4) GITHUB_URL="https://raw.githubusercontent.com/TspKchn/showon/6de85de91b809849905176c63a9a11a5c44c2151/Install"; TMP_FILE="/tmp/install.new"; curl -fsSL "$GITHUB_URL" -o "$TMP_FILE" && chmod +x "$TMP_FILE" && mv "$TMP_FILE" "$INSTALL_SCRIPT" && echo "[OK] Updated!" ;;
+        0) exit 0 ;;
+        *) echo "[ERROR] Invalid choice." ;;
+    esac
+    read -p "Press Enter to continue..."
+    menu
+}
+menu
+EOF
+
+chmod +x /usr/local/bin/showon
+
+echo "--------------------------------------"
+echo "[SUCCESS] Installed successfully!"
+echo "Run menu: showon"
+echo "Dashboard: http://$(hostname -I | awk '{print $1}'):82/server/"
+echo "--------------------------------------"
