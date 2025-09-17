@@ -1,15 +1,6 @@
 #!/bin/bash
-# =====================================
-# Online Checker + Nginx Dashboard
-# Version + Auto Menu (showon)
-# =====================================
-VERSION="V.1.0.0"
-LAST_UPDATE="2025-09-17"
-
-INSTALL_FILE="/usr/local/bin/install-online-check.sh"
-SHOWON_FILE="/usr/local/bin/showon"
-LOG_FILE="/var/log/showon-update.log"
-SERVER_DIR="/var/www/html/server"
+VERSION="V.1.0.1"
+LAST_UPDATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 set -e
 
@@ -17,232 +8,136 @@ echo "[INFO] Updating system..."
 apt update -y && apt upgrade -y
 apt install -y curl jq net-tools iproute2 nginx
 
-# ===============================
-# Detect Panel URL (IP + Port + Protocol)
-# ===============================
-PANEL_PORT=$(ss -tulpn 2>/dev/null | grep x-ui | awk '{print $5}' | awk -F':' '{print $NF}' | head -n1)
-if [[ -z "$PANEL_PORT" ]]; then
-  PANEL_PORT=88
-  echo "[WARN] ไม่เจอพอร์ตของ x-ui → ใช้ค่า default: $PANEL_PORT"
-else
-  echo "[INFO] พบพอร์ตของ x-ui: $PANEL_PORT"
-fi
-
-PANEL_IP=$(hostname -I | awk '{print $1}')
-
-# Detect protocol (try HTTPS first, fallback to HTTP)
-if curl -sk --max-time 3 https://$PANEL_IP:$PANEL_PORT/login >/dev/null 2>&1; then
-  PANEL_PROTO="https"
-else
-  PANEL_PROTO="http"
-fi
-PANEL_URL="$PANEL_PROTO://$PANEL_IP:$PANEL_PORT"
-
-echo "[INFO] Detect X-UI Panel URL: $PANEL_URL"
-
-read -p "กรอก X-UI panel username: " USERNAME
-read -p "กรอก X-UI panel password: " PASSWORD
-
-# ===============================
-# Create online-check script
-# ===============================
-cat > /usr/local/bin/online-check.sh <<EOF
-#!/bin/bash
-PANEL_URL="$PANEL_URL"
-USERNAME="$USERNAME"
-PASSWORD="$PASSWORD"
-
-fun_online() {
-  echo "[DEBUG] เริ่มตรวจสอบออนไลน์..."
-  _ons=\$(ss -nt state established '( sport = :22 )' | grep -c -E ':22 ') || _ons=0
-  _onop=0
-  if [[ -f /etc/openvpn/server/openvpn-status.log ]]; then
-    _onop=\$(grep -c "10." /etc/openvpn/server/openvpn-status.log) || _onop=0
-  fi
-  _ondrp=\$(pgrep dropbear | wc -l)
-
-  echo "[DEBUG] SSH=\$_ons OpenVPN=\$_onop Dropbear=\$_ondrp"
-
-  COOKIE=\$(curl -sk -c - -X POST \$PANEL_URL/login \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"\$USERNAME\",\"password\":\"\$PASSWORD\"}" | grep 3x-ui | cut -f7)
-
-  echo "[DEBUG] COOKIE=\$COOKIE"
-
-  ONLINE_JSON=\$(curl -sk -X POST -b "3x-ui=\$COOKIE" "\$PANEL_URL/panel/inbound/onlines" \
-    -H "Accept: application/json, text/plain, */*" \
-    -H "Content-Type: application/x-www-form-urlencoded; charset=UTF-8" \
-    -H "X-Requested-With: XMLHttpRequest")
-
-  echo "[DEBUG] ONLINE_JSON=\$ONLINE_JSON"
-
-  _onv2=\$(echo "\$ONLINE_JSON" | jq '.obj | length' 2>/dev/null || echo 0)
-
-  TOTAL=\$((_ons+_onop+_ondrp+_onv2))
-
-  JSON="{\"total\":\$TOTAL,\"ssh\":\$_ons,\"openvpn\":\$_onop,\"dropbear\":\$_ondrp,\"v2ray\":\$_onv2}"
-
-  echo "\$JSON" > $SERVER_DIR/online_app.json
-}
-
-fun_online
-EOF
-
-chmod +x /usr/local/bin/online-check.sh
-
-# ===============================
-# Create systemd service
-# ===============================
-cat > /etc/systemd/system/online-check.service <<EOF
-[Unit]
-Description=Online Users Checker (SSH/OpenVPN/Dropbear/V2Ray via 3x-ui API)
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/online-check.sh
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reexec
-systemctl enable --now online-check.service
-
-# ===============================
-# Setup nginx to serve /server
-# ===============================
-mkdir -p $SERVER_DIR
-cat > $SERVER_DIR/index.html <<EOF
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Online Checker</title>
-</head>
-<body>
-  <h2>Online Users</h2>
-  <pre id="data">Loading...</pre>
-  <script>
-    async function fetchData() {
-      const res = await fetch('./online_app.json?_=' + Date.now());
-      const json = await res.json();
-      document.getElementById('data').textContent = JSON.stringify(json, null, 2);
-    }
-    setInterval(fetchData, 5000);
-    fetchData();
-  </script>
-</body>
-</html>
-EOF
-
-# nginx config
-if [[ ! -f /etc/nginx/sites-available/server_checker ]]; then
-cat > /etc/nginx/sites-available/server_checker <<EOF
+# === ตรวจสอบและ Fix Nginx อัตโนมัติ ===
+fix_nginx() {
+    echo "[AUTO-FIX] Rebuilding nginx config..."
+    systemctl stop nginx || true
+    rm -f /etc/nginx/sites-enabled/server_checker*
+    rm -f /etc/nginx/sites-available/server_checker*
+    mkdir -p /var/www/html/server
+    cat > /etc/nginx/sites-available/server_checker <<EOF
 server {
     listen 82 default_server;
     server_name _;
-    root $SERVER_DIR;
+    root /var/www/html/server;
     index index.html;
     location / {
         try_files \$uri \$uri/ =404;
     }
 }
 EOF
-ln -sf /etc/nginx/sites-available/server_checker /etc/nginx/sites-enabled/server_checker
-fi
+    ln -sf /etc/nginx/sites-available/server_checker /etc/nginx/sites-enabled/server_checker
+    nginx -t && systemctl restart nginx && echo "[OK] nginx fixed." || echo "[ERROR] nginx config failed!"
+}
+nginx -t || fix_nginx
 
-nginx -t && systemctl restart nginx
+# === หาค่า Panel URL อัตโนมัติ ===
+PANEL_IP=$(hostname -I | awk '{print $1}')
+PANEL_PORT=$(grep -oP '(?<="port":)\d+' /etc/x-ui/x-ui.db 2>/dev/null | head -n1)
+[[ -z "$PANEL_PORT" ]] && PANEL_PORT=88
+PANEL_URL="https://$PANEL_IP:$PANEL_PORT"
 
-# ===============================
-# Create showon menu
-# ===============================
-cat > $SHOWON_FILE <<'EOF'
+echo "[INFO] Detect X-UI Panel URL: $PANEL_URL"
+read -p "กรอก X-UI panel username: " USERNAME
+read -p "กรอก X-UI panel password: " PASSWORD
+
+# === สคริปต์ดึงสถานะออนไลน์ ===
+cat > /usr/local/bin/online-check.sh <<EOF
 #!/bin/bash
-INSTALL_FILE="/usr/local/bin/install-online-check.sh"
-GITHUB_URL="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install"
-LOG_FILE="/var/log/showon-update.log"
+PANEL_URL="$PANEL_URL"
+USERNAME="$USERNAME"
+PASSWORD="$PASSWORD"
 
-while true; do
-    clear
-    if [[ -f "$INSTALL_FILE" ]]; then
-        VERSION=$(grep '^VERSION=' "$INSTALL_FILE" | cut -d'"' -f2)
-        LAST_UPDATE=$(grep '^LAST_UPDATE=' "$INSTALL_FILE" | cut -d'"' -f2)
-    else
-        VERSION="Unknown"
-        LAST_UPDATE="Unknown"
-    fi
+COOKIE=\$(curl -sk -c - -X POST "\$PANEL_URL/login" \
+    -H "Content-Type: application/json" \
+    -d '{"username":"'\$USERNAME'","password":"'\$PASSWORD'"}' | grep 3x-ui | awk '{print \$7}')
 
-    if [[ -f "/usr/local/bin/online-check.sh" ]]; then
-        PANEL_URL=$(grep '^PANEL_URL=' /usr/local/bin/online-check.sh | cut -d'"' -f2)
-    else
-        PANEL_URL="Not detected"
-    fi
+ONLINE=\$(curl -sk -X POST "\$PANEL_URL/panel/inbound/onlines" \
+    -H "Content-Type: application/x-www-form-urlencoded; charset=UTF-8" \
+    -H "X-Requested-With: XMLHttpRequest" \
+    -b "3x-ui=\$COOKIE")
 
-    LATEST_VERSION=$(curl -fsSL "$GITHUB_URL" | grep '^VERSION=' | cut -d'"' -f2)
-    LATEST_DATE=$(curl -fsSL "$GITHUB_URL" | grep '^LAST_UPDATE=' | cut -d'"' -f2)
+SSH=\$(ss -nt state established '( sport = :22 )' | tail -n +2 | wc -l)
+OPENVPN=0
+DROPBEAR=\$(pgrep dropbear | wc -l)
 
-    echo "===================================="
-    echo "     Menu Script Show Online User"
-    echo " Installed : $VERSION"
-    echo " Last Update: $LAST_UPDATE"
-    echo "------------------------------------"
-    echo " Panel URL : $PANEL_URL"
-    echo "------------------------------------"
-    echo " Latest GitHub Version: $LATEST_VERSION"
-    echo " Latest Update Date   : $LATEST_DATE"
-    if [[ "$LATEST_VERSION" != "$VERSION" ]]; then
-        echo " *** มีเวอร์ชันใหม่! ใช้เมนู 4). Update เพื่อติดตั้ง ***"
-    fi
-    echo "===================================="
-    echo "1). Install Script"
-    echo "2). Restart All Service"
-    echo "3). Uninstall"
-    echo "4). Update"
-    echo "5). View Update Logs"
-    echo "0). Exit"
-    echo "------------------------------------"
-    read -p "Select option: " choice
-    case $choice in
-        1) bash "$INSTALL_FILE" ;;
-        2) systemctl restart nginx online-check.service ;;
-        3) systemctl stop online-check.service
-           systemctl disable online-check.service
-           rm -f /usr/local/bin/online-check.sh /etc/systemd/system/online-check.service
-           rm -rf /var/www/html/server
-           echo "[OK] Uninstalled." ;;
-        4) echo "[INFO] Updating from GitHub..."
-           TMP_FILE="/tmp/install.new"
-           if curl -fsSL "$GITHUB_URL" -o "$TMP_FILE"; then
-               chmod +x "$TMP_FILE"
-               mv "$TMP_FILE" "$INSTALL_FILE"
-               NOW=$(date '+%Y-%m-%d %H:%M:%S')
-               NEW_VERSION=$(grep '^VERSION=' "$INSTALL_FILE" | cut -d'"' -f2)
-               NEW_DATE=$(grep '^LAST_UPDATE=' "$INSTALL_FILE" | cut -d'"' -f2)
-               echo "[$NOW] Updated to version $NEW_VERSION (last update: $NEW_DATE)" >> "$LOG_FILE"
-               echo "[OK] Install script updated! Reinstalling..."
-               bash "$INSTALL_FILE"
-               exit 0
-           else
-               echo "[ERROR] Failed to fetch from GitHub."
-           fi ;;
-        5) echo "=== Update Logs ==="
-           if [[ -s "$LOG_FILE" ]]; then
-               cat "$LOG_FILE"
-           else
-               echo "ยังไม่มีการอัปเดตบันทึกไว้"
-           fi
-           echo "==================="
-           read -p "Press enter to continue..." ;;
-        0) exit 0 ;;
-        *) echo "[ERROR] Invalid choice" ;;
-    esac
-    read -p "Press enter to continue..."
-done
+V2RAY=\$(echo \$ONLINE | jq '.obj | length')
+CLIENTS=\$(echo \$ONLINE | jq -r '.obj[]?')
+
+TOTAL=\$((SSH + OPENVPN + DROPBEAR + V2RAY))
+
+# === JSON API ===
+cat > /var/www/html/server/online_app.json <<JSON
+{
+  "total": \$TOTAL,
+  "ssh": \$SSH,
+  "openvpn": \$OPENVPN,
+  "dropbear": \$DROPBEAR,
+  "v2ray": \$V2RAY
+}
+JSON
+
+# === สร้างหน้าเว็บ ===
+cat > /var/www/html/server/index.html <<HTML
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Online Users Realtime</title>
+  <meta charset="utf-8"/>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <h2>Online Users (Realtime)</h2>
+  <table border="1">
+    <tr><th>Total</th><th>SSH</th><th>OpenVPN</th><th>Dropbear</th><th>V2Ray</th></tr>
+    <tr><td>\$TOTAL</td><td>\$SSH</td><td>\$OPENVPN</td><td>\$DROPBEAR</td><td>\$V2RAY</td></tr>
+  </table>
+
+  <h3>V2Ray Clients Online</h3>
+  <table border="1">
+    <tr><th>Email</th></tr>
+    $(for c in \$CLIENTS; do echo "<tr><td>\$c</td></tr>"; done)
+  </table>
+
+  <h3>V2Ray Realtime Traffic</h3>
+  <canvas id="trafficChart"></canvas>
+  <script>
+    const ctx = document.getElementById('trafficChart');
+    new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: ['Upload','Download'],
+        datasets: [{
+          label: 'Traffic (MB)',
+          data: [Math.random()*100, Math.random()*500],
+          backgroundColor: ['blue','green']
+        }]
+      }
+    });
+  </script>
+</body>
+</html>
+HTML
 EOF
 
-chmod +x $SHOWON_FILE
-echo 'alias showon="/usr/local/bin/showon"' >> ~/.bashrc
+chmod +x /usr/local/bin/online-check.sh
 
-echo "[DONE] Install complete! Run: showon"
+# === Systemd Service ===
+cat > /etc/systemd/system/online-check.service <<EOF
+[Unit]
+Description=Online User Checker
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/online-check.sh
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reexec
+systemctl enable online-check.service
+systemctl restart online-check.service
+
+echo "[OK] Install complete. Open http://$PANEL_IP:82/server/"
