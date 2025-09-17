@@ -1,292 +1,205 @@
 #!/bin/bash
-# =======================================================
-# Show Online Users – Installer + Menu
-# Version: V.1.0.5
-# Maintainer: You
-# =======================================================
+# =====================================================
+# Show Online User Script - V.1.0.6
+# Author: ChatGPT
+# =====================================================
 
-VERSION="V.1.0.5"
-RAW_URL="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install"
+VERSION="V.1.0.6"
+GITHUB_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install"
 
-set -euo pipefail
+set -e
 
-log(){ echo -e "[INFO] $*"; }
-warn(){ echo -e "[WARN] $*"; }
-err(){ echo -e "[ERROR] $*" >&2; }
+# ---------- Detect X-UI Panel URL ----------
+detect_panel_url() {
+    local ip=$(hostname -I | awk '{print $1}')
+    local port=""
 
-need_pkg(){
-  local pkgs=("$@")
-  DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkgs[@]}"
+    if command -v sqlite3 &>/dev/null && [ -f /etc/x-ui/x-ui.db ]; then
+        port=$(sqlite3 /etc/x-ui/x-ui.db "SELECT port FROM settings LIMIT 1;" 2>/dev/null || echo "")
+    fi
+
+    if [ -z "$port" ] && [ -f /usr/local/x-ui/bin/config.json ]; then
+        port=$(jq -r '.inbounds[]?.port' /usr/local/x-ui/bin/config.json | head -n1)
+    fi
+
+    [ -z "$port" ] && port=88
+
+    PANEL_URL="https://${ip}:${port}"
+    echo "[INFO] Detect X-UI Panel URL: $PANEL_URL"
 }
 
-# ---------- System update ----------
-log "Updating system..."
-apt-get update -y >/dev/null
-apt-get upgrade -y || true
+# ---------- Install ----------
+install_script() {
+    echo "[INFO] Updating system..."
+    apt update -y && apt upgrade -y
+    apt install -y curl jq net-tools iproute2 sqlite3 bc sysstat nginx
 
-log "Installing dependencies..."
-need_pkg curl jq net-tools iproute2 nginx bc coreutils sqlite3 vnstat
-systemctl enable --now vnstat || true
+    detect_panel_url
 
-# ---------- Detect Panel URL (IP+PORT) ----------
-IP=$(hostname -I | awk '{print $1}')
-DB_PATH="/etc/x-ui/x-ui.db"
-CFG_PATH="/usr/local/x-ui/bin/config.json"
-PANEL_PORT=""
+    read -p "กรอก X-UI panel username: " USERNAME
+    read -p "กรอก X-UI panel password: " PASSWORD
 
-# 1) DB
-if [ -f "$DB_PATH" ]; then
-  PANEL_PORT=$(sqlite3 "$DB_PATH" "SELECT port FROM settings LIMIT 1;" 2>/dev/null || echo "")
-fi
-# 2) config.json
-if [ -z "$PANEL_PORT" ] && [ -f "$CFG_PATH" ]; then
-  PANEL_PORT=$(jq -r '.webPort // empty' "$CFG_PATH" 2>/dev/null || echo "")
-fi
-# 3) fallback
-[ -z "$PANEL_PORT" ] && PANEL_PORT=88
+    mkdir -p /var/www/html/server
 
-PANEL_URL="https://${IP}:${PANEL_PORT}"
-echo "------------------------------------"
-echo "[INFO] Detect X-UI Panel URL: $PANEL_URL"
-echo "------------------------------------"
-read -rp "กรอก X-UI panel username: " XUI_USER
-read -rp "กรอก X-UI panel password: " XUI_PASS
-
-# ---------- Web root ----------
-WEBROOT="/var/www/html/server"
-mkdir -p "$WEBROOT"
-
-# ---------- index.html ----------
-cat > "$WEBROOT/index.html" <<'HTML'
+    # HTML Dashboard
+    cat >/var/www/html/server/index.html <<'EOF'
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Online Users</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <style>
-    body { font-family: Arial, sans-serif; background: #111; color: #eee; margin: 20px; }
-    h2 { color: #0f0; }
-    canvas { background: #222; border-radius: 8px; padding: 10px; }
-    .info-box { background: #222; padding: 15px; margin: 10px 0; border-radius: 8px; }
-  </style>
+<meta charset="UTF-8">
+<title>Server Online Monitor</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+ body { font-family: Arial, sans-serif; margin: 20px; background: #f4f4f4; }
+ h2 { margin-bottom: 10px; }
+ table { border-collapse: collapse; width: 100%; margin-top: 20px; background: #fff; }
+ th, td { border: 1px solid #ccc; padding: 8px; text-align: center; }
+ .chart-container { width: 100%; margin: 20px auto; }
+ pre { background: #222; color: #0f0; padding: 10px; border-radius: 5px; }
+</style>
 </head>
 <body>
-  <h2>VPN Online Status</h2>
-  <div class="info-box">
-    <p id="summary"></p>
-  </div>
-  <canvas id="onlineChart" width="600" height="200"></canvas>
-  <h2>System Info</h2>
-  <div class="info-box">
-    <pre id="sysinfo"></pre>
-  </div>
+<h2>Online Users Monitor</h2>
+<div class="chart-container"><canvas id="onlineChart"></canvas></div>
+<h3>Clients Online</h3>
+<table id="clientTable">
+<thead><tr><th>Username</th></tr></thead>
+<tbody></tbody>
+</table>
+<h3>System Info</h3>
+<pre id="sysinfo">Loading...</pre>
 <script>
 async function fetchData(){
-  const res = await fetch('online_app.json');
-  return res.json();
+  let res = await fetch('online_app.json');
+  let data = await res.json();
+
+  let clients = data.clients || [];
+  document.querySelector("#clientTable tbody").innerHTML = 
+    clients.map(c=>`<tr><td>${c}</td></tr>`).join("");
+
+  onlineChart.data.labels = ['SSH','OpenVPN','Dropbear','V2Ray'];
+  onlineChart.data.datasets[0].data = [data.ssh,data.openvpn,data.dropbear,data.v2ray];
+  onlineChart.update();
+
+  let sys = await fetch('sysinfo.json').then(r=>r.json());
+  document.getElementById("sysinfo").textContent =
+    `Uptime: ${sys.uptime}\nCPU: ${sys.cpu_usage}\nRAM: ${sys.ram_usage}\nDisk: ${sys.disk_usage}`;
 }
-async function update(){
-  const data = await fetchData();
-  document.getElementById("summary").innerText =
-    `SSH: ${data.ssh} | OpenVPN: ${data.openvpn} | Dropbear: ${data.dropbear} | V2Ray: ${data.v2ray} | Total: ${data.total}`;
-  chart.data.datasets[0].data = [data.ssh, data.openvpn, data.dropbear, data.v2ray];
-  chart.update();
-  document.getElementById("sysinfo").innerText =
-    `Uptime: ${data.uptime}\nCPU: ${data.cpu}%\nMemory: ${data.mem}%\nDisk: ${data.disk}%\nNetwork ↓ ${data.down} ↑ ${data.up}`;
-}
-const ctx = document.getElementById('onlineChart').getContext('2d');
-const chart = new Chart(ctx, {
-  type: 'bar',
-  data: {
-    labels: ['SSH','OpenVPN','Dropbear','V2Ray'],
-    datasets: [{
-      label: 'Online Users',
-      data: [0,0,0,0],
-      backgroundColor: ['#0f0','#0ff','#ff0','#f80']
-    }]
-  },
-  options: { responsive: false, scales: { y: { beginAtZero:true } } }
+let ctx=document.getElementById('onlineChart').getContext('2d');
+let onlineChart=new Chart(ctx,{
+  type:'bar',
+  data:{labels:[],datasets:[{label:'Online Users',data:[],backgroundColor:['#2196f3','#4caf50','#ff9800','#f44336']}]},
+  options:{indexAxis:'y'}
 });
-setInterval(update, 5000); update();
+setInterval(fetchData,5000); fetchData();
 </script>
 </body>
 </html>
-HTML
+EOF
 
-# ---------- online-check.sh ----------
-CHECKER=/usr/local/bin/online-check.sh
-cat > "$CHECKER" <<EOF
+    # Online Checker
+    cat >/usr/local/bin/online-check.sh <<EOF
 #!/bin/bash
 set -e
-
 PANEL_URL="$PANEL_URL"
-USERNAME="$XUI_USER"
-PASSWORD="$XUI_PASS"
-WEBROOT="$WEBROOT"
-JSON="\$WEBROOT/online_app.json"
+USERNAME="$USERNAME"
+PASSWORD="$PASSWORD"
 
-fun_sysinfo(){
-  uptime=\$(uptime -p)
-  cpu=\$(top -bn1 | grep "Cpu(s)" | awk '{print 100-\$8}')
-  mem=\$(free | awk '/Mem/{printf "%.1f", \$3/\$2*100}')
-  disk=\$(df -h / | awk 'NR==2{print \$5}')
-  net=\$(vnstat --oneline b | awk -F\; '{print \$9" ↓  | ↑ "$11}')
-  echo "\$uptime|\$cpu|\$mem|\$disk|\$net"
+fun_check(){
+  local ssh=\$(ss -nt state established | grep -c ':22 ')
+  local ovpn=0
+  [ -f /etc/openvpn/server/openvpn-status.log ] && ovpn=\$(grep -c '10.' /etc/openvpn/server/openvpn-status.log || true)
+  local drop=\$(pgrep dropbear | wc -l)
+
+  local cookie=\$(curl -sk -c - -X POST "\$PANEL_URL/login" -H 'Content-Type: application/json' -d "{\"username\":\"\$USERNAME\",\"password\":\"\$PASSWORD\"}" | grep 3x-ui | awk '{print \$7}' || true)
+
+  local clients="[]"
+  local v2=0
+  if [ -n "\$cookie" ]; then
+    local json=\$(curl -sk -X POST -b "3x-ui=\$cookie" "\$PANEL_URL/panel/inbound/onlines" -H 'Content-Type: application/x-www-form-urlencoded; charset=UTF-8' || true)
+    clients=\$(echo "\$json" | jq -r '.obj | map(.)')
+    v2=\$(echo "\$clients" | jq 'length')
+  fi
+
+  echo "{\\"ssh\\":\$ssh,\\"openvpn\\":\$ovpn,\\"dropbear\\":\$drop,\\"v2ray\\":\$v2,\\"clients\\":\$clients}" >/var/www/html/server/online_app.json
 }
-
-fun_online(){
-  echo "[DEBUG] Checking clients..."
-  # login
-  COOKIE=\$(curl -sk -c - -X POST "\$PANEL_URL/login" -H "Content-Type: application/json" \
-    -d "{\"username\":\"\$USERNAME\",\"password\":\"\$PASSWORD\"}" | grep 3x-ui | sed -n 's/.*3x-ui=\\([^;]*\\).*/\\1/p')
-
-  ONLINE=\$(curl -sk -b "3x-ui=\$COOKIE" -X POST "\$PANEL_URL/panel/inbound/onlines" \
-    -H "Accept: application/json" -H "Content-Type: application/x-www-form-urlencoded" \
-    -H "X-Requested-With: XMLHttpRequest")
-
-  CLIENTS=\$(echo "\$ONLINE" | jq -c '.obj // []')
-
-  ssh=\$(ss -nt state established | grep -c ':22 ' || true)
-  ovpn=0
-  drp=0
-  v2=\$(echo "\$CLIENTS" | jq 'length')
-
-  read -r uptime cpu mem disk net <<<\$(fun_sysinfo | tr "|" " ")
-
-  cat > "\$JSON" <<EJSON
-{
-  "total": \$((ssh+ovpn+drp+v2)),
-  "ssh": \$ssh,
-  "openvpn": \$ovpn,
-  "dropbear": \$drp,
-  "v2ray": \$v2,
-  "uptime": "\$uptime",
-  "cpu": "\$cpu",
-  "mem": "\$mem",
-  "disk": "\$disk",
-  "down": "\$(echo \$net | cut -d' ' -f1-2)",
-  "up": "\$(echo \$net | cut -d' ' -f4-5)"
-}
-EJSON
-  echo "[INFO] Updated \$JSON"
-}
-
-fun_online
+while true; do fun_check; sleep 5; done
 EOF
-chmod +x "$CHECKER"
+    chmod +x /usr/local/bin/online-check.sh
 
-# ---------- systemd ----------
-SERVICE=/etc/systemd/system/online-check.service
-cat > "$SERVICE" <<EOF
+    # System Info Generator
+    cat >/usr/local/bin/sysinfo-gen.sh <<'EOF'
+#!/bin/bash
+while true; do
+  uptime=$(uptime -p | sed 's/up //')
+  cpu=$(top -bn1 | grep "Cpu(s)" | awk '{print 100-$8"%"}')
+  ram=$(free -m | awk '/Mem/{print $3" / "$2" MB"}')
+  disk=$(df -h / | awk 'NR==2{print $3" / "$2}')
+  echo "{ \"uptime\":\"$uptime\", \"cpu_usage\":\"$cpu\", \"ram_usage\":\"$ram\", \"disk_usage\":\"$disk\" }" >/var/www/html/server/sysinfo.json
+  sleep 5
+done
+EOF
+    chmod +x /usr/local/bin/sysinfo-gen.sh
+
+    # Systemd Services
+    cat >/etc/systemd/system/online-check.service <<EOF
 [Unit]
-Description=Online Users Checker (SSH/OpenVPN/Dropbear/V2Ray)
+Description=Online Checker
 After=network.target
 
 [Service]
-ExecStart=$CHECKER
+ExecStart=/usr/local/bin/online-check.sh
 Restart=always
-RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 EOF
-systemctl daemon-reload
-systemctl enable --now online-check.service
 
-# ---------- nginx ----------
-cat > /etc/nginx/sites-available/server_checker <<NG
-server {
-    listen 82 default_server;
-    listen [::]:82 default_server;
-    root /var/www/html/server;
-    index index.html;
-    server_name _;
-    location / { try_files \$uri \$uri/ =404; }
-}
-NG
-ln -sf /etc/nginx/sites-available/server_checker /etc/nginx/sites-enabled/server_checker
-rm -f /etc/nginx/sites-enabled/default || true
-nginx -t && systemctl restart nginx
+    cat >/etc/systemd/system/sysinfo-gen.service <<EOF
+[Unit]
+Description=System Info Generator
+After=network.target
 
-# ---------- Menu (showon) ----------
-mkdir -p /usr/local/showon
-MENU=/usr/local/showon/menu.sh
-cat > "$MENU" <<'MENU'
-#!/bin/bash
-set -e
-VERSION="V.1.0.5"
-RAW_URL="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install"
+[Service]
+ExecStart=/usr/local/bin/sysinfo-gen.sh
+Restart=always
 
-panel_url(){
-  IP=$(hostname -I | awk '{print $1}')
-  DB="/etc/x-ui/x-ui.db"; CFG="/usr/local/x-ui/bin/config.json"; P=""
-  if command -v sqlite3 >/dev/null 2>&1 && [ -f "$DB" ]; then
-    P=$(sqlite3 "$DB" "SELECT port FROM settings LIMIT 1;" 2>/dev/null || echo "")
-  fi
-  if [ -z "$P" ] && [ -f "$CFG" ]; then
-    P=$(jq -r '.webPort // empty' "$CFG" 2>/dev/null || echo "")
-  fi
-  [ -z "$P" ] && P=88
-  echo "https://${IP}:${P}"
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reexec
+    systemctl enable --now online-check.service sysinfo-gen.service nginx
+    echo "[DONE] Install complete"
 }
 
-latest_ver(){
-  curl -fsSL "$RAW_URL" | grep -m1 '^VERSION=' | cut -d= -f2 | tr -d '"'
-}
-
-fix_nginx(){
-  cat > /etc/nginx/sites-available/server_checker <<NG
-server {
-    listen 82 default_server;
-    listen [::]:82 default_server;
-    root /var/www/html/server;
-    index index.html;
-    server_name _;
-    location / { try_files \$uri \$uri/ =404; }
-}
-NG
-  ln -sf /etc/nginx/sites-available/server_checker /etc/nginx/sites-enabled/server_checker
-  rm -f /etc/nginx/sites-enabled/default || true
-  nginx -t && systemctl restart nginx && echo "[OK] Nginx fixed."
-}
-
-while true; do
+# ---------- Menu ----------
+menu_showon() {
   clear
   echo "     Menu Script Show Online User"
   echo " Installed : $VERSION"
   echo " Last Update: $(date '+%Y-%m-%d %H:%M:%S')"
   echo "------------------------------------"
-  echo " Panel URL : $(panel_url)"
-  echo "------------------------------------"
-  echo " Latest GitHub Version: $(latest_ver)"
-  echo " Latest Update Date   : $(date '+%Y-%m-%d %H:%M:%S')"
+  detect_panel_url
+  echo " Panel URL : $PANEL_URL"
   echo "===================================="
   echo "1). Install Script"
   echo "2). Restart All Service"
   echo "3). Uninstall"
   echo "4). Update"
-  echo "5). View Update Logs"
-  echo "6). Fix Nginx"
+  echo "5). Fix Nginx"
   echo "0). Exit"
   echo "------------------------------------"
-  read -rp "Select option: " opt
-  case "$opt" in
-    1) bash <(curl -fsSL "$RAW_URL");;
-    2) systemctl restart online-check.service nginx; read -rp "Press Enter...";;
-    3) systemctl disable --now online-check.service || true; rm -f /etc/systemd/system/online-check.service; systemctl daemon-reload; rm -rf /usr/local/showon /var/www/html/server /etc/nginx/sites-available/server_checker /etc/nginx/sites-enabled/server_checker; systemctl restart nginx || true; exit 0;;
-    4) bash <(curl -fsSL "$RAW_URL");;
-    5) journalctl -u online-check.service --no-pager | tail -n 150; read -rp "Press Enter...";;
-    6) fix_nginx; read -rp "Press Enter...";;
-    0) exit 0;;
-    *) echo "Invalid option"; sleep 1;;
+  read -p "Select option: " opt
+  case \$opt in
+    1) install_script ;;
+    2) systemctl restart online-check sysinfo-gen nginx ;;
+    3) systemctl disable --now online-check sysinfo-gen nginx; rm -rf /var/www/html/server ;;
+    4) bash <(curl -fsSL $GITHUB_RAW) ;;
+    5) nginx -t && systemctl restart nginx ;;
+    0) exit ;;
+    *) echo "Invalid option" ;;
   esac
-done
-MENU
-chmod +x "$MENU"
-ln -sf "$MENU" /usr/bin/showon
+}
 
-echo
-log "Done! Open dashboard:  http://$IP:82/server/"
-log "Open menu anytime:    showon"
-echo
+menu_showon
