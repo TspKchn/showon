@@ -52,7 +52,7 @@ http://<YOUR_SERVER_IP>:82/server/
 
 ตัวอย่างเช่น:
 
-http://116.204.xxx.xxx:82/server/
+http://127.0.xxx.xxx:82/server/
 
 
 ---
