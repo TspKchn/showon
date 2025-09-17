@@ -1,10 +1,10 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Installer V.1.0.0
+# ShowOn Script Installer V.1.0.1
 # Author: TspKchn
 # =====================================================
 
-VERSION="V.1.0.0"
+VERSION="V.1.0.1"
 REPO_URL="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install"
 
 # ==========================
@@ -14,7 +14,7 @@ GREEN="\e[32m"
 RED="\e[31m"
 YELLOW="\e[33m"
 CYAN="\e[36m"
-NC="\e[0m" # No Color
+NC="\e[0m"
 
 SHOWON_CMD="/usr/local/bin/showon"
 WWW_DIR="/var/www/html/server"
@@ -104,27 +104,54 @@ EOF
 set -e
 source /etc/showon.conf
 
+# -------- SSH --------
 _ons=$(ss -nt state established | grep -E ':22 ' | wc -l)
+
+# -------- OpenVPN --------
 _onop=0
-[ -f /etc/openvpn/server/openvpn-status.log ] && _onop=$(grep -c "CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || true)
+[ -f /etc/openvpn/server/openvpn-status.log ] && \
+  _onop=$(grep -c "CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || true)
+
+# -------- Dropbear --------
 _ondrp=$(pgrep dropbear | wc -l)
 
-COOKIE=$(curl -sk -c - -X POST "$PANEL_URL/login" \
-  -H "Content-Type: application/json" \
-  -d "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" \
-  | grep 3x-ui | awk '{print $7}' || true)
+# -------- V2Ray/Xray --------
+_onv2=0
+V2RAY_ONLINE="[]"
 
-if [ -z "$COOKIE" ]; then
-    V2RAY_ONLINE="[]"
-else
-    V2RAY_ONLINE=$(curl -sk -b "3x-ui=$COOKIE" -X POST \
-      "$PANEL_URL/panel/inbound/onlines" \
-      -H "Content-Type: application/x-www-form-urlencoded; charset=UTF-8" \
-      | jq -r '.obj | @json' 2>/dev/null || echo "[]")
+if [ -f /etc/x-ui/x-ui.db ]; then
+    # ----- Mode: 3x-ui -----
+    COOKIE=$(curl -sk -c - -X POST "$PANEL_URL/login" \
+      -H "Content-Type: application/json" \
+      -d "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" \
+      | grep 3x-ui | awk '{print $7}' || true)
+
+    if [ -n "$COOKIE" ]; then
+        V2RAY_ONLINE=$(curl -sk -b "3x-ui=$COOKIE" -X POST \
+          "$PANEL_URL/panel/inbound/onlines" \
+          -H "Content-Type: application/x-www-form-urlencoded; charset=UTF-8" \
+          | jq -r '.obj | @json' 2>/dev/null || echo "[]")
+        _onv2=$(echo "$V2RAY_ONLINE" | jq 'length')
+    fi
+
+elif [ -f /usr/local/etc/xray/config.json ]; then
+    # ----- Mode: Xray-core (manual/binary) -----
+    LOG_DIR="/var/log/xray"
+    if [ -d "$LOG_DIR" ]; then
+        _onv2=$(grep "accepted" "$LOG_DIR"/*.log 2>/dev/null | \
+            tail -n 2000 | awk '{print $3}' | cut -d: -f1 | sort -u | wc -l)
+    fi
+
+elif [ -f /etc/xray/config.json ]; then
+    # ----- Mode: Xray-core (deb package) -----
+    LOG_FILE="/var/log/xray/access.log"
+    if [ -f "$LOG_FILE" ]; then
+        _onv2=$(grep "accepted" "$LOG_FILE" 2>/dev/null | \
+            tail -n 2000 | awk '{print $3}' | cut -d: -f1 | sort -u | wc -l)
+    fi
 fi
 
-_onv2=$(echo "$V2RAY_ONLINE" | jq 'length')
-
+# -------- Save JSON --------
 JSON=$(jq -n \
   --arg total "$(( _ons + _onop + _ondrp + _onv2 ))" \
   --arg ssh "$_ons" \
@@ -194,8 +221,6 @@ EOF
     # -----------------------------
     # Nginx config
     # -----------------------------
-    echo -e "${CYAN}[INFO]${NC} Configuring nginx..."
-
     rm -f /etc/nginx/sites-available/server_checker
     rm -f /etc/nginx/sites-enabled/server_checker
 
@@ -219,73 +244,17 @@ EOF
     nginx -t && systemctl reload nginx
 
     # -----------------------------
-    # index.html
+    # Detect Mode
     # -----------------------------
-    cat >"$WWW_DIR/index.html" <<EOF
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>ShowOn Dashboard ${VERSION}</title>
-  <style>
-    body { background:#111; color:#fff; font-family:Arial,sans-serif; padding:20px; }
-    h1 { color:#0f0; }
-    .card { background:#222; padding:15px; margin-bottom:20px; border-radius:8px; }
-    table { width:100%; border-collapse:collapse; margin-top:10px; }
-    th, td { border:1px solid #444; padding:8px; text-align:center; }
-    th { background:#333; }
-    .spinner {border:4px solid #333;border-top:4px solid #0f0;border-radius:50%;width:20px;height:20px;animation:spin 1s linear infinite;margin:auto;}
-    @keyframes spin {100% {transform:rotate(360deg);}}
-    @media (max-width:600px){body{font-size:14px;} h1{font-size:18px;} table{font-size:12px;}}
-  </style>
-</head>
-<body>
-  <h1>ShowOn Dashboard <span style="color:#0ff;">${VERSION}</span></h1>
-
-  <div class="card">
-    <h2>Online Summary</h2>
-    <table>
-      <thead>
-        <tr><th>Total</th><th>SSH</th><th>OpenVPN</th><th>Dropbear</th><th>V2Ray</th></tr>
-      </thead>
-      <tbody>
-        <tr id="summary"><td colspan="5"><div class="spinner"></div></td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <div class="card">
-    <h2>System & Network</h2>
-    <div id="system"><div class="spinner"></div></div>
-  </div>
-
-  <script>
-    async function loadData() {
-      try {
-        const res = await fetch('./online_app.json?_='+Date.now());
-        const d = await res.json();
-        document.getElementById("summary").innerHTML =
-          \`<td>\${d.total}</td><td>\${d.ssh}</td><td>\${d.openvpn}</td><td>\${d.dropbear}</td><td>\${d.v2ray}</td>\`;
-      } catch { document.getElementById("summary").innerHTML = '<td colspan="5">Error</td>'; }
-
-      try {
-        const r2 = await fetch('./sysinfo.json?_='+Date.now());
-        const s = await r2.json();
-        document.getElementById("system").innerHTML =
-          \`<b>Uptime:</b> \${s.uptime}<br>
-           <b>CPU:</b> \${s.cpu_usage}<br>
-           <b>RAM:</b> \${s.ram_usage}<br>
-           <b>Disk:</b> \${s.disk_usage}\`;
-      } catch { document.getElementById("system").innerHTML = 'Error'; }
-    }
-    loadData(); setInterval(loadData,5000);
-  </script>
-</body>
-</html>
-EOF
-
-    chmod 644 "$WWW_DIR/index.html"
-    chown www-data:www-data "$WWW_DIR/index.html"
+    if [ -f /etc/x-ui/x-ui.db ]; then
+        echo -e "${GREEN}[SUCCESS]${NC} Detected mode: 3x-ui"
+    elif [ -f /usr/local/etc/xray/config.json ]; then
+        echo -e "${GREEN}[SUCCESS]${NC} Detected mode: Xray-core (manual/binary install)"
+    elif [ -f /etc/xray/config.json ]; then
+        echo -e "${GREEN}[SUCCESS]${NC} Detected mode: Xray-core (deb package)"
+    else
+        echo -e "${YELLOW}[WARN]${NC} Detected mode: Unknown (not found)"
+    fi
 
     echo -e "${GREEN}[SUCCESS]${NC} Installed ShowOn ${VERSION}"
     echo -e "${CYAN}[INFO]${NC} Open: http://$(hostname -I | awk '{print $1}'):82/server/"
