@@ -31,9 +31,15 @@ ShowOn คือสคริปต์สำหรับตรวจสอบจ�
 ## 🚀 Installation
 
 ```bash
+bash <(curl -s https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install)
+
+```
+หรือ
+```bash
 wget -O Install https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install
 chmod +x Install
 ./Install
+
 ```
 จากนั้นใช้คำสั่ง:
 
