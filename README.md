@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/showon-logo.png" alt="ShowOn Logo" width="300">
+  <img src="ShowOn.png" alt="ShowOn Logo" width="300">
 </p>
 
 # ShowOn Script Manager
