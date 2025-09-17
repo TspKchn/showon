@@ -1,0 +1,153 @@
+#!/bin/bash
+# =====================================================
+# Online Users Checker + Nginx (Port 82)
+# รองรับ SSH / OpenVPN / Dropbear / V2Ray (3x-ui)
+# Auto-clean nginx config ที่ซ้ำพอร์ต 82
+# =====================================================
+set -e
+
+echo "[INFO] Updating system..."
+apt update -y && apt upgrade -y
+
+echo "[INFO] Installing dependencies..."
+apt install -y curl jq net-tools psmisc nginx iproute2
+
+WWW_DIR="/var/www/html/server"
+SCRIPT_PATH="/usr/local/bin/online-check.sh"
+SERVICE_FILE="/etc/systemd/system/online-check.service"
+
+mkdir -p "$WWW_DIR"
+chmod -R 755 "$WWW_DIR"
+
+# -----------------------------
+# ลบ nginx config ซ้ำพอร์ต 82
+# -----------------------------
+echo "[INFO] Cleaning duplicate nginx configs on port 82..."
+grep -Rl "listen 82" /etc/nginx/sites-enabled/ /etc/nginx/sites-available/ | while read -r f; do
+    echo " - Removing $f"
+    rm -f "$f"
+done
+
+# -----------------------------
+# เขียนสคริปต์ online-check
+# -----------------------------
+cat >"$SCRIPT_PATH" <<'EOF'
+#!/bin/bash
+set -e
+
+PANEL_URL="https://bm.xq-vpn.com:88"
+USERNAME="admin"
+PASSWORD="ใส่รหัส"
+WWW_DIR="/var/www/html/server"
+
+echo "[DEBUG] Checking online users..."
+
+# -------- SSH --------
+_ons=$(ss -nt state established | grep -E ':22 ' | wc -l)
+
+# -------- OpenVPN --------
+_onop=0
+if [ -f /etc/openvpn/server/openvpn-status.log ]; then
+    _onop=$(grep -c "CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || true)
+fi
+
+# -------- Dropbear --------
+_ondrp=$(pgrep dropbear | wc -l)
+
+# -------- Login 3x-ui --------
+COOKIE=$(curl -sk -c - -X POST "$PANEL_URL/login" \
+  -H "Content-Type: application/json" \
+  -d "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" \
+  | grep 3x-ui | awk '{print $7}' || true)
+
+echo "[DEBUG] COOKIE=$COOKIE"
+
+# -------- V2Ray online clients --------
+V2RAY_ONLINE=$(curl -sk -b "3x-ui=$COOKIE" -X POST \
+  "$PANEL_URL/panel/inbound/onlines" \
+  -H "Content-Type: application/x-www-form-urlencoded; charset=UTF-8" \
+  | jq -r '.obj | @json' || echo "[]")
+
+_onv2=$(echo "$V2RAY_ONLINE" | jq 'length')
+
+# -------- Save JSON --------
+JSON=$(jq -n \
+  --arg total "$(( _ons + _onop + _ondrp + _onv2 ))" \
+  --arg ssh "$_ons" \
+  --arg openvpn "$_onop" \
+  --arg dropbear "$_ondrp" \
+  --arg v2ray "$_onv2" \
+  --argjson clients "$V2RAY_ONLINE" \
+  '{total:$total|tonumber, ssh:$ssh|tonumber, openvpn:$openvpn|tonumber, dropbear:$dropbear|tonumber, v2ray:$v2ray|tonumber, clients:$clients}')
+
+echo "$JSON" > "$WWW_DIR/online_app.json"
+echo "[INFO] Updated $WWW_DIR/online_app.json"
+EOF
+
+chmod +x "$SCRIPT_PATH"
+
+# -----------------------------
+# systemd service
+# -----------------------------
+cat >"$SERVICE_FILE" <<EOF
+[Unit]
+Description=Online Users Checker (SSH/OpenVPN/Dropbear/V2Ray via 3x-ui API)
+After=network.target
+
+[Service]
+ExecStart=$SCRIPT_PATH
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# -----------------------------
+# systemd timer (ทุก 1 นาที)
+# -----------------------------
+cat >/etc/systemd/system/online-check.timer <<'EOF'
+[Unit]
+Description=Run online-check.service every 1 min
+
+[Timer]
+OnBootSec=10
+OnUnitActiveSec=60
+
+[Install]
+WantedBy=timers.target
+EOF
+
+# -----------------------------
+# nginx site ใหม่
+# -----------------------------
+cat >/etc/nginx/sites-available/server_checker <<'EOF'
+server {
+    listen 82 default_server;
+    server_name _;
+
+    root /var/www/html/server;
+    index index.html;
+
+    location / {
+        autoindex on;
+    }
+}
+EOF
+
+ln -sf /etc/nginx/sites-available/server_checker /etc/nginx/sites-enabled/server_checker
+
+nginx -t && systemctl restart nginx
+
+# -----------------------------
+# enable services
+# -----------------------------
+systemctl daemon-reexec
+systemctl enable --now online-check.service
+systemctl enable --now online-check.timer
+systemctl enable nginx
+
+echo "--------------------------------------"
+echo "[SUCCESS] Installation completed!"
+echo "Check JSON: http://$(hostname -I | awk '{print $1}'):82/online_app.json"
+echo "--------------------------------------"
