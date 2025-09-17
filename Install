@@ -49,7 +49,7 @@ get_github_info() {
 install_script() {
     echo "[INFO] Updating system..."
     apt update -y && apt upgrade -y
-    apt install -y iproute2 curl jq net-tools nginx sqlite3
+    apt install -y iproute2 curl jq net-tools nginx sqlite3 bc
 
     echo "[INFO] Setting up Nginx..."
     mkdir -p /var/www/html/server
@@ -69,80 +69,139 @@ EOF
     rm -f /etc/nginx/sites-enabled/default
     nginx -t && systemctl restart nginx
 
-    # ขอ username + password
     read -p "Enter X-UI Panel Username: " USERNAME
     read -p "Enter X-UI Panel Password: " PASSWORD
 
-    # สคริปต์ตรวจออนไลน์
+    # -------------------------------
+    # online-check.sh
+    # -------------------------------
     cat > $INSTALL_PATH <<EOF
 #!/bin/bash
-# Online check script
-# Last Update: $(date '+%Y-%m-%d %H:%M:%S')
-
 PANEL_URL="$PANEL_URL"
 USERNAME="$USERNAME"
 PASSWORD="$PASSWORD"
 OUTPUT="/var/www/html/server/online_app.json"
 
-COOKIE=\$(curl -sk -c - -X POST "\$PANEL_URL/login" \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"\$USERNAME\",\"password\":\"\$PASSWORD\"}" | grep 3x-ui | awk '{print \$7}')
+while true; do
+    COOKIE=\$(curl -sk -c - -X POST "\$PANEL_URL/login" \
+        -H "Content-Type: application/json" \
+        -d "{\"username\":\"\$USERNAME\",\"password\":\"\$PASSWORD\"}" | grep 3x-ui | awk '{print \$7}')
 
-ONLINE=\$(curl -sk -b "3x-ui=\$COOKIE" -X POST "\$PANEL_URL/panel/inbound/onlines")
+    ONLINE=\$(curl -sk -b "3x-ui=\$COOKIE" -X POST "\$PANEL_URL/panel/inbound/onlines")
 
-echo "{\\"v2ray\\":\$(echo \$ONLINE | jq '.obj | length'),\\"clients\\":\$ONLINE}" > \$OUTPUT
+    # System Info
+    CPU=\$(top -bn1 | grep "Cpu(s)" | awk '{print 100-\$8}')
+    RAM=\$(free -m | awk '/Mem:/ {printf "%.2f", \$3/\$2*100}')
+    DISK=\$(df -h / | awk 'NR==2 {print \$5}')
+    UPTIME=\$(uptime -p)
+
+    echo "{\\"total\\":\$(echo \$ONLINE | jq '.obj | length'), \\
+            \\"clients\\":\$ONLINE, \\
+            \\"cpu\\":\$CPU, \\"ram\\":\$RAM, \\"disk\\":\\"$DISK\\", \\"uptime\\":\\"$UPTIME\\"}" > \$OUTPUT
+    sleep 5
+done
 EOF
 
     chmod +x $INSTALL_PATH
     save_last_update
+
+    # -------------------------------
+    # index.html
+    # -------------------------------
+    cat > /var/www/html/server/index.html <<'EOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Show Online Users</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  body { font-family: Arial, sans-serif; background: #f5f5f5; color: #333; margin:20px;}
+  h1 { text-align:center; }
+  .info { margin:20px auto; width:80%; }
+  table { width:100%; border-collapse: collapse; margin-bottom:20px;}
+  th, td { border:1px solid #ccc; padding:10px; text-align:center; }
+  canvas { max-width:800px; margin:20px auto; display:block; }
+</style>
+</head>
+<body>
+<h1>Online Users Dashboard</h1>
+<div class="info">
+  <table>
+    <tr><th>Total Online</th><th>CPU %</th><th>RAM %</th><th>Disk</th><th>Uptime</th></tr>
+    <tr><td id="total">0</td><td id="cpu">0</td><td id="ram">0</td><td id="disk">0</td><td id="uptime">-</td></tr>
+  </table>
+</div>
+<canvas id="onlineChart"></canvas>
+<script>
+let ctx = document.getElementById('onlineChart').getContext('2d');
+let chart = new Chart(ctx, {
+  type: 'bar',
+  data: { labels: [], datasets: [{label:'Clients Online', data:[], backgroundColor:'blue'}]},
+  options: {responsive:true, scales:{y:{beginAtZero:true}}}
+});
+async function fetchData(){
+  try{
+    let res = await fetch('online_app.json?_='+Date.now());
+    let data = await res.json();
+    document.getElementById('total').innerText = data.total;
+    document.getElementById('cpu').innerText = data.cpu;
+    document.getElementById('ram').innerText = data.ram;
+    document.getElementById('disk').innerText = data.disk;
+    document.getElementById('uptime').innerText = data.uptime;
+    chart.data.labels = data.clients;
+    chart.data.datasets[0].data = Array(data.clients.length).fill(1);
+    chart.update();
+  }catch(e){console.error(e);}
+}
+setInterval(fetchData,5000);
+fetchData();
+</script>
+</body>
+</html>
+EOF
+
     echo "[INFO] Install completed!"
 }
 
 # -------------------------------
 # Restart Services
 # -------------------------------
-restart_all() {
-    systemctl restart nginx
-    echo "[INFO] All services restarted!"
-}
+restart_all(){ systemctl restart nginx; echo "[INFO] Restarted nginx!"; }
 
 # -------------------------------
-# Uninstall Script
+# Uninstall
 # -------------------------------
-uninstall_script() {
+uninstall_script(){
     rm -f $INSTALL_PATH $VERSION_FILE $MENU_PATH
-    rm -f /etc/nginx/sites-available/server_checker
-    rm -f /etc/nginx/sites-enabled/server_checker
+    rm -f /etc/nginx/sites-available/server_checker /etc/nginx/sites-enabled/server_checker
     systemctl restart nginx
-    echo "[INFO] Uninstalled successfully!"
+    echo "[INFO] Uninstalled!"
 }
 
 # -------------------------------
-# Update Script
+# Update
 # -------------------------------
-update_script() {
+update_script(){
     curl -fsSL "$GITHUB_RAW" -o $MENU_PATH
     chmod +x $MENU_PATH
     save_last_update
-    echo "[INFO] Script updated!"
+    echo "[INFO] Updated!"
 }
 
 # -------------------------------
-# View Logs
+# Logs
 # -------------------------------
-view_logs() {
-    journalctl -u nginx --no-pager -n 20
-}
+view_logs(){ journalctl -u nginx --no-pager -n 20; }
 
 # -------------------------------
 # Fix Nginx
 # -------------------------------
-fix_nginx() {
-    echo "[INFO] Fixing Nginx duplicate config..."
+fix_nginx(){
     rm -f /etc/nginx/sites-enabled/server_checker.bak*
     rm -f /etc/nginx/sites-available/server_checker.bak*
     nginx -t && systemctl restart nginx
-    echo "[INFO] Nginx fixed!"
+    echo "[INFO] Fixed Nginx!"
 }
 
 # -------------------------------
@@ -174,7 +233,6 @@ while true; do
     echo "0). Exit"
     echo "------------------------------------"
     read -p "Select option: " opt
-
     case $opt in
         1) install_script ;;
         2) restart_all ;;
@@ -183,7 +241,6 @@ while true; do
         5) view_logs ;;
         6) fix_nginx ;;
         0) exit 0 ;;
-        *) echo "Invalid option!";;
     esac
     read -p "Press enter to continue..."
 done
