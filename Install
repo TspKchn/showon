@@ -1,10 +1,10 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.2 (Stable, Prompt Fixed, EOF Fixed)
+# ShowOn Script Manager V.1.0.2 (Fixed numeric/jq bug)
 # รองรับ SSH / OpenVPN / Dropbear / V2Ray (3x-ui / Xray-core)
 # =====================================================
 
-set -eo pipefail   # ป้องกัน error แต่ไม่เจ๊งถ้า input ว่าง
+set -eo pipefail
 
 VERSION="V.1.0.2"
 
@@ -26,10 +26,7 @@ SYSINFO_TMR="/etc/systemd/system/sysinfo.timer"
 NGINX_SITE="/etc/nginx/sites-available/server_checker"
 NGINX_LINK="/etc/nginx/sites-enabled/server_checker"
 
-# =====================================================
-# Helpers
-# =====================================================
-
+# ---------- Helpers ----------
 say_ok(){   echo -e "${GREEN}[SUCCESS]${NC} $*"; }
 say_info(){ echo -e "${CYAN}[INFO]${NC} $*"; }
 say_warn(){ echo -e "${YELLOW}[WARN]${NC} $*"; }
@@ -45,7 +42,7 @@ ensure_pkg(){
 
 clean_nginx_82_dups(){
   say_info "Cleaning duplicate nginx configs on port 82 (if any)..."
-  grep -Rsl -e "listen 82" /etc/nginx/sites-available/ /etc/nginx/sites-enabled/ 2>/dev/null || true \
+  grep -Rsl -e "listen 82" /etc/nginx/sites-available/ /etc/nginx/sites-enabled/ 2>/dev/null \
     | grep -v "server_checker" || true \
     | xargs -r rm -f || true
 }
@@ -53,7 +50,6 @@ clean_nginx_82_dups(){
 write_nginx_config(){
   say_info "Writing nginx site for /server/ ..."
   rm -f "$NGINX_SITE" "$NGINX_LINK" 2>/dev/null || true
-
   cat >"$NGINX_SITE" <<'EOF'
 server {
     listen 82 default_server;
@@ -69,7 +65,6 @@ server {
     }
 }
 EOF
-
   ln -sf "$NGINX_SITE" "$NGINX_LINK"
   nginx -t || true
   systemctl restart nginx || true
@@ -83,10 +78,7 @@ prime_www(){
   [ -f "$WWW_DIR/sysinfo.json" ]   || echo '{"uptime":"-", "cpu_usage":"0", "ram_used":"0", "ram_total":"0", "disk_used":"0", "disk_total":"0"}' > "$WWW_DIR/sysinfo.json"
 }
 
-# =====================================================
-# Scripts
-# =====================================================
-
+# ---------- Scripts ----------
 write_online_script(){
   cat >"$ONLINE_SH" <<'EOF'
 #!/bin/bash
@@ -115,15 +107,21 @@ else
   v2_on=$(ss -ntp 2>/dev/null | grep -c xray || echo 0)
 fi
 
+# ensure numeric
+ssh_on=${ssh_on:-0}
+ovpn_on=${ovpn_on:-0}
+drop_on=${drop_on:-0}
+v2_on=${v2_on:-0}
+
 onlines=$(( ssh_on + ovpn_on + drop_on + v2_on ))
 
 jq -n \
-  --argjson onlines "$onlines" \
+  --argjson onlines "${onlines:-0}" \
   --argjson limite "${LIMITE:-2000}" \
-  --argjson ssh "$ssh_on" \
-  --argjson openvpn "$ovpn_on" \
-  --argjson dropbear "$drop_on" \
-  --argjson v2ray "$v2_on" \
+  --argjson ssh "${ssh_on:-0}" \
+  --argjson openvpn "${ovpn_on:-0}" \
+  --argjson dropbear "${drop_on:-0}" \
+  --argjson v2ray "${v2_on:-0}" \
   '{onlines:$onlines, limite:$limite, ssh:$ssh, openvpn:$openvpn, dropbear:$dropbear, v2ray:$v2ray}' \
   > "$WWW_DIR/online_app.json"
 EOF
@@ -157,10 +155,7 @@ EOF
   chmod +x "$SYSINFO_SH"
 }
 
-# =====================================================
-# Services
-# =====================================================
-
+# ---------- Services ----------
 write_services_and_timers(){
   cat >"$ONLINE_SVC" <<EOF
 [Unit]
@@ -223,10 +218,7 @@ first_run_generators(){
   bash "$SYSINFO_SH" || true
 }
 
-# =====================================================
-# Install / Uninstall
-# =====================================================
-
+# ---------- Install / Uninstall ----------
 install_script(){
   say_info "Installing ShowOn ($VERSION)..."
   ensure_pkg
@@ -292,10 +284,7 @@ uninstall_script(){
   read -rp "Press Enter to return to menu..." _
 }
 
-# =====================================================
-# Menu
-# =====================================================
-
+# ---------- Menu ----------
 show_menu(){
   clear
   echo -e "==============================="
