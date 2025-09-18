@@ -1,11 +1,10 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.2 (Fixed numeric/jq bug)
+# ShowOn Script Manager V.1.0.2 (Fixed Numeric Cast)
 # รองรับ SSH / OpenVPN / Dropbear / V2Ray (3x-ui / Xray-core)
 # =====================================================
 
 set -eo pipefail
-
 VERSION="V.1.0.2"
 
 # ---------- Colors ----------
@@ -107,21 +106,21 @@ else
   v2_on=$(ss -ntp 2>/dev/null | grep -c xray || echo 0)
 fi
 
-# ensure numeric
-ssh_on=${ssh_on:-0}
-ovpn_on=${ovpn_on:-0}
-drop_on=${drop_on:-0}
-v2_on=${v2_on:-0}
+# sanitize numeric
+ssh_on=$(echo "${ssh_on:-0}" | grep -Eo '^[0-9]+$' || echo 0)
+ovpn_on=$(echo "${ovpn_on:-0}" | grep -Eo '^[0-9]+$' || echo 0)
+drop_on=$(echo "${drop_on:-0}" | grep -Eo '^[0-9]+$' || echo 0)
+v2_on=$(echo "${v2_on:-0}" | grep -Eo '^[0-9]+$' || echo 0)
 
 onlines=$(( ssh_on + ovpn_on + drop_on + v2_on ))
 
 jq -n \
-  --argjson onlines "${onlines:-0}" \
+  --argjson onlines "$onlines" \
   --argjson limite "${LIMITE:-2000}" \
-  --argjson ssh "${ssh_on:-0}" \
-  --argjson openvpn "${ovpn_on:-0}" \
-  --argjson dropbear "${drop_on:-0}" \
-  --argjson v2ray "${v2_on:-0}" \
+  --argjson ssh "$ssh_on" \
+  --argjson openvpn "$ovpn_on" \
+  --argjson dropbear "$drop_on" \
+  --argjson v2ray "$v2_on" \
   '{onlines:$onlines, limite:$limite, ssh:$ssh, openvpn:$openvpn, dropbear:$dropbear, v2ray:$v2ray}' \
   > "$WWW_DIR/online_app.json"
 EOF
