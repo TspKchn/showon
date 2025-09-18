@@ -2,11 +2,9 @@
 # =====================================================
 # ShowOn Script Manager V.1.0.2 (Stable, Prompt Fixed)
 # รองรับ SSH / OpenVPN / Dropbear / V2Ray (3x-ui / Xray-core)
-# แก้ nginx /server/ เสถียร + Prompt Input ครบ
-# เมนู: 1) Install  2) Uninstall  0) Exit
 # =====================================================
 
-set -euo pipefail
+set -eo pipefail   # << แก้แล้ว: เอา -u ออก
 
 VERSION="V.1.0.2"
 
@@ -92,7 +90,7 @@ prime_www(){
 write_online_script(){
   cat >"$ONLINE_SH" <<'EOF'
 #!/bin/bash
-set -euo pipefail
+set -eo pipefail
 
 WWW_DIR="/var/www/html/server"
 [ -f /etc/showon.conf ] && source /etc/showon.conf || true
@@ -142,7 +140,7 @@ EOF
 write_sysinfo_script(){
   cat >"$SYSINFO_SH" <<'EOF'
 #!/bin/bash
-set -euo pipefail
+set -eo pipefail
 
 WWW_DIR="/var/www/html/server"
 
