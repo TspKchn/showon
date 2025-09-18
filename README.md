@@ -2,7 +2,7 @@
   <img src="ShowOn.png" alt="ShowOn Logo" width="300">
 </p>
 
-# ShowOn Script Manager
+# Script Manager
 
 ![Ubuntu Supported](https://img.shields.io/badge/Ubuntu-20.04%20%7C%2022.04-orange?logo=ubuntu)
 ![Version](https://img.shields.io/badge/version-V.1.0.0-blue)
