@@ -1,10 +1,10 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.2 (Stable, Prompt Fixed)
+# ShowOn Script Manager V.1.0.2 (Stable, Prompt Fixed, EOF Fixed)
 # รองรับ SSH / OpenVPN / Dropbear / V2Ray (3x-ui / Xray-core)
 # =====================================================
 
-set -eo pipefail   # ตัด -u ออกแล้ว กัน input ว่างเจ๊ง
+set -eo pipefail   # ป้องกัน error แต่ไม่เจ๊งถ้า input ว่าง
 
 VERSION="V.1.0.2"
 
