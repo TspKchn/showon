@@ -1,10 +1,10 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Installer V.1.0.2 (Fixed Clean Uninstall)
+# ShowOn Script Installer V.1.0.3 (Full, Fixed)
 # Author: TspKchn
 # =====================================================
 
-VERSION="V.1.0.2"
+VERSION="V.1.0.3"
 REPO_URL="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install"
 
 # ==========================
@@ -78,14 +78,17 @@ install_script() {
     # Detect Mode + Ask Config
     # -----------------------------
     if [ -f /etc/x-ui/x-ui.db ]; then
-        echo -e "${CYAN}[INFO]${NC} ตั้งค่า 3x-ui (ถ้าไม่มีให้กด Enter ข้ามได้)"
-        read -p "3X-UI Panel URL : " PANEL_IP
+        # Mode 1: 3x-ui
+        read -p "3X-UI Panel URL (http/https): " PANEL_PROTO
+        PANEL_PROTO=${PANEL_PROTO:-http}
+
+        read -p "3X-UI Panel IP : " PANEL_IP
         PANEL_IP=${PANEL_IP:-127.0.0.1}
 
         read -p "3X-UI Panel Port : " PANEL_PORT
         PANEL_PORT=${PANEL_PORT:-88}
 
-        PANEL_URL="https://${PANEL_IP}:${PANEL_PORT}"
+        PANEL_URL="${PANEL_PROTO}://${PANEL_IP}:${PANEL_PORT}"
         echo -e "${CYAN}[INFO]${NC} Using PANEL_URL = $PANEL_URL"
 
         read -p "3X-UI Username : " USERNAME
@@ -100,7 +103,7 @@ EOF
         chmod 600 "$CONF_FILE"
 
     elif [ -f /usr/local/etc/xray/config.json ] || [ -f /etc/xray/config.json ]; then
-        # Mode 2/3: Xray-core → ไม่ต้องถาม
+        # Mode 2/3: Xray-core → ไม่ต้องถามอะไร
         cat >"$CONF_FILE" <<EOF
 WWW_DIR="$WWW_DIR"
 EOF
@@ -142,6 +145,7 @@ _ondrp=$(pgrep dropbear | wc -l)
 _onv2=0
 
 if [ -f /etc/x-ui/x-ui.db ]; then
+    # ----- Mode: 3x-ui -----
     COOKIE=$(curl -sk -c - -X POST "$PANEL_URL/login" \
       -H "Content-Type: application/json" \
       -d "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" \
@@ -155,6 +159,7 @@ if [ -f /etc/x-ui/x-ui.db ]; then
     fi
 
 elif [ -f /usr/local/etc/xray/config.json ]; then
+    # ----- Mode: Xray-core (manual/binary) -----
     LOG_DIR="/var/log/xray"
     if [ -d "$LOG_DIR" ]; then
         _onv2=$(grep "accepted" "$LOG_DIR"/*.log 2>/dev/null | \
@@ -162,6 +167,7 @@ elif [ -f /usr/local/etc/xray/config.json ]; then
     fi
 
 elif [ -f /etc/xray/config.json ]; then
+    # ----- Mode: Xray-core (deb package) -----
     LOG_FILE="/var/log/xray/access.log"
     if [ -f "$LOG_FILE" ]; then
         _onv2=$(grep "accepted" "$LOG_FILE" 2>/dev/null | \
@@ -367,7 +373,7 @@ uninstall_script() {
     systemctl daemon-reload
     systemctl restart nginx
 
-    echo -e "${GREEN}[SUCCESS]${NC} Uninstalled completely (no reboot needed)."
+    echo -e "${GREEN}[SUCCESS]${NC} Uninstalled completely."
     read -p "Press Enter to return to menu..." _
     show_menu
 }
