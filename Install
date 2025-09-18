@@ -1,9 +1,9 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.2 (Stable, Full)
+# ShowOn Script Manager V.1.0.2 (Stable, Prompt Fixed)
 # รองรับ SSH / OpenVPN / Dropbear / V2Ray (3x-ui / Xray-core)
-# แก้บั๊ก nginx หลัง Reinstall: /server/ ทำงานเสถียร
-# เมนู: 1) Install  2) Uninstall (พร้อม reboot)  0) Exit
+# แก้ nginx /server/ เสถียร + Prompt Input ครบ
+# เมนู: 1) Install  2) Uninstall  0) Exit
 # =====================================================
 
 set -euo pipefail
@@ -291,8 +291,8 @@ uninstall_script(){
   systemctl restart nginx || true
 
   say_ok "Uninstall completed."
-  read -rp "Press Enter to reboot..." _
-  reboot
+  echo "(ถ้า Install ใหม่มีปัญหา แนะนำให้ reboot เครื่องก่อน)"
+  read -rp "Press Enter to return to menu..." _
 }
 
 # =====================================================
