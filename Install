@@ -1,9 +1,8 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.2 (Fixed Numeric Cast)
+# ShowOn Script Manager V.1.0.2 (Stable Full)
 # รองรับ SSH / OpenVPN / Dropbear / V2Ray (3x-ui / Xray-core)
 # =====================================================
-
 set -eo pipefail
 VERSION="V.1.0.2"
 
@@ -25,7 +24,9 @@ SYSINFO_TMR="/etc/systemd/system/sysinfo.timer"
 NGINX_SITE="/etc/nginx/sites-available/server_checker"
 NGINX_LINK="/etc/nginx/sites-enabled/server_checker"
 
-# ---------- Helpers ----------
+# =====================================================
+# Helpers
+# =====================================================
 say_ok(){   echo -e "${GREEN}[SUCCESS]${NC} $*"; }
 say_info(){ echo -e "${CYAN}[INFO]${NC} $*"; }
 say_warn(){ echo -e "${YELLOW}[WARN]${NC} $*"; }
@@ -35,13 +36,14 @@ ip_addr(){ hostname -I | awk '{print $1}' | sed -e 's/[[:space:]]//g'; }
 
 ensure_pkg(){
   say_info "Installing dependencies..."
+  export DEBIAN_FRONTEND=noninteractive
   apt update -y >/dev/null 2>&1 || true
   apt install -y curl jq net-tools psmisc nginx iproute2 >/dev/null 2>&1 || true
 }
 
 clean_nginx_82_dups(){
   say_info "Cleaning duplicate nginx configs on port 82 (if any)..."
-  grep -Rsl -e "listen 82" /etc/nginx/sites-available/ /etc/nginx/sites-enabled/ 2>/dev/null \
+  grep -Rsl -e "listen 82" /etc/nginx/sites-available/ /etc/nginx/sites-enabled/ 2>/dev/null || true \
     | grep -v "server_checker" || true \
     | xargs -r rm -f || true
 }
@@ -61,6 +63,8 @@ server {
         alias /var/www/html/server/;
         index index.html;
         autoindex on;
+        add_header Access-Control-Allow-Origin *;
+        add_header Cache-Control "no-store";
     }
 }
 EOF
@@ -70,22 +74,113 @@ EOF
   systemctl enable nginx >/dev/null 2>&1 || true
 }
 
+write_index_html(){
+  cat >"$WWW_DIR/index.html" <<'EOF'
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>ShowOn Status</title>
+<style>
+  :root{color-scheme:dark light;}
+  body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#0b1220;color:#e8eef8}
+  .wrap{max-width:980px;margin:36px auto;padding:0 16px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+  .card{background:#101a2d;border:1px solid #1a2b4a;border-radius:14px;padding:16px}
+  h1{margin:0 0 18px 0;font-size:22px}
+  .kpi{font-size:36px;font-weight:700;margin:6px 0}
+  .label{opacity:.7}
+  .err{color:#ff6b6b}
+  .ok{color:#66d9a3}
+  small{opacity:.6}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>ShowOn — Online / System Status</h1>
+
+  <div class="grid">
+    <div class="card">
+      <div class="label">Total Online</div>
+      <div id="kpi-total" class="kpi">0</div>
+      <small>Limit: <span id="kpi-limit">0</span></small>
+    </div>
+
+    <div class="card"><div class="label">SSH</div><div id="kpi-ssh" class="kpi">0</div></div>
+    <div class="card"><div class="label">OpenVPN</div><div id="kpi-ovpn" class="kpi">0</div></div>
+    <div class="card"><div class="label">Dropbear</div><div id="kpi-drop" class="kpi">0</div></div>
+    <div class="card"><div class="label">V2Ray</div><div id="kpi-v2" class="kpi">0</div></div>
+  </div>
+
+  <div class="grid" style="margin-top:14px">
+    <div class="card">
+      <div class="label">Uptime</div>
+      <div id="uptime" class="kpi">-</div>
+      <small>CPU: <span id="cpu">0</span>% · RAM: <span id="ram">0/0</span> MB · Disk: <span id="disk">0/0</span></small>
+    </div>
+  </div>
+
+  <p id="msg" class="err"></p>
+</div>
+
+<script>
+async function pull(){
+  try{
+    const [a,b] = await Promise.all([
+      fetch('./online_app.json',{cache:'no-store'}),
+      fetch('./sysinfo.json',{cache:'no-store'})
+    ]);
+    if(!a.ok || !b.ok) throw new Error('Load JSON failed');
+
+    const online = await a.json();
+    const sys = await b.json();
+
+    document.getElementById('kpi-total').textContent = online.onlines ?? 0;
+    document.getElementById('kpi-limit').textContent = online.limite ?? 0;
+    document.getElementById('kpi-ssh').textContent = online.ssh ?? 0;
+    document.getElementById('kpi-ovpn').textContent = online.openvpn ?? 0;
+    document.getElementById('kpi-drop').textContent = online.dropbear ?? 0;
+    document.getElementById('kpi-v2').textContent  = online.v2ray ?? 0;
+
+    document.getElementById('uptime').textContent = sys.uptime ?? '-';
+    document.getElementById('cpu').textContent = sys.cpu_usage ?? '0';
+    document.getElementById('ram').textContent = `${sys.ram_used ?? 0}/${sys.ram_total ?? 0}`;
+    document.getElementById('disk').textContent = `${sys.disk_used ?? 0}/${sys.disk_total ?? 0}`;
+
+    document.getElementById('msg').textContent = '';
+  }catch(e){
+    document.getElementById('msg').textContent = 'Error loading JSON';
+  }
+}
+pull(); setInterval(pull, 5000);
+</script>
+</body>
+</html>
+EOF
+  chmod 644 "$WWW_DIR/index.html" || true
+}
+
 prime_www(){
   mkdir -p "$WWW_DIR"
   chmod -R 755 "$WWW_DIR"
   [ -f "$WWW_DIR/online_app.json" ] || echo '{"onlines":0,"limite":2000,"ssh":0,"openvpn":0,"dropbear":0,"v2ray":0}' > "$WWW_DIR/online_app.json"
   [ -f "$WWW_DIR/sysinfo.json" ]   || echo '{"uptime":"-", "cpu_usage":"0", "ram_used":"0", "ram_total":"0", "disk_used":"0", "disk_total":"0"}' > "$WWW_DIR/sysinfo.json"
+  write_index_html
 }
 
-# ---------- Scripts ----------
+# =====================================================
+# Scripts (online-check / sysinfo)
+# =====================================================
 write_online_script(){
   cat >"$ONLINE_SH" <<'EOF'
 #!/bin/bash
 set -eo pipefail
-
 WWW_DIR="/var/www/html/server"
 [ -f /etc/showon.conf ] && source /etc/showon.conf || true
 : "${LIMITE:=2000}"
+
+num_or_zero(){ printf "%d" "${1:-0}" 2>/dev/null || echo 0; }
 
 ssh_on=$(ss -nt state established 2>/dev/null | grep -E ':22 ' | wc -l || echo 0)
 ovpn_on=0
@@ -98,19 +193,20 @@ if [ -n "${PANEL_URL:-}" ]; then
     -H "Content-Type: application/json" \
     -d "{\"username\":\"${USERNAME:-}\",\"password\":\"${PASSWORD:-}\"}" \
     | grep 3x-ui | awk '{print $7}' || true)
-  [ -n "$COOKIE" ] && v2_on=$(curl -sk -b "3x-ui=$COOKIE" -X POST \
+  if [ -n "$COOKIE" ]; then
+    v2_on=$(curl -sk -b "3x-ui=$COOKIE" -X POST \
       "$PANEL_URL/panel/inbound/onlines" \
       -H "Content-Type: application/x-www-form-urlencoded; charset=UTF-8" \
       | jq '.obj | length' 2>/dev/null || echo 0)
+  fi
 else
   v2_on=$(ss -ntp 2>/dev/null | grep -c xray || echo 0)
 fi
 
-# sanitize numeric
-ssh_on=$(echo "${ssh_on:-0}" | grep -Eo '^[0-9]+$' || echo 0)
-ovpn_on=$(echo "${ovpn_on:-0}" | grep -Eo '^[0-9]+$' || echo 0)
-drop_on=$(echo "${drop_on:-0}" | grep -Eo '^[0-9]+$' || echo 0)
-v2_on=$(echo "${v2_on:-0}" | grep -Eo '^[0-9]+$' || echo 0)
+ssh_on=$(num_or_zero "$ssh_on")
+ovpn_on=$(num_or_zero "$ovpn_on")
+drop_on=$(num_or_zero "$drop_on")
+v2_on=$(num_or_zero "$v2_on")
 
 onlines=$(( ssh_on + ovpn_on + drop_on + v2_on ))
 
@@ -131,7 +227,6 @@ write_sysinfo_script(){
   cat >"$SYSINFO_SH" <<'EOF'
 #!/bin/bash
 set -eo pipefail
-
 WWW_DIR="/var/www/html/server"
 
 upt=$(uptime -p 2>/dev/null | sed 's/^up //;s/,//g' || echo "-")
@@ -154,7 +249,9 @@ EOF
   chmod +x "$SYSINFO_SH"
 }
 
-# ---------- Services ----------
+# =====================================================
+# Services / Timers
+# =====================================================
 write_services_and_timers(){
   cat >"$ONLINE_SVC" <<EOF
 [Unit]
@@ -217,7 +314,9 @@ first_run_generators(){
   bash "$SYSINFO_SH" || true
 }
 
-# ---------- Install / Uninstall ----------
+# =====================================================
+# Install / Uninstall
+# =====================================================
 install_script(){
   say_info "Installing ShowOn ($VERSION)..."
   ensure_pkg
@@ -225,10 +324,10 @@ install_script(){
 
   echo
   say_info "ตั้งค่า 3x-ui (ถ้าไม่มีให้กด Enter ข้ามได้)"
-  read -rp "3X-UI Panel IP : " PANEL_IP
+  read -rp "3X-UI Panel URL : " PANEL_IP
   read -rp "3X-UI Panel Port : " PANEL_PORT
-  read -rp "3X-UI Panel Username : " USERNAME
-  read -rp "3X-UI Panel Password : " PASSWORD
+  read -rp "3X-UI Username : " USERNAME
+  read -rp "3X-UI Password : " PASSWORD
   read -rp "Limit User Online : " LIMITE
 
   PANEL_IP="${PANEL_IP:-}"
@@ -238,7 +337,11 @@ install_script(){
   LIMITE="${LIMITE:-2000}"
 
   if [ -n "$PANEL_IP" ] && [ -n "$PANEL_PORT" ]; then
-    PANEL_URL="https://${PANEL_IP}:${PANEL_PORT}"
+    if [[ "$PANEL_IP" =~ ^https?:// ]]; then
+      PANEL_URL="${PANEL_IP%/}:${PANEL_PORT}"
+    else
+      PANEL_URL="https://${PANEL_IP}:${PANEL_PORT}"
+    fi
   else
     PANEL_URL=""
   fi
@@ -257,6 +360,9 @@ EOF
   write_services_and_timers
   write_nginx_config
   first_run_generators
+
+  cp -f "$0" /usr/local/bin/showon
+  chmod +x /usr/local/bin/showon
 
   say_ok "Installation completed."
   echo "Open: http://$(ip_addr):82/server/"
@@ -283,7 +389,9 @@ uninstall_script(){
   read -rp "Press Enter to return to menu..." _
 }
 
-# ---------- Menu ----------
+# =====================================================
+# Menu
+# =====================================================
 show_menu(){
   clear
   echo -e "==============================="
