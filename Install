@@ -1,10 +1,10 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Installer V.1.0.2 (Full)
+# ShowOn Script Installer V.1.0.3 (Full)
 # Author: TspKchn
 # =====================================================
 
-VERSION="V.1.0.2"
+VERSION="V.1.0.3"
 REPO_URL="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install"
 
 # ==========================
@@ -22,6 +22,7 @@ SCRIPT_ONLINE="/usr/local/bin/online-check.sh"
 SCRIPT_SYSINFO="/usr/local/bin/sysinfo.sh"
 SERVICE_ONLINE="/etc/systemd/system/online-check.service"
 SERVICE_SYSINFO="/etc/systemd/system/sysinfo.service"
+SERVICE_TRAFFIC="/etc/systemd/system/traffic.service"
 CONF_FILE="/etc/showon.conf"
 
 # ==========================
@@ -142,7 +143,6 @@ _ondrp=$(pgrep dropbear | wc -l)
 _onv2=0
 
 if [ -f /etc/x-ui/x-ui.db ]; then
-    # ----- Mode: 3x-ui -----
     COOKIE=$(curl -sk -c - -X POST "$PANEL_URL/login" \
       -H "Content-Type: application/json" \
       -d "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" \
@@ -156,7 +156,6 @@ if [ -f /etc/x-ui/x-ui.db ]; then
     fi
 
 elif [ -f /usr/local/etc/xray/config.json ]; then
-    # ----- Mode: Xray-core (manual/binary) -----
     LOG_DIR="/var/log/xray"
     if [ -d "$LOG_DIR" ]; then
         _onv2=$(grep "accepted" "$LOG_DIR"/*.log 2>/dev/null | \
@@ -164,7 +163,6 @@ elif [ -f /usr/local/etc/xray/config.json ]; then
     fi
 
 elif [ -f /etc/xray/config.json ]; then
-    # ----- Mode: Xray-core (deb package) -----
     LOG_FILE="/var/log/xray/access.log"
     if [ -f "$LOG_FILE" ]; then
         _onv2=$(grep "accepted" "$LOG_FILE" 2>/dev/null | \
@@ -172,7 +170,6 @@ elif [ -f /etc/xray/config.json ]; then
     fi
 fi
 
-# -------- Save JSON --------
 JSON=$(jq -n \
   --arg onlines "$(( _ons + _onop + _ondrp + _onv2 ))" \
   --arg ssh "$_ons" \
@@ -235,9 +232,77 @@ Restart=always
 RestartSec=5
 EOF
 
+    # -----------------------------
+    # Traffic Service
+    # -----------------------------
+    cat >"$SERVICE_TRAFFIC" <<'EOF'
+[Unit]
+Description=VPN Traffic JSON Generator
+After=network.target
+
+[Service]
+ExecStart=/bin/bash -c '
+while true; do
+  WWW_DIR="/var/www/html/server"
+
+  ssh_down=0; ssh_up=0
+  dropbear_down=0; dropbear_up=0
+  openvpn_down=0; openvpn_up=0
+  v2ray_down=0; v2ray_up=0
+
+  if [ -f /etc/openvpn/server/openvpn-status.log ]; then
+    openvpn_down=$(grep -a "CLIENT_LIST" /etc/openvpn/server/openvpn-status.log | awk -F, "{sum+=\$4} END {print sum+0}")
+    openvpn_up=$(grep -a "CLIENT_LIST" /etc/openvpn/server/openvpn-status.log | awk -F, "{sum+=\$5} END {print sum+0}")
+  fi
+
+  if [ -f /etc/x-ui/x-ui.db ]; then
+    source /etc/showon.conf
+    COOKIE=$(curl -sk -c - -X POST "$PANEL_URL/login" \
+      -H "Content-Type: application/json" \
+      -d "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" \
+      | grep 3x-ui | awk "{print \$7}")
+    if [ -n "$COOKIE" ]; then
+      STATS=$(curl -sk -b "3x-ui=$COOKIE" "$PANEL_URL/panel/inbound/list")
+      v2ray_down=$(echo "$STATS" | jq "[.obj[].down] | add")
+      v2ray_up=$(echo "$STATS" | jq "[.obj[].up] | add")
+    fi
+  elif [ -f /usr/local/etc/xray/config.json ]; then
+    LOG_DIR="/var/log/xray"
+    if ls $LOG_DIR/*log >/dev/null 2>&1; then
+      v2ray_down=$(grep -ha "" $LOG_DIR/*log | awk "{sum+=\$10} END {print sum+0}")
+      v2ray_up=$(grep -ha "" $LOG_DIR/*log | awk "{sum+=\$11} END {print sum+0}")
+    fi
+  elif [ -f /etc/xray/config.json ]; then
+    LOG_FILE="/var/log/xray/access.log"
+    if [ -f "$LOG_FILE" ]; then
+      v2ray_down=$(awk "{sum+=\$10} END {print sum+0}" "$LOG_FILE")
+      v2ray_up=$(awk "{sum+=\$11} END {print sum+0}" "$LOG_FILE")
+    fi
+  fi
+
+  JSON=$(jq -n \
+    --argjson ssh_down "$ssh_down" \
+    --argjson ssh_up "$ssh_up" \
+    --argjson openvpn_down "$openvpn_down" \
+    --argjson openvpn_up "$openvpn_up" \
+    --argjson dropbear_down "$dropbear_down" \
+    --argjson dropbear_up "$dropbear_up" \
+    --argjson v2ray_down "$v2ray_down" \
+    --argjson v2ray_up "$v2ray_up" \
+    "{ssh:{down:\$ssh_down,up:\$ssh_up}, openvpn:{down:\$openvpn_down,up:\$openvpn_up}, dropbear:{down:\$dropbear_down,up:\$dropbear_up}, v2ray:{down:\$v2ray_down,up:\$v2ray_up}}")
+
+  echo "$JSON" > "$WWW_DIR/traffic.json"
+  sleep 5
+done
+'
+Restart=always
+RestartSec=5
+EOF
+
     systemctl daemon-reexec
     systemctl enable --now online-check.service
     systemctl enable --now sysinfo.service
+    systemctl enable --now traffic.service
 
     # -----------------------------
     # Nginx config
@@ -273,6 +338,7 @@ EOF
 <head>
   <meta charset="UTF-8">
   <title>ShowOn Dashboard ${VERSION}</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     body { background:#111; color:#fff; font-family:Arial,sans-serif; padding:20px; }
     h1 { color:#0f0; }
@@ -305,6 +371,11 @@ EOF
     <div id="system"><div class="spinner"></div></div>
   </div>
 
+  <div class="card">
+    <h2>VPN Traffic</h2>
+    <canvas id="trafficChart"></canvas>
+  </div>
+
   <script>
     async function loadData() {
       try {
@@ -323,6 +394,35 @@ EOF
            <b>RAM:</b> \${s.ram_usage}<br>
            <b>Disk:</b> \${s.disk_usage}\`;
       } catch { document.getElementById("system").innerHTML = 'Error'; }
+
+      try {
+        const r3 = await fetch('./traffic.json?_='+Date.now());
+        const t = await r3.json();
+        const labels = ['SSH','OpenVPN','Dropbear','V2Ray'];
+        const downData = [t.ssh.down, t.openvpn.down, t.dropbear.down, t.v2ray.down];
+        const upData   = [t.ssh.up,   t.openvpn.up,   t.dropbear.up,   t.v2ray.up];
+        const ctx = document.getElementById('trafficChart').getContext('2d');
+        if (window.trafficChart) window.trafficChart.destroy();
+        window.trafficChart = new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels: labels,
+            datasets: [
+              { label: 'Download', data: downData, backgroundColor: 'rgba(0,123,255,0.7)' },
+              { label: 'Upload',   data: upData,   backgroundColor: 'rgba(40,167,69,0.7)' }
+            ]
+          },
+          options: {
+            indexAxis: 'y',
+            responsive: true,
+            scales: {
+              x: { beginAtZero: true, title: { display: true, text: 'Bytes' } }
+            }
+          }
+        });
+      } catch { 
+        document.getElementById("trafficChart").outerHTML = '<p>Error loading traffic</p>'; 
+      }
     }
     loadData(); setInterval(loadData,5000);
   </script>
@@ -350,23 +450,29 @@ EOF
     read -p "Press Enter to return to menu..." _
     show_menu
 }
-
-# ==========================
-# Uninstall Script
-# ==========================
 uninstall_script() {
     echo -e "${YELLOW}[INFO]${NC} Uninstalling ShowOn Script..."
 
-    systemctl stop online-check.service sysinfo.service 2>/dev/null
-    systemctl disable online-check.service sysinfo.service 2>/dev/null
+    # Stop & disable all services
+    systemctl stop online-check.service sysinfo.service traffic.service 2>/dev/null
+    systemctl disable online-check.service sysinfo.service traffic.service 2>/dev/null
 
-    rm -f "$SERVICE_ONLINE" "$SERVICE_SYSINFO"
-    rm -f "$SCRIPT_ONLINE" "$SCRIPT_SYSINFO"
-    rm -f "$CONF_FILE"
-    rm -rf "$WWW_DIR"
+    # Remove service files
+    rm -f /etc/systemd/system/online-check.service
+    rm -f /etc/systemd/system/sysinfo.service
+    rm -f /etc/systemd/system/traffic.service
+
+    # Remove scripts & conf
+    rm -f /usr/local/bin/online-check.sh
+    rm -f /usr/local/bin/sysinfo.sh
+    rm -f /etc/showon.conf
+
+    # Remove web files & nginx config
+    rm -rf /var/www/html/server
     rm -f /etc/nginx/sites-available/server_checker
     rm -f /etc/nginx/sites-enabled/server_checker
 
+    # Reload services
     systemctl daemon-reload
     systemctl restart nginx
 
@@ -375,16 +481,30 @@ uninstall_script() {
     reboot
 }
 
-# ==========================
-# Create showon command
-# ==========================
-cat >"$SHOWON_CMD" <<'EOF'
-#!/bin/bash
-bash /root/Install
-EOF
-chmod +x "$SHOWON_CMD"
+show_menu() {
+    clear
+    echo -e "==============================="
+    echo -e "   ShowOn Script Manager ${VERSION}"
+    echo -e "==============================="
+    echo "1) Install Script"
+    echo "2) Uninstall Script"
+    echo "0) Exit"
+    echo "==============================="
+    read -p "Choose an option [0,1,2]: " choice
+    case $choice in
+        1) install_script ;;
+        2) uninstall_script ;;
+        0) exit 0 ;;
+        *) echo -e "${RED}[ERROR]${NC} Invalid choice..."; sleep 2; show_menu ;;
+    esac
+}
 
-# ==========================
-# Start Menu
-# ==========================
+# Create showon command
+cat >/usr/local/bin/showon <<EOF
+#!/bin/bash
+bash "$(realpath "$0")"
+EOF
+chmod +x /usr/local/bin/showon
+
+# Run menu
 show_menu
