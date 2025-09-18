@@ -1,10 +1,10 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Installer V.1.0.1 (Full)
+# ShowOn Script Installer V.1.0.2 (Full)
 # Author: TspKchn
 # =====================================================
 
-VERSION="V.1.0.1"
+VERSION="V.1.0.2"
 REPO_URL="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install"
 
 # ==========================
@@ -112,12 +112,20 @@ EOF
     fi
 
     # -----------------------------
+    # Limit User Online
+    # -----------------------------
+    read -p "Limit User Online (default 2000): " LIMIT
+    LIMIT=${LIMIT:-2000}
+    echo "LIMIT=$LIMIT" >> "$CONF_FILE"
+
+    # -----------------------------
     # online-check.sh
     # -----------------------------
     cat >"$SCRIPT_ONLINE" <<'EOF'
 #!/bin/bash
 set -e
 source /etc/showon.conf
+LIMIT=${LIMIT:-2000}
 
 # -------- SSH --------
 _ons=$(ss -nt state established | grep -E ':22 ' | wc -l)
@@ -132,7 +140,6 @@ _ondrp=$(pgrep dropbear | wc -l)
 
 # -------- V2Ray/Xray --------
 _onv2=0
-V2RAY_ONLINE="[]"
 
 if [ -f /etc/x-ui/x-ui.db ]; then
     # ----- Mode: 3x-ui -----
@@ -142,11 +149,10 @@ if [ -f /etc/x-ui/x-ui.db ]; then
       | grep 3x-ui | awk '{print $7}' || true)
 
     if [ -n "$COOKIE" ]; then
-        V2RAY_ONLINE=$(curl -sk -b "3x-ui=$COOKIE" -X POST \
+        _onv2=$(curl -sk -b "3x-ui=$COOKIE" -X POST \
           "$PANEL_URL/panel/inbound/onlines" \
           -H "Content-Type: application/x-www-form-urlencoded; charset=UTF-8" \
-          | jq -r '.obj | @json' 2>/dev/null || echo "[]")
-        _onv2=$(echo "$V2RAY_ONLINE" | jq 'length')
+          | jq '.obj | length' 2>/dev/null || echo "0")
     fi
 
 elif [ -f /usr/local/etc/xray/config.json ]; then
@@ -168,13 +174,13 @@ fi
 
 # -------- Save JSON --------
 JSON=$(jq -n \
-  --arg total "$(( _ons + _onop + _ondrp + _onv2 ))" \
+  --arg onlines "$(( _ons + _onop + _ondrp + _onv2 ))" \
   --arg ssh "$_ons" \
   --arg openvpn "$_onop" \
   --arg dropbear "$_ondrp" \
   --arg v2ray "$_onv2" \
-  --argjson clients "$V2RAY_ONLINE" \
-  '{total:$total|tonumber, ssh:$ssh|tonumber, openvpn:$openvpn|tonumber, dropbear:$dropbear|tonumber, v2ray:$v2ray|tonumber, clients:$clients}')
+  --arg limite "$LIMIT" \
+  '[{onlines:$onlines|tonumber, limite:$limite|tonumber, ssh:$ssh|tonumber, openvpn:$openvpn|tonumber, dropbear:$dropbear|tonumber, v2ray:$v2ray|tonumber}]')
 
 echo "$JSON" > "$WWW_DIR/online_app.json"
 EOF
@@ -286,10 +292,10 @@ EOF
     <h2>Online Summary</h2>
     <table>
       <thead>
-        <tr><th>Total</th><th>SSH</th><th>OpenVPN</th><th>Dropbear</th><th>V2Ray</th></tr>
+        <tr><th>Onlines</th><th>Limit</th><th>SSH</th><th>OpenVPN</th><th>Dropbear</th><th>V2Ray</th></tr>
       </thead>
       <tbody>
-        <tr id="summary"><td colspan="5"><div class="spinner"></div></td></tr>
+        <tr id="summary"><td colspan="6"><div class="spinner"></div></td></tr>
       </tbody>
     </table>
   </div>
@@ -305,8 +311,8 @@ EOF
         const res = await fetch('./online_app.json?_='+Date.now());
         const d = await res.json();
         document.getElementById("summary").innerHTML =
-          \`<td>\${d.total}</td><td>\${d.ssh}</td><td>\${d.openvpn}</td><td>\${d.dropbear}</td><td>\${d.v2ray}</td>\`;
-      } catch { document.getElementById("summary").innerHTML = '<td colspan="5">Error</td>'; }
+          \`<td>\${d[0].onlines}</td><td>\${d[0].limite}</td><td>\${d[0].ssh}</td><td>\${d[0].openvpn}</td><td>\${d[0].dropbear}</td><td>\${d[0].v2ray}</td>\`;
+      } catch { document.getElementById("summary").innerHTML = '<td colspan="6">Error</td>'; }
 
       try {
         const r2 = await fetch('./sysinfo.json?_='+Date.now());
