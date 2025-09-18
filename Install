@@ -46,30 +46,24 @@ ensure_pkg(){
 }
 
 clean_nginx_82_dups(){
-  # เผื่อเคยมีไฟล์อื่นที่ listen 82 อยู่ ลบทิ้งก่อน
   say_info "Cleaning duplicate nginx configs on port 82 (if any)..."
-  if grep -Rsl --include='*' -e "listen 82" /etc/nginx/sites-available/ /etc/nginx/sites-enabled/ 2>/dev/null | grep -v "server_checker" >/dev/null 2>&1; then
-    grep -Rsl -e "listen 82" /etc/nginx/sites-available/ /etc/nginx/sites-enabled/ \
-      | grep -v "server_checker" \
-      | xargs -r rm -f
-  fi
+  grep -Rsl -e "listen 82" /etc/nginx/sites-available/ /etc/nginx/sites-enabled/ 2>/dev/null \
+    | grep -v "server_checker" \
+    | xargs -r rm -f
 }
 
 write_nginx_config(){
   say_info "Writing nginx site for /server/ ..."
   rm -f "$NGINX_SITE" "$NGINX_LINK" 2>/dev/null || true
 
-  # ใช้ root /var/www/html + location /server/ (alias) เพื่อกัน path เพี้ยนหลัง reinstall
   cat >"$NGINX_SITE" <<'EOF'
 server {
     listen 82 default_server;
     server_name _;
 
-    # root หลัก = /var/www/html (ไม่ชี้ตรงไปที่ /server เพื่อกันชนกันกับ path อื่น)
     root /var/www/html;
     index index.html;
 
-    # ให้ /server/ map ไปยังโฟลเดอร์ /var/www/html/server เสมอ
     location /server/ {
         alias /var/www/html/server/;
         index index.html;
@@ -87,102 +81,13 @@ EOF
 prime_www(){
   mkdir -p "$WWW_DIR"
   chmod -R 755 "$WWW_DIR"
-  # กัน 403/404 ตอนเว็บโหลดครั้งแรก
   [ -f "$WWW_DIR/online_app.json" ] || echo '{"onlines":0,"limite":0,"ssh":0,"openvpn":0,"dropbear":0,"v2ray":0}' > "$WWW_DIR/online_app.json"
-  [ -f "$WWW_DIR/sysinfo.json" ]     || echo '{"uptime":"-", "cpu_usage":"0", "ram_used":"0", "ram_total":"0", "disk_used":"0", "disk_total":"0"}' > "$WWW_DIR/sysinfo.json"
+  [ -f "$WWW_DIR/sysinfo.json" ]   || echo '{"uptime":"-", "cpu_usage":"0", "ram_used":"0", "ram_total":"0", "disk_used":"0", "disk_total":"0"}' > "$WWW_DIR/sysinfo.json"
 }
 
-write_index_html(){
-  cat >"$WWW_DIR/index.html" <<'EOF'
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8" />
-<title>ShowOn Dashboard V.1.0.2</title>
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<style>
-  :root { color-scheme: dark; }
-  body { background:#0b0b0b; color:#e6ffe6; font-family: system-ui, Arial, sans-serif; margin: 24px; }
-  h1 { color:#77ff77; margin: 0 0 12px 0; }
-  .sub { color:#a0f3a0; margin-bottom: 20px; font-size: 14px; }
-  .grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(280px,1fr)); gap:16px; }
-  .card { background:#141414; border:1px solid #1f3; border-radius:12px; padding:16px; box-shadow: 0 0 32px rgba(0,255,120,0.06) inset; }
-  .card h2 { margin:0 0 8px 0; color:#9aff9a; font-size: 18px; }
-  .kv { display:grid; grid-template-columns: 160px 1fr; gap:8px; font-size: 14px; }
-  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; color:#c8ffd0; }
-  .pill { display:inline-block; padding:4px 10px; border-radius:999px; background:#0f331a; border:1px solid #2adf6a; color:#b9ffd0; font-size:12px; margin-left:8px; }
-  .bad { background:#3a0b0b; border-color:#ff5a5a; color:#ffd0d0; }
-  footer { margin-top: 22px; color:#88ffb0; font-size: 12px; opacity: .8; }
-</style>
-</head>
-<body>
-  <h1>ShowOn Dashboard <span class="pill">V.1.0.2</span></h1>
-  <div class="sub">Auto-refresh ทุก 5 วินาที</div>
-
-  <div class="grid">
-    <div class="card">
-      <h2>Online Users</h2>
-      <div id="onlineBox" class="kv mono">กำลังโหลด...</div>
-    </div>
-    <div class="card">
-      <h2>System Info</h2>
-      <div id="sysBox" class="kv mono">กำลังโหลด...</div>
-    </div>
-  </div>
-
-  <footer>
-    Endpoint:
-    <span class="pill">/server/online_app.json</span>
-    <span class="pill">/server/sysinfo.json</span>
-  </footer>
-
-<script>
-async function safeJSON(url){
-  try{
-    const r = await fetch(url, {cache:'no-store'});
-    if(!r.ok) throw new Error(r.status);
-    return await r.json();
-  }catch(e){ return null; }
-}
-
-function renderOnline(d){
-  const el = document.getElementById('onlineBox');
-  if(!d){ el.innerHTML = '<span class="pill bad">โหลดไม่ได้</span>'; return; }
-  el.innerHTML = `
-    <div>รวมออนไลน์</div><div>${d.onlines ?? 0} / ${d.limite ?? 0}</div>
-    <div>SSH</div><div>${d.ssh ?? 0}</div>
-    <div>OpenVPN</div><div>${d.openvpn ?? 0}</div>
-    <div>Dropbear</div><div>${d.dropbear ?? 0}</div>
-    <div>V2Ray</div><div>${d.v2ray ?? 0}</div>
-  `;
-}
-
-function renderSys(d){
-  const el = document.getElementById('sysBox');
-  if(!d){ el.innerHTML = '<span class="pill bad">โหลดไม่ได้</span>'; return; }
-  const cpu = (d.cpu_usage ?? "0");
-  el.innerHTML = `
-    <div>Uptime</div><div>${d.uptime ?? '-'}</div>
-    <div>CPU Usage</div><div>${cpu}%</div>
-    <div>RAM</div><div>${d.ram_used ?? 0} / ${d.ram_total ?? 0} MB</div>
-    <div>Disk</div><div>${d.disk_used ?? 0} / ${d.disk_total ?? 0}</div>
-  `;
-}
-
-async function refresh(){
-  const online = await safeJSON('online_app.json');
-  renderOnline(online);
-  const sys = await safeJSON('sysinfo.json');
-  renderSys(sys);
-}
-refresh();
-setInterval(refresh, 5000);
-</script>
-</body>
-</html>
-EOF
-  chmod 644 "$WWW_DIR/index.html"
-}
+# =====================================================
+# Scripts
+# =====================================================
 
 write_online_script(){
   cat >"$ONLINE_SH" <<'EOF'
@@ -190,25 +95,20 @@ write_online_script(){
 set -euo pipefail
 
 WWW_DIR="/var/www/html/server"
-# โหลด config ถ้ามี (PANEL_URL / USERNAME / PASSWORD / LIMITE)
 [ -f /etc/showon.conf ] && source /etc/showon.conf || true
 : "${LIMITE:=2000}"
 
-# -------- SSH --------
+# init default
+ssh_on=0; ovpn_on=0; drop_on=0; v2_on=0
+
 ssh_on=$(ss -nt state established 2>/dev/null | grep -E ':22 ' | wc -l || echo 0)
 
-# -------- OpenVPN --------
-ovpn_on=0
 if [ -f /etc/openvpn/server/openvpn-status.log ]; then
   ovpn_on=$(grep -c "CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || echo 0)
 fi
 
-# -------- Dropbear --------
 drop_on=$(pgrep dropbear 2>/dev/null | wc -l || echo 0)
 
-# -------- V2Ray --------
-v2_on=0
-# ถ้ามี 3x-ui
 if [ -n "${PANEL_URL:-}" ]; then
   COOKIE=$(curl -sk -c - -X POST "$PANEL_URL/login" \
     -H "Content-Type: application/json" \
@@ -221,13 +121,11 @@ if [ -n "${PANEL_URL:-}" ]; then
       | jq '.obj | length' 2>/dev/null || echo 0)
   fi
 else
-  # ถ้าเป็น xray-core ปกติ (เดาแบบหยาบ: นับ process)
   v2_on=$(ss -ntp 2>/dev/null | grep -c xray || echo 0)
 fi
 
 onlines=$(( ssh_on + ovpn_on + drop_on + v2_on ))
 
-# -------- Save JSON --------
 jq -n \
   --argjson onlines "$onlines" \
   --argjson limite "${LIMITE:-2000}" \
@@ -248,18 +146,10 @@ set -euo pipefail
 
 WWW_DIR="/var/www/html/server"
 
-# uptime
 upt=$(uptime -p 2>/dev/null | sed 's/^up //;s/,//g' || echo "-")
-
-# cpu usage (user+system)
 cpu=$(LC_ALL=C top -bn1 | awk -F'[, ]+' '/Cpu\(s\)/{printf "%.0f", 100-$8}')
-
-# ram (MB)
 read -r _ total used free _ < <(free -m | awk '/Mem:/{print $1,$2,$3,$4,$5}')
-ram_used="$used"
-ram_total="$total"
-
-# disk (root)
+ram_used="$used"; ram_total="$total"
 disk_used=$(df -h / | awk 'NR==2{print $3}')
 disk_total=$(df -h / | awk 'NR==2{print $2}')
 
@@ -276,8 +166,11 @@ EOF
   chmod +x "$SYSINFO_SH"
 }
 
+# =====================================================
+# Services
+# =====================================================
+
 write_services_and_timers(){
-  # online-check
   cat >"$ONLINE_SVC" <<EOF
 [Unit]
 Description=Online Users JSON Generator (ShowOn)
@@ -304,7 +197,6 @@ OnUnitActiveSec=60
 WantedBy=timers.target
 EOF
 
-  # sysinfo
   cat >"$SYSINFO_SVC" <<EOF
 [Unit]
 Description=System Info JSON Generator (ShowOn)
@@ -336,7 +228,6 @@ EOF
 }
 
 first_run_generators(){
-  # รันครั้งแรกทันที เพื่อให้หน้าเว็บมีข้อมูลตั้งแต่แรก
   bash "$ONLINE_SH" || true
   bash "$SYSINFO_SH" || true
 }
@@ -350,15 +241,20 @@ install_script(){
   ensure_pkg
   clean_nginx_82_dups
 
-  # รับค่า config
   echo
   say_info "ตั้งค่า 3x-ui (ถ้าไม่มีให้กด Enter ข้ามได้)"
-  read -rp "PANEL URL (เช่น https://IP:88) : " PANEL_URL
-  read -rp "USERNAME : " USERNAME
-  read -rp "PASSWORD : " PASSWORD
+  read -rp "3X-UI Panel IP : " PANEL_IP
+  read -rp "3X-UI Panel Port : " PANEL_PORT
+  read -rp "3X-UI Panel Username : " USERNAME
+  read -rp "3X-UI Panel Password : " PASSWORD
   read -rp "Limit User Online : " LIMITE
 
-  # บันทึก config
+  if [ -n "$PANEL_IP" ] && [ -n "$PANEL_PORT" ]; then
+    PANEL_URL="https://${PANEL_IP}:${PANEL_PORT}"
+  else
+    PANEL_URL=""
+  fi
+
   cat >"$CONF_FILE" <<EOF
 PANEL_URL="$PANEL_URL"
 USERNAME="$USERNAME"
@@ -368,7 +264,6 @@ EOF
   chmod 600 "$CONF_FILE"
 
   prime_www
-  write_index_html
   write_online_script
   write_sysinfo_script
   write_services_and_timers
@@ -383,21 +278,14 @@ EOF
 uninstall_script(){
   say_warn "Uninstalling ShowOn ..."
 
-  # stop + disable
   systemctl stop online-check.service online-check.timer sysinfo.service sysinfo.timer 2>/dev/null || true
   systemctl disable online-check.service online-check.timer sysinfo.service sysinfo.timer 2>/dev/null || true
 
-  # remove services
   rm -f "$ONLINE_SVC" "$ONLINE_TMR" "$SYSINFO_SVC" "$SYSINFO_TMR"
-
-  # remove scripts
   rm -f "$ONLINE_SH" "$SYSINFO_SH" "$CONF_FILE"
-
-  # remove web
   rm -rf "$WWW_DIR"
-
-  # remove nginx
   rm -f "$NGINX_SITE" "$NGINX_LINK"
+
   systemctl daemon-reload
   nginx -t >/dev/null 2>&1 || true
   systemctl restart nginx || true
