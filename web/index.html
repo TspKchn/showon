@@ -48,12 +48,15 @@
   </div>
 
   <script>
+    let lastSys = null; // เก็บค่าล่าสุดของ System
+
     async function j(url){
       const r = await fetch(url+"?_="+Date.now(),{cache:"no-store"});
       if(!r.ok) throw new Error(r.status);
       return r.json();
     }
     function fmtBytes(n){
+      if(!n || isNaN(n)) return "0 B";
       if(n<1024) return n+" B";
       const u=["KB","MB","GB","TB","PB"];
       let i=-1;
@@ -69,16 +72,19 @@
         document.getElementById('row-online').innerHTML =
           `<td>${d.onlines}</td><td>${d.limite}</td><td>${d.ssh}</td><td>${d.openvpn}</td><td>${d.dropbear}</td><td>${d.v2ray}</td>`;
       }catch(e){
-        document.getElementById('row-online').innerHTML='<td colspan="6" class="err">Error</td>';
+        // ไม่ต้องโชว์ Error → ค้างค่าเดิมไว้
       }
 
       // --- System Info ---
       try{
         const s = await j('./sysinfo.json');
-        document.getElementById('sys').innerText =
-          `Uptime: ${s.uptime}\nCPU: ${s.cpu_usage}\nRAM: ${s.ram_usage}\nDisk: ${s.disk_usage}`;
+        lastSys = s; // update ค่าใหม่
       }catch(e){
-        document.getElementById('sys').innerText='Error';
+        // fetch fail → ใช้ค่าเก่าแทน
+      }
+      if(lastSys){
+        document.getElementById('sys').innerText =
+          `Uptime: ${lastSys.uptime}\nCPU: ${lastSys.cpu_usage}\nRAM: ${lastSys.ram_usage}\nDisk: ${lastSys.disk_usage}`;
       }
 
       // --- Traffic Info ---
@@ -86,21 +92,19 @@
         const n = await j('./netinfo.json');
         const d = Array.isArray(n) ? n[0] : n;
 
-        // ถ้ามีค่า V2Ray (up/down > 0) → โชว์ทั้ง vnstat + v2ray
         if(d.v2ray && (d.v2ray.up > 0 || d.v2ray.down > 0)){
           document.getElementById('traffic-head').innerHTML =
             `<tr><th>vnStat RX</th><th>vnStat TX</th><th>V2Ray Up</th><th>V2Ray Down</th></tr>`;
           document.getElementById('row-net').innerHTML =
-            `<td>${fmtBytes(d.vnstat.rx)}</td><td>${fmtBytes(d.vnstat.tx)}</td><td>${fmtBytes(d.v2ray.up)}</td><td>${d.v2ray.down}</td>`;
+            `<td>${fmtBytes(d.vnstat.rx)}</td><td>${fmtBytes(d.vnstat.tx)}</td><td>${fmtBytes(d.v2ray.up)}</td><td>${fmtBytes(d.v2ray.down)}</td>`;
         }else{
-          // ถ้าไม่มี V2Ray → โชว์ vnstat อย่างเดียว
           document.getElementById('traffic-head').innerHTML =
             `<tr><th>vnStat RX</th><th>vnStat TX</th></tr>`;
           document.getElementById('row-net').innerHTML =
             `<td>${fmtBytes(d.vnstat.rx)}</td><td>${fmtBytes(d.vnstat.tx)}</td>`;
         }
       }catch(e){
-        document.getElementById('row-net').innerHTML='<td class="err">Error</td>';
+        // ค้างค่าเก่าไว้
       }
     }
 
