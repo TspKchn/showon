@@ -5,8 +5,10 @@
   <title>ShowOn Dashboard V.1.0.5</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    *{box-sizing:border-box} body{background:#0f1115;color:#eaecef;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu;max-width:1000px;margin:0 auto;padding:24px}
-    h1{margin:0 0 12px} .muted{color:#9aa4b2}
+    *{box-sizing:border-box}
+    body{background:#0f1115;color:#eaecef;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu;max-width:1000px;margin:0 auto;padding:24px}
+    h1{margin:0 0 12px}
+    .muted{color:#9aa4b2}
     .grid{display:grid;grid-template-columns:1fr;gap:16px}
     @media(min-width:800px){.grid{grid-template-columns:1fr 1fr}}
     .card{background:#151a21;border:1px solid #202735;border-radius:10px;padding:16px}
@@ -23,7 +25,11 @@
     <div class="card">
       <h2>Online Summary</h2>
       <table>
-        <thead><tr><th>Onlines</th><th>Limit</th><th>SSH</th><th>OpenVPN</th><th>Dropbear</th><th>V2Ray</th></tr></thead>
+        <thead>
+          <tr>
+            <th>Onlines</th><th>Limit</th><th>SSH</th><th>OpenVPN</th><th>Dropbear</th><th>V2Ray</th>
+          </tr>
+        </thead>
         <tbody><tr id="row-online"><td colspan="6">Loading...</td></tr></tbody>
       </table>
     </div>
@@ -34,7 +40,11 @@
     <div class="card">
       <h2>Traffic (vnStat & V2Ray)</h2>
       <table>
-        <thead><tr><th>vnStat RX</th><th>vnStat TX</th><th>V2Ray Up</th><th>V2Ray Down</th></tr></thead>
+        <thead>
+          <tr>
+            <th>vnStat RX</th><th>vnStat TX</th><th>V2Ray Up</th><th>V2Ray Down</th>
+          </tr>
+        </thead>
         <tbody><tr id="row-net"><td colspan="4">Loading...</td></tr></tbody>
       </table>
       <div class="muted" style="margin-top:6px">* ตัวเลขเป็นยอดสะสมจาก vnstat และรวม up/down ของทุก inbound จาก 3x-ui</div>
@@ -42,32 +52,51 @@
   </div>
 
   <script>
-    async function j(url){const r=await fetch(url+"?_="+Date.now(),{cache:"no-store"}); if(!r.ok) throw new Error(r.status); return r.json();}
-    function fmtBytes(n){if(n<1024) return n+" B"; const u=["KB","MB","GB","TB","PB"]; let i=-1; do{n/=1024; i++}while(n>=1024&&i<u.length-1); return n.toFixed(2)+" "+u[i];}
+    async function j(url){
+      const r = await fetch(url+"?_="+Date.now(),{cache:"no-store"});
+      if(!r.ok) throw new Error(r.status);
+      return r.json();
+    }
+    function fmtBytes(n){
+      if(n<1024) return n+" B";
+      const u=["KB","MB","GB","TB","PB"];
+      let i=-1;
+      do{n/=1024; i++}while(n>=1024&&i<u.length-1);
+      return n.toFixed(2)+" "+u[i];
+    }
 
     async function loadAll(){
+      // --- Online Summary ---
       try{
-  const a=await j('./online_app.json');
-  const d=a;
-  document.getElementById('row-online').innerHTML =
-    `<td>${d.onlines}</td><td>${d.limite}</td><td>${d.ssh}</td><td>${d.openvpn}</td><td>${d.dropbear}</td><td>${d.v2ray}</td>`;
-}catch(e){
-  document.getElementById('row-online').innerHTML='<td colspan="6" class="err">Error</td>'
+        const a = await j('./online_app.json');
+        const d = Array.isArray(a) ? a[0] : a;   // ✅ รองรับทั้ง array และ object
+        document.getElementById('row-online').innerHTML =
+          `<td>${d.onlines}</td><td>${d.limite}</td><td>${d.ssh}</td><td>${d.openvpn}</td><td>${d.dropbear}</td><td>${d.v2ray}</td>`;
+      }catch(e){
+        document.getElementById('row-online').innerHTML='<td colspan="6" class="err">Error</td>';
       }
-      
+
+      // --- System Info ---
       try{
-        const s=await j('./sysinfo.json');
+        const s = await j('./sysinfo.json');
         document.getElementById('sys').innerText =
           `Uptime: ${s.uptime}\nCPU: ${s.cpu_usage}\nRAM: ${s.ram_usage}\nDisk: ${s.disk_usage}`;
-      }catch(e){document.getElementById('sys').innerText='Error';}
+      }catch(e){
+        document.getElementById('sys').innerText='Error';
+      }
 
+      // --- Traffic Info ---
       try{
-        const n=await j('./netinfo.json');
+        const n = await j('./netinfo.json');
         document.getElementById('row-net').innerHTML =
           `<td>${fmtBytes(n.vnstat.rx)}</td><td>${fmtBytes(n.vnstat.tx)}</td><td>${fmtBytes(n.v2ray.up)}</td><td>${fmtBytes(n.v2ray.down)}</td>`;
-      }catch(e){document.getElementById('row-net').innerHTML='<td colspan="4" class="err">Error</td>'}
+      }catch(e){
+        document.getElementById('row-net').innerHTML='<td colspan="4" class="err">Error</td>';
+      }
     }
-    loadAll(); setInterval(loadAll, 5000);
+
+    loadAll();
+    setInterval(loadAll, 5000);
   </script>
 </body>
 </html>
