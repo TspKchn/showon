@@ -48,13 +48,16 @@
   </div>
 
   <script>
-    let lastSys = null; // เก็บค่าล่าสุดของ System
+    let lastSys = null;   // เก็บค่าล่าสุดของ System
+    let lastOnline = null; // เก็บค่าล่าสุดของ Online
+    let lastTraffic = null; // เก็บค่าล่าสุดของ Traffic
 
     async function j(url){
       const r = await fetch(url+"?_="+Date.now(),{cache:"no-store"});
       if(!r.ok) throw new Error(r.status);
       return r.json();
     }
+
     function fmtBytes(n){
       if(!n || isNaN(n)) return "0 B";
       if(n<1024) return n+" B";
@@ -69,16 +72,21 @@
       try{
         const a = await j('./online_app.json');
         const d = Array.isArray(a) ? a[0] : a;
-        document.getElementById('row-online').innerHTML =
-          `<td>${d.onlines}</td><td>${d.limite}</td><td>${d.ssh}</td><td>${d.openvpn}</td><td>${d.dropbear}</td><td>${d.v2ray}</td>`;
+        lastOnline = d;
       }catch(e){
-        // ค้างค่าเดิมไว้
+        // ค้างค่าเดิม
+      }
+      if(lastOnline){
+        document.getElementById('row-online').innerHTML =
+          `<td>${lastOnline.onlines}</td><td>${lastOnline.limite}</td><td>${lastOnline.ssh}</td><td>${lastOnline.openvpn}</td><td>${lastOnline.dropbear}</td><td>${lastOnline.v2ray}</td>`;
       }
 
       // --- System Info ---
       try{
         const s = await j('./sysinfo.json');
-        lastSys = s; // อัปเดตค่าใหม่
+        if(Array.isArray(s) && s.length>0){
+          lastSys = s[0];
+        }
       }catch(e){
         // ใช้ค่าเก่าแทน
       }
@@ -91,7 +99,12 @@
       try{
         const n = await j('./netinfo.json');
         const d = Array.isArray(n) ? n[0] : n;
-
+        lastTraffic = d;
+      }catch(e){
+        // ใช้ค่าเก่าแทน
+      }
+      if(lastTraffic){
+        const d = lastTraffic;
         if(d.v2ray && (d.v2ray.up > 0 || d.v2ray.down > 0)){
           document.getElementById('traffic-head').innerHTML =
             `<tr><th>vnStat RX</th><th>vnStat TX</th><th>V2Ray Up</th><th>V2Ray Down</th></tr>`;
@@ -103,8 +116,6 @@
           document.getElementById('row-net').innerHTML =
             `<td>${fmtBytes(d.vnstat.rx)}</td><td>${fmtBytes(d.vnstat.tx)}</td>`;
         }
-      }catch(e){
-        // ค้างค่าเก่าไว้
       }
     }
 
