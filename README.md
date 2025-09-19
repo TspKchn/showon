@@ -1,106 +1,92 @@
-<p align="center">
-  <img src="ShowOn.png" alt="ShowOn Logo" width="300">
-</p>
+# ShowOn Dashboard
 
-# Script Manager
+แสดงข้อมูล **Online Users / System / Traffic** จากเซิร์ฟเวอร์ VPN  
+รองรับ SSH, OpenVPN, Dropbear, และ V2Ray/Xray (3x-ui)
 
-![Ubuntu Supported](https://img.shields.io/badge/Ubuntu-20.04%20%7C%2022.04-orange?logo=ubuntu)
-![Version](https://img.shields.io/badge/version-V.1.0.0-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
-![Status](https://img.shields.io/badge/status-stable-success)
-
-ShowOn คือสคริปต์สำหรับตรวจสอบจำนวนผู้ใช้งาน **SSH / OpenVPN / Dropbear / V2Ray (ทุกระบบ)**  
-พร้อมทั้งแสดงข้อมูล **System Info** (Uptime, CPU, RAM, Disk) แบบเรียลไทม์  
-ผ่าน **Nginx Web UI (Port 82)**
-
----
-
-## ✨ Features
-- ✅ แสดงจำนวนผู้ใช้งาน **ออนไลน์** ของ SSH / OpenVPN / Dropbear / V2Ray
-- ✅ ดึงข้อมูล **System Info** ทุก 5 วินาที
-- ✅ หน้าเว็บ UI (HTML/JS) ดูง่าย สวยงาม รองรับมือถือ
-- ✅ มีเมนูจัดการ (`showon`) :
-  - Install Script
-  - Uninstall Script
-  - Auto Update (ตรวจสอบเวอร์ชันจาก GitHub อัตโนมัติ)
-- ✅ อัปเดตอัตโนมัติเมื่อมีเวอร์ชันใหม่ใน GitHub
-- ✅ รองรับ Ubuntu 20.04 / 22.04+
-
----
-
-## 🚀 Installation
-
-```bash
-bash <(curl -s https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install)
+## 📂 โครงสร้างไฟล์
 
 ```
-หรือ
+/usr/local/bin/
+  ├─ online-check.sh      # สร้าง online_app.json
+  ├─ sysinfo.sh           # สร้าง sysinfo.json
+  ├─ vnstat-traffic.sh    # สร้าง netinfo.json
+  └─ v2ray-traffic.sh     # (optional) สร้าง v2ray_traffic.json
+
+/var/www/html/server/
+  ├─ index.html           # Dashboard หน้าเว็บ
+  ├─ online_app.json      # JSON แสดงจำนวนออนไลน์
+  ├─ sysinfo.json         # JSON ข้อมูลระบบ
+  ├─ netinfo.json         # JSON ข้อมูลการใช้งานเน็ต
+  └─ v2ray_traffic.json   # JSON เฉพาะ V2Ray (optional)
+```
+
+## ⚙️ การตั้งค่า
+
+ไฟล์ config: `/etc/showon.conf`
+
 ```bash
-wget -O Install https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install
-chmod +x Install
-./Install
+VERSION=V.1.0.5
+WWW_DIR=/var/www/html/server
+LIMIT=2000
+DEBUG_LOG=/var/log/showon-debug.log
+
+PANEL_URL="https://your-domain:port/randomPath"
+XUI_USER="admin"
+XUI_PASS="yourpassword"
+NET_IFACE="ens3"
+```
+
+## 🚀 วิธีใช้งาน
+
+รันสคริปต์แต่ละตัวเพื่ออัปเดต JSON
+
+```bash
+bash /usr/local/bin/online-check.sh
+bash /usr/local/bin/sysinfo.sh
+bash /usr/local/bin/vnstat-traffic.sh
+bash /usr/local/bin/v2ray-traffic.sh   # optional
+```
+
+## 🔄 ตั้งค่า systemd service + timer
+
+ตัวอย่าง: `/etc/systemd/system/online-check.service`
+
+```ini
+[Unit]
+Description=ShowOn Online Users JSON Generator
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/online-check.sh
+Restart=always
+```
+
+ตัวอย่าง timer `/etc/systemd/system/online-check.timer`
+
+```ini
+[Unit]
+Description=Run online-check every 5s
+
+[Timer]
+OnUnitActiveSec=5s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
+```
+
+เปิดใช้งาน:
+
+```bash
+systemctl enable --now online-check.timer
+```
+
+ทำเช่นเดียวกันกับ `sysinfo`, `vnstat-traffic`, `v2ray-traffic`
+
+## 🌐 เปิดใช้งาน Dashboard
+
+เปิดเบราว์เซอร์ไปที่:
 
 ```
-จากนั้นใช้คำสั่ง:
-
-showon
-
-เพื่อเปิดเมนูการจัดการ
-
-
----
-
-🌐 Access Web UI
-
-หลังติดตั้งเสร็จ สามารถเปิดเว็บได้ที่:
-
-http://<YOUR_SERVER_IP>:82/server/
-
-ตัวอย่างเช่น:
-
-http://127.0.xxx.xxx:82/server/
-
-
----
-
-🛠 Uninstall
-
-เลือก 2) Uninstall Script จากเมนู showon
-ระบบจะทำการลบทุกอย่างออก และ reboot เครื่องอัตโนมัติ
-
-
----
-
-🔄 Update
-
-ระบบจะตรวจสอบเวอร์ชันอัตโนมัติทุกครั้งที่เปิด showon
-
-ถ้ามีเวอร์ชันใหม่ จะถามให้กด Enter เพื่ออัปเดตทันที
-
-
-
----
-
-📜 Log
-
-Log ของการทำงานจะถูกเก็บไว้ที่:
-
-/var/log/showon.log
-
-
----
-
-🖼 Screenshot
-
-> 📌 แนะนำให้พี่เพิ่มรูป หน้าเว็บ Online Summary และ เมนู showon มีสี ตรงนี้ จะทำให้ repo ดูน่าใช้มากขึ้น
-
-
-
-
----
-
-📄 License
-
-MIT License – ใช้งาน แก้ไข และเผยแพร่ได้อิสระ
-
----
+http://YOUR_SERVER:82/server/
+```
