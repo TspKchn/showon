@@ -74,7 +74,8 @@ TOTAL=$((SSH_ON + OVPN_ON + DB_ON + V2_ON))
 mkdir -p "$WWW_DIR"
 cat > "$JSON_OUT" <<EOF
 {
-  "total": $TOTAL,
+  "onlines": $TOTAL,
+  "limite": $LIMIT,
   "ssh": $SSH_ON,
   "openvpn": $OVPN_ON,
   "dropbear": $DB_ON,
