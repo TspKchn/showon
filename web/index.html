@@ -38,16 +38,12 @@
       <div class="mono" id="sys">Loading...</div>
     </div>
     <div class="card">
-      <h2>Traffic (vnStat & V2Ray)</h2>
+      <h2>Traffic</h2>
       <table>
-        <thead>
-          <tr>
-            <th>vnStat RX</th><th>vnStat TX</th><th>V2Ray Up</th><th>V2Ray Down</th>
-          </tr>
-        </thead>
-        <tbody><tr id="row-net"><td colspan="4">Loading...</td></tr></tbody>
+        <thead id="traffic-head"></thead>
+        <tbody><tr id="row-net"><td>Loading...</td></tr></tbody>
       </table>
-      <div class="muted" style="margin-top:6px">* ตัวเลขเป็นยอดสะสมจาก vnstat และรวม up/down ของทุก inbound จาก 3x-ui</div>
+      <div class="muted" style="margin-top:6px">* vnstat จะโชว์เสมอ, ส่วน V2Ray จะแสดงเฉพาะเมื่อมีข้อมูล</div>
     </div>
   </div>
 
@@ -69,7 +65,7 @@
       // --- Online Summary ---
       try{
         const a = await j('./online_app.json');
-        const d = Array.isArray(a) ? a[0] : a;   // ✅ รองรับทั้ง array และ object
+        const d = Array.isArray(a) ? a[0] : a;
         document.getElementById('row-online').innerHTML =
           `<td>${d.onlines}</td><td>${d.limite}</td><td>${d.ssh}</td><td>${d.openvpn}</td><td>${d.dropbear}</td><td>${d.v2ray}</td>`;
       }catch(e){
@@ -88,10 +84,23 @@
       // --- Traffic Info ---
       try{
         const n = await j('./netinfo.json');
-        document.getElementById('row-net').innerHTML =
-          `<td>${fmtBytes(n.vnstat.rx)}</td><td>${fmtBytes(n.vnstat.tx)}</td><td>${fmtBytes(n.v2ray.up)}</td><td>${fmtBytes(n.v2ray.down)}</td>`;
+        const d = Array.isArray(n) ? n[0] : n;
+
+        // ถ้ามีค่า V2Ray (up/down > 0) → โชว์ทั้ง vnstat + v2ray
+        if(d.v2ray && (d.v2ray.up > 0 || d.v2ray.down > 0)){
+          document.getElementById('traffic-head').innerHTML =
+            `<tr><th>vnStat RX</th><th>vnStat TX</th><th>V2Ray Up</th><th>V2Ray Down</th></tr>`;
+          document.getElementById('row-net').innerHTML =
+            `<td>${fmtBytes(d.vnstat.rx)}</td><td>${fmtBytes(d.vnstat.tx)}</td><td>${fmtBytes(d.v2ray.up)}</td><td>${d.v2ray.down}</td>`;
+        }else{
+          // ถ้าไม่มี V2Ray → โชว์ vnstat อย่างเดียว
+          document.getElementById('traffic-head').innerHTML =
+            `<tr><th>vnStat RX</th><th>vnStat TX</th></tr>`;
+          document.getElementById('row-net').innerHTML =
+            `<td>${fmtBytes(d.vnstat.rx)}</td><td>${fmtBytes(d.vnstat.tx)}</td>`;
+        }
       }catch(e){
-        document.getElementById('row-net').innerHTML='<td colspan="4" class="err">Error</td>';
+        document.getElementById('row-net').innerHTML='<td class="err">Error</td>';
       }
     }
 
