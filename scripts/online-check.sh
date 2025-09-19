@@ -1,33 +1,36 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
-CONF="/etc/showon.conf"
+CONF=/etc/showon.conf
 source "$CONF"
 
 JSON_OUT="$WWW_DIR/online_app.json"
-TMP_COOKIE="$(mktemp -p /tmp showon_cookie_XXXXXX)"
-NOW_MS="$(date +%s%3N)"
+TMP_COOKIE=$(mktemp /tmp/showon_cookie_XXXXXX)
+NOW=$(date +%s%3N)
 
-log() {
-  local msg="$1"
-  printf '[%(%F %T)T][ONLINE] %s\n' -1 "$msg" >> "$DEBUG_LOG" 2>/dev/null || true
-}
+SSH_ON=0
+OVPN_ON=0
+DB_ON=0
+V2_ON=0
 
-# ---- SSH / OpenVPN / Dropbear ----
-SSH_ON=$(ss -nt state established | awk '$3 ~ /:22$/ {c++} END{print c+0}')
+# ==== SSH ====
+SSH_ON=$(ss -nt state established | awk '$3 ~ /:22$/ {c++} END {print c+0}')
 
+# ==== OpenVPN ====
 if [[ -f /etc/openvpn/server/openvpn-status.log ]]; then
-  OVPN_ON=$(grep -c '^CLIENT_LIST' /etc/openvpn/server/openvpn-status.log || true)
-else
-  OVPN_ON=0
+  OVPN_ON=$(grep -c "^CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || true)
 fi
 
-DB_ON=$(pgrep -x dropbear | wc -l | awk '{print $1+0}')
+# ==== Dropbear ====
+if pgrep dropbear >/dev/null 2>&1; then
+  DB_ON=$(pgrep -a dropbear | wc -l)
+fi
 
-# ---- V2Ray via 3x-ui ----
-V2_ON=0
-if [[ -n "${PANEL_URL:-}" && -n "${XUI_USER:-}" && -n "${XUI_PASS:-}" ]]; then
+# ==== V2Ray/Xray via 3x-ui ====
+if [[ -n "${PANEL_URL:-}" ]]; then
   LOGIN_OK=false
+
+  # ลอง login (สองรูปแบบ)
   if curl -sk -c "$TMP_COOKIE" -X POST "$PANEL_URL/login" \
        -H "Content-Type: application/x-www-form-urlencoded" \
        --data "username=$XUI_USER&password=$XUI_PASS" | grep -q '"success":true'; then
@@ -41,20 +44,32 @@ if [[ -n "${PANEL_URL:-}" && -n "${XUI_USER:-}" && -n "${XUI_PASS:-}" ]]; then
   fi
 
   if $LOGIN_OK; then
-    ONLINES_JSON=$(
-      curl -sk -b "$TMP_COOKIE" -H "Content-Type: application/json" \
-        -X POST "$PANEL_URL/panel/api/inbounds/onlines" \
-        -d '{}' 2>/dev/null \
-      | jq -c '.obj // []' 2>/dev/null || echo '[]'
-    )
-    # นับจำนวนอีเมลที่ออนไลน์จริง
-    V2_ON=$(echo "$ONLINES_JSON" | jq 'length' 2>/dev/null || echo 0)
-  else
-    log "login failed"
+    # ----- STEP 1: พยายาม POST onlines -----
+    RESP=$(curl -sk -b "$TMP_COOKIE" -X POST "$PANEL_URL/panel/api/inbounds/onlines" || true)
+    if echo "$RESP" | grep -q '"success":true'; then
+      V2_ON=$(echo "$RESP" | jq '[.obj[]?] | length')
+    else
+      # ----- STEP 2: ลอง GET onlines -----
+      RESP=$(curl -sk -b "$TMP_COOKIE" "$PANEL_URL/panel/api/inbounds/onlines" || true)
+      if echo "$RESP" | grep -q '"success":true'; then
+        V2_ON=$(echo "$RESP" | jq '[.obj[]?] | length')
+      else
+        # ----- STEP 3: fallback → inbounds/list + lastOnline -----
+        RESP=$(curl -sk -b "$TMP_COOKIE" "$PANEL_URL/panel/api/inbounds/list" || true)
+        if echo "$RESP" | grep -q '"success":true'; then
+          V2_ON=$(echo "$RESP" | jq --argjson now "$NOW" '
+            [ .obj[]?.clientStats[]?
+              | select(.lastOnline != null and ($now - .lastOnline) < 20000)
+            ] | length')
+        else
+          V2_ON=0
+        fi
+      fi
+    fi
   fi
 fi
 
-TOTAL=$(( SSH_ON + OVPN_ON + DB_ON + V2_ON ))
+TOTAL=$((SSH_ON + OVPN_ON + DB_ON + V2_ON))
 
 mkdir -p "$WWW_DIR"
 cat > "$JSON_OUT" <<EOF
@@ -64,9 +79,8 @@ cat > "$JSON_OUT" <<EOF
   "openvpn": $OVPN_ON,
   "dropbear": $DB_ON,
   "v2ray": $V2_ON,
-  "timestamp": $NOW_MS
+  "timestamp": $NOW
 }
 EOF
 
-log "online_app.json updated: total=$TOTAL ssh=$SSH_ON ovpn=$OVPN_ON db=$DB_ON v2=$V2_ON"
 rm -f "$TMP_COOKIE"
