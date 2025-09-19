@@ -59,14 +59,23 @@ get_nic() {
   ip -o -4 route get 8.8.8.8 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") print $(i+1)}' | head -n1
 }
 
-check_update() {
-  # เช็คจากไฟล์ Install บน repo ตามที่คุณต้องการ
-  REMOTE_VER=$(curl -fsSL "$REPO_RAW/Install" | grep -m1 'VERSION="' | sed -E 's/.*VERSION="([^"]+)".*/\1/')
-  if [[ -n "$REMOTE_VER" && "$REMOTE_VER" != "$VERSION" ]]; then
-    echo -e "${YELLOW}[UPDATE AVAILABLE]${NC} Latest: ${REMOTE_VER} (Current: ${VERSION})"
-  else
-    echo -e "${GREEN}[OK]${NC} You are using the latest version."
-  fi
+check_version() {
+    local CURRENT_VERSION="V.1.0.5"
+    local REMOTE_VERSION
+
+    REMOTE_VERSION=$(curl -fsSL https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install \
+        | grep -m1 '^VERSION=' | cut -d'"' -f2 2>/dev/null)
+
+    if [[ -z "$REMOTE_VERSION" ]]; then
+        echo "[WARN] ไม่สามารถเช็คเวอร์ชันจาก GitHub ได้"
+        return
+    fi
+
+    if [[ "$CURRENT_VERSION" == "$REMOTE_VERSION" ]]; then
+        echo "[OK] You are using the latest version."
+    else
+        echo "[UPDATE] มีเวอร์ชันใหม่: $REMOTE_VERSION (ปัจจุบัน: $CURRENT_VERSION)"
+    fi
 }
 
 write_nginx() {
