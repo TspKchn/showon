@@ -47,12 +47,14 @@
 
     async function loadAll(){
       try{
-        const a=await j('./online_app.json');
-        const d=a[0];
-        document.getElementById('row-online').innerHTML =
-          `<td>${d.onlines}</td><td>${d.limite}</td><td>${d.ssh}</td><td>${d.openvpn}</td><td>${d.dropbear}</td><td>${d.v2ray}</td>`;
-      }catch(e){document.getElementById('row-online').innerHTML='<td colspan="6" class="err">Error</td>'}
-
+  const a=await j('./online_app.json');
+  const d=a;
+  document.getElementById('row-online').innerHTML =
+    `<td>${d.onlines}</td><td>${d.limite}</td><td>${d.ssh}</td><td>${d.openvpn}</td><td>${d.dropbear}</td><td>${d.v2ray}</td>`;
+}catch(e){
+  document.getElementById('row-online').innerHTML='<td colspan="6" class="err">Error</td>'
+      }
+      
       try{
         const s=await j('./sysinfo.json');
         document.getElementById('sys').innerText =
