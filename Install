@@ -7,7 +7,6 @@
 VERSION="V.1.0.5"
 
 # ===== ปรับลิงก์นี้ให้ชี้ไปยัง repo ของคุณ =====
-# ตัวอย่าง: https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main
 REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main"
 
 # โครงสร้างไฟล์บน repo (ต้องมีตามนี้)
@@ -36,6 +35,7 @@ SERVICE_SYSINFO="/etc/systemd/system/sysinfo.service"
 SITE_AV="/etc/nginx/sites-available/showon"
 SITE_EN="/etc/nginx/sites-enabled/showon"
 
+# ===== Colors =====
 GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; NC="\e[0m"
 
 require_root() {
@@ -61,26 +61,26 @@ get_nic() {
     | head -n1
 }
 
-# ===== เช็คเวอร์ชันบน GitHub (แก้ปัญหา curl: (23)) =====
+# ===== เช็คเวอร์ชันบน GitHub =====
 check_update() {
   local remote install_raw
   install_raw="$(curl -fsSL "$REPO_RAW/Install" || true)"
 
   if [[ -z "$install_raw" ]]; then
-    echo "[WARN] ไม่สามารถเช็คเวอร์ชันจาก GitHub ได้"
+    echo -e "${YELLOW}[WARN]${NC} ไม่สามารถเช็คเวอร์ชันจาก GitHub ได้"
     return
   fi
 
   remote="$(printf '%s' "$install_raw" | grep -m1 '^VERSION=' | cut -d'"' -f2)"
   if [[ -z "$remote" ]]; then
-    echo "[WARN] พบไฟล์ Install ใน GitHub แต่หา VERSION ไม่เจอ"
+    echo -e "${YELLOW}[WARN]${NC} พบไฟล์ Install ใน GitHub แต่หา VERSION ไม่เจอ"
     return
   fi
 
   if [[ "$VERSION" == "$remote" ]]; then
-    echo "[OK] You are using the latest version."
+    echo -e "${GREEN}[OK]${NC} You are using the latest version."
   else
-    echo "[UPDATE] มีเวอร์ชันใหม่: $remote (ปัจจุบัน: $VERSION)"
+    echo -e "${CYAN}[UPDATE]${NC} มีเวอร์ชันใหม่: $remote (ปัจจุบัน: $VERSION)"
   fi
 }
 
@@ -107,11 +107,10 @@ EOF
 
   ln -sf "$SITE_AV" "$SITE_EN"
 
-  # ทดสอบ/รีโหลด nginx อย่างระมัดระวัง
   if nginx -t; then
     systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
   else
-    echo -e "${YELLOW}[WARN]${NC} nginx config test failed. จะลอง start nginx..."
+    echo -e "${YELLOW}[WARN]${NC} nginx config test failed → will try to start nginx..."
     systemctl start nginx 2>/dev/null || true
   fi
 
@@ -154,9 +153,9 @@ install_script() {
   # ==== ถามค่าตั้งต้น 3x-ui ====
   echo -e "${CYAN}[INFO]${NC} ตั้งค่า 3x-ui (ถ้าไม่มีให้กด Enter ข้ามได้)"
   echo "  👉 กรุณา 'วางลิงก์หน้าล็อกอินทั้งเส้น' เช่น:"
-  echo "     https://IP:PORT/RandomPath  หรือ  http://domain:port/RandomPath"
+  echo "     https://IP:PORT/RandomPath"
   read -rp "3X-UI URL (copy login link): " PANEL_URL
-  PANEL_URL="$(echo "$PANEL_URL" | sed 's:/*$::')"  # ตัด / ท้ายออก
+  PANEL_URL="$(echo "$PANEL_URL" | sed 's:/*$::')"
 
   read -rp "3X-UI Username: " XUI_USER
   read -rp "3X-UI Password: " XUI_PASS
@@ -168,7 +167,6 @@ install_script() {
     COOKIE_FILE=$(mktemp)
     LOGIN_OK=false
 
-    # ทดลองทั้ง form-urlencoded และ JSON (รองรับหลายเวอร์ชัน)
     if curl -sk -c "$COOKIE_FILE" -X POST "$PANEL_URL/login" \
          -H "Content-Type: application/x-www-form-urlencoded" \
          --data "username=$XUI_USER&password=$XUI_PASS" | grep -q '"success":true'; then
@@ -184,7 +182,7 @@ install_script() {
     if $LOGIN_OK; then
       echo -e "${GREEN}[OK]${NC} Login to 3x-ui OK"
     else
-      echo -e "${YELLOW}[WARN]${NC} Login to 3x-ui failed. จะติดตั้งต่อไปแบบโหมดไม่มี 3x-ui"
+      echo -e "${YELLOW}[WARN]${NC} Login to 3x-ui failed → continue without 3x-ui"
       PANEL_URL=""
     fi
     rm -f "$COOKIE_FILE"
@@ -201,17 +199,15 @@ WWW_DIR="$WWW_DIR"
 LIMIT=${LIMIT}
 DEBUG_LOG="$DEBUG_LOG"
 
-# 3x-ui (ถ้าไม่มี ปล่อยค่าว่าง)
 PANEL_URL="$PANEL_URL"
 XUI_USER="$XUI_USER"
 XUI_PASS="$XUI_PASS"
 
-# network interface สำหรับ vnstat
 NET_IFACE="$NIC"
 EOF
   chmod 600 "$CONF_FILE"
 
-  # ==== ดาวน์โหลดสคริปต์จาก repo มาวาง local ====
+  # ==== ดาวน์โหลดสคริปต์จาก repo ====
   download_or_die "$SRC_ONLINE" "$SCRIPT_ONLINE"
   download_or_die "$SRC_VNSTAT" "$SCRIPT_VNSTAT"
   download_or_die "$SRC_V2RAY" "$SCRIPT_V2RAY"
@@ -311,42 +307,38 @@ uninstall_script() {
   rm -f "$CONF_FILE" "$DEBUG_LOG"
 
   rm -f "$SITE_AV" "$SITE_EN"
-  # ทดสอบแล้วค่อย reload เพื่อไม่ให้ nginx ล้ม
   if nginx -t 2>/dev/null; then
     systemctl reload nginx 2>/dev/null || true
   else
     systemctl restart nginx 2>/dev/null || true
   fi
 
-  # ไม่ลบ $WWW_DIR เผื่อผู้ใช้ต้องการเก็บไฟล์เว็บไว้
   echo -e "${GREEN}[SUCCESS]${NC} Uninstalled completely."
   press
 }
 
 update_script() {
-  echo "[INFO] Checking update..."
+  echo -e "${CYAN}[INFO]${NC} Updating all ShowOn components..."
 
-  # ไม่บังคับว่าต้องติดตั้งก่อนถึงจะอัปเดตตัว installer ได้
+  download_or_die "$SRC_ONLINE" "$SCRIPT_ONLINE"
+  download_or_die "$SRC_VNSTAT" "$SCRIPT_VNSTAT"
+  download_or_die "$SRC_V2RAY" "$SCRIPT_V2RAY"
+  download_or_die "$SRC_SYSINFO" "$SCRIPT_SYSINFO"
+  chmod +x "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
+
+  download_or_die "$SRC_INDEX" "$WWW_DIR/index.html"
+  chmod 644 "$WWW_DIR/index.html"
+
   local TMP_SCRIPT="/tmp/Install.$$"
   if curl -fsSL "$REPO_RAW/Install" -o "$TMP_SCRIPT"; then
-    chmod +x "$TMP_SCRIPT"
     mv "$TMP_SCRIPT" /root/Install
     chmod +x /root/Install
-
-    # อัปเดตคำสั่ง showon ให้ชี้มาที่ /root/Install เสมอ
-    if [[ ! -x /usr/local/bin/showon ]]; then
-      cat >/usr/local/bin/showon <<'EOS'
-#!/bin/bash
-exec bash /root/Install
-EOS
-      chmod +x /usr/local/bin/showon
-    fi
-
-    echo "[OK] Update สำเร็จ เวอร์ชันใหม่จะถูกใช้ครั้งถัดไป (ใช้คำสั่ง showon)"
+    echo -e "${GREEN}[OK]${NC} Updated Install script."
   else
-    echo "[ERROR] ดาวน์โหลดสคริปต์ไม่สำเร็จ"
+    echo -e "${RED}[ERROR]${NC} Failed to update Install script."
   fi
 
+  echo -e "${GREEN}[OK]${NC} Update completed."
   press
 }
 
