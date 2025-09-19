@@ -1,5 +1,5 @@
 <h1 align="center">
-  <img src="ShowOn.png" alt="ShowOn Logo" width="300"/>
+  <img src="ShowOn.png" alt="ShowOn Logo" width="600"/>
 </h1>
 
 # 🚀 ShowOn Dashboard V.1.0.5
