@@ -96,46 +96,6 @@ check_update() {
   fi
 }
 
-# ===== เขียน nginx config (HTTP + HTTPS) =====
-write_nginx() {
-  mkdir -p "$WWW_DIR"
-  mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
-
-  cat >"$SITE_AV" <<EOF
-server {
-    listen 82 default_server;
-    listen 82 ssl http2;
-    server_name _;
-
-    ssl_certificate     $SSL_CERT;
-    ssl_certificate_key $SSL_KEY;
-    ssl_protocols       TLSv1.2 TLSv1.3;
-    ssl_ciphers         HIGH:!aNULL:!MD5;
-
-    location = / {
-        return 302 /server/;
-    }
-    location /server/ {
-        alias $WWW_DIR/;
-        index index.html;
-        autoindex off;
-        add_header Cache-Control "no-store";
-    }
-}
-EOF
-
-  ln -sf "$SITE_AV" "$SITE_EN"
-
-  if nginx -t; then
-    systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
-  else
-    echo -e "${YELLOW}[WARN]${NC} nginx config test failed → will try to start nginx..."
-    systemctl start nginx 2>/dev/null || true
-  fi
-
-  echo -e "${GREEN}[OK]${NC} Nginx ready at :82 (HTTP/HTTPS)"
-}
-
 download_or_die() {
   local url="$1" dst="$2"
   if ! curl -fsSL "$url" -o "$dst"; then
@@ -245,8 +205,9 @@ EOF
   chmod +x "$SCRIPT_SSL"
   $SCRIPT_SSL "$SSL_CERT" "$SSL_KEY"
 
-  # ==== nginx site ====
-  write_nginx
+  # ==== nginx site cleanup ====
+  rm -f "$SITE_AV" "$SITE_EN"
+  ln -sf "$SITE_AV" "$SITE_EN"
 
   # ==== systemd services ====
   cat >"$SERVICE_ONLINE" <<'EOF'
