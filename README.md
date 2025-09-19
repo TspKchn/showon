@@ -24,11 +24,13 @@ Dashboard สำหรับตรวจสอบสถานะ Online ขอ�
 ### วิธีที่ 1: ใช้ `curl`
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TspKchn/showon/main/Install | bash
+
 ```
 
 ### วิธีที่ 2: ใช้ `wget`
 ```bash
 wget -qO- https://raw.githubusercontent.com/TspKchn/showon/main/Install | bash
+
 ```
 
 ### วิธีที่ 3: ใช้ `git clone`
@@ -37,6 +39,7 @@ git clone https://github.com/TspKchn/showon.git
 cd showon
 chmod +x *.sh
 ./Install
+
 ```
 
 ---
