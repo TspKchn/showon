@@ -1,57 +1,32 @@
-<FILE:vnstat-traffic.sh>
 #!/bin/bash
-# =====================================================
-# vnstat-traffic.sh - Generate netinfo.json
-# =====================================================
 set -euo pipefail
-
-CONF="/etc/showon.conf"
-source /usr/local/bin/utils.sh
-load_conf
+CONF=/etc/showon.conf
+source $CONF
 
 JSON_OUT="$WWW_DIR/netinfo.json"
 
-# -------------------------------
-# 1) ตรวจสอบ interface หลัก
-# -------------------------------
 IFACE=$(ip -o -4 route show to default | awk '{print $5}')
-[[ -z "$IFACE" ]] && IFACE="eth0"
+VNSTAT_JSON=$(vnstat --json -i "$IFACE")
 
-# -------------------------------
-# 2) vnstat traffic
-# -------------------------------
-VN_RX=$(vnstat --json d | jq -r ".interfaces[] | select(.name==\"$IFACE\") | .traffic.day[-1].rx // 0")
-VN_TX=$(vnstat --json d | jq -r ".interfaces[] | select(.name==\"$IFACE\") | .traffic.day[-1].tx // 0")
+RX=$(echo "$VNSTAT_JSON" | jq '.interfaces[0].traffic.total.rx')
+TX=$(echo "$VNSTAT_JSON" | jq '.interfaces[0].traffic.total.tx')
 
-# -------------------------------
-# 3) V2Ray traffic (รวมทุก inbound)
-# -------------------------------
-V2_UP=0
-V2_DOWN=0
+COOKIE=$(mktemp)
+curl -sk -c "$COOKIE" -X POST "$PANEL_BASE/login" -d "username=$XUI_USER&password=$XUI_PASS" >/dev/null
+DETAILS=$(curl -sk -b "$COOKIE" "$PANEL_BASE/panel/api/inbounds/list")
 
-DETAILS=$(api_call GET "$PANEL_BASE/panel/api/inbounds/list" "")
-if [[ -n "$DETAILS" ]]; then
-    V2_UP=$(echo "$DETAILS" | jq '[.obj[].up] | add')
-    V2_DOWN=$(echo "$DETAILS" | jq '[.obj[].down] | add')
-fi
-
-# -------------------------------
-# Build JSON
-# -------------------------------
-mkdir -p "$WWW_DIR"
+UP=$(echo "$DETAILS" | jq '[.obj[].clientStats[].up] | add')
+DOWN=$(echo "$DETAILS" | jq '[.obj[].clientStats[].down] | add')
 
 cat > "$JSON_OUT" <<EOF
 {
   "vnstat": {
-    "rx": $VN_RX,
-    "tx": $VN_TX
+    "rx": $RX,
+    "tx": $TX
   },
   "v2ray": {
-    "up": $V2_UP,
-    "down": $V2_DOWN
+    "up": $UP,
+    "down": $DOWN
   }
 }
 EOF
-
-log "[OK] Updated $JSON_OUT"
-</FILE:vnstat-traffic.sh>
