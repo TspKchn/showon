@@ -1,7 +1,6 @@
 #!/bin/bash
 # =====================================================
-# ShowOn SSL Setup Helper (Fixed: No duplicate listen)
-# Author: TspKchn
+# ShowOn SSL Setup Helper (Fixed v2)
 # =====================================================
 set -euo pipefail
 
@@ -19,49 +18,53 @@ log() { echo "[$(date '+%F %T')][SSL] $*" >> "$DEBUG_LOG"; }
 
 mkdir -p "$CERT_DIR"
 
-# === ค้นหาไฟล์ SSL เดิม ===
+# === หาไฟล์ SSL เดิม ===
 FOUND_CERT=""
 FOUND_KEY=""
 
-for p in \
-  "/root/cert/$HOSTNAME/fullchain.pem:/root/cert/$HOSTNAME/privkey.pem" \
-  "/root/cert/${PANEL_URL#*://}/fullchain.pem:/root/cert/${PANEL_URL#*://}/privkey.pem" \
-  "/etc/letsencrypt/live/$HOSTNAME/fullchain.pem:/etc/letsencrypt/live/$HOSTNAME/privkey.pem" \
-  "/etc/x-ui/server.crt:/etc/x-ui/server.key" \
+SEARCH_PATHS=(
+  "/root/cert/bm.xq-vpn.com/fullchain.pem:/root/cert/bm.xq-vpn.com/privkey.pem"
+  "/etc/letsencrypt/live/bm.xq-vpn.com/fullchain.pem:/etc/letsencrypt/live/bm.xq-vpn.com/privkey.pem"
+  "/etc/x-ui/server.crt:/etc/x-ui/server.key"
   "/etc/v2ray/server.crt:/etc/v2ray/server.key"
-do
+)
+
+for p in "${SEARCH_PATHS[@]}"; do
   c="${p%%:*}"
   k="${p##*:}"
-  if [[ -f "$c" && -f "$k" ]]; then
+  if [[ -s "$c" && -s "$k" ]]; then
     FOUND_CERT="$c"
     FOUND_KEY="$k"
     break
   fi
 done
 
+# === ถ้าพบ ใช้ไฟล์นั้น ===
 if [[ -n "$FOUND_CERT" && -n "$FOUND_KEY" ]]; then
   cp -f "$FOUND_CERT" "$CERT_FILE"
   cp -f "$FOUND_KEY" "$KEY_FILE"
   log "[OK] ตรวจพบ SSL เดิมที่ $(dirname "$FOUND_CERT") → ใช้งานต่อ"
   echo -e "\e[32m[OK]\e[0m ตรวจพบ SSL เดิมที่ $(dirname "$FOUND_CERT") → ใช้งานต่อ"
 else
-  log "[WARN] ไม่พบไฟล์ SSL เดิม จะใช้ self-signed cert แทน"
-  echo -e "\e[33m[WARN]\e[0m ไม่พบไฟล์ SSL เดิม จะใช้ self-signed cert แทน"
+  # ถ้าไม่เจอ → gen self-signed
+  log "[WARN] ไม่พบไฟล์ SSL เดิม → generate self-signed"
+  echo -e "\e[33m[WARN]\e[0m ไม่พบไฟล์ SSL เดิม → generate self-signed"
 
   openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
-    -subj "/CN=${HOSTNAME}" \
+    -subj "/CN=$(hostname -f)" \
     -keyout "$KEY_FILE" \
     -out "$CERT_FILE" >/dev/null 2>&1
 fi
 
-# === เขียน HTTPS block (ไม่ยุ่ง HTTP เดิม) ===
-if ! grep -q "listen 82 ssl" "$NGINX_CONF"; then
+# === สร้าง HTTPS block เฉพาะถ้าไฟล์ cert/key มีอยู่จริง ===
+if [[ -s "$CERT_FILE" && -s "$KEY_FILE" ]]; then
+  if ! grep -q "listen 82 ssl" "$NGINX_CONF"; then
 cat >>"$NGINX_CONF" <<EOF
 
 # HTTPS
 server {
     listen 82 ssl;
-    server_name ${PANEL_URL#*://};
+    server_name bm.xq-vpn.com;
 
     ssl_certificate     $CERT_FILE;
     ssl_certificate_key $KEY_FILE;
@@ -77,16 +80,20 @@ server {
     }
 }
 EOF
-fi
+  fi
 
-ln -sf "$NGINX_CONF" "$NGINX_LINK"
+  ln -sf "$NGINX_CONF" "$NGINX_LINK"
 
-if nginx -t; then
-  systemctl reload nginx
-  log "[OK] SSL nginx config applied"
-  echo -e "\e[32m[OK]\e[0m SSL nginx config applied"
+  if nginx -t; then
+    systemctl reload nginx
+    log "[OK] SSL nginx config applied"
+    echo -e "\e[32m[OK]\e[0m SSL nginx config applied"
+  else
+    log "[ERROR] nginx config test failed (SSL)"
+    echo -e "\e[31m[ERROR]\e[0m nginx config test failed (SSL)"
+    exit 1
+  fi
 else
-  log "[ERROR] nginx config test failed (SSL)"
-  echo -e "\e[31m[ERROR]\e[0m nginx config test failed (SSL)"
-  exit 1
+  log "[ERROR] ไม่สามารถสร้าง/หาไฟล์ cert ได้ → HTTPS ปิด"
+  echo -e "\e[31m[ERROR]\e[0m ไม่สามารถสร้าง/หาไฟล์ cert ได้ → HTTPS ปิด"
 fi
