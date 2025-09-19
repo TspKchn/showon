@@ -72,15 +72,15 @@
         document.getElementById('row-online').innerHTML =
           `<td>${d.onlines}</td><td>${d.limite}</td><td>${d.ssh}</td><td>${d.openvpn}</td><td>${d.dropbear}</td><td>${d.v2ray}</td>`;
       }catch(e){
-        // ไม่ต้องโชว์ Error → ค้างค่าเดิมไว้
+        // ค้างค่าเดิมไว้
       }
 
       // --- System Info ---
       try{
         const s = await j('./sysinfo.json');
-        lastSys = s; // update ค่าใหม่
+        lastSys = s; // อัปเดตค่าใหม่
       }catch(e){
-        // fetch fail → ใช้ค่าเก่าแทน
+        // ใช้ค่าเก่าแทน
       }
       if(lastSys){
         document.getElementById('sys').innerText =
