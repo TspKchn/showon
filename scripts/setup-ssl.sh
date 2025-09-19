@@ -1,88 +1,81 @@
 #!/bin/bash
 # =====================================================
-# setup-ssl.sh - Auto SSL Setup for ShowOn
-# Version: 1.0.6
+# ShowOn SSL Setup Helper
 # Author: TspKchn
 # =====================================================
-
 set -euo pipefail
+
 CONF="/etc/showon.conf"
 source "$CONF"
 
-SSL_DIR="/etc/ssl/showon"
-DOMAIN=""
-CERT_FILE="$SSL_DIR/fullchain.pem"
-KEY_FILE="$SSL_DIR/privkey.pem"
+NGINX_CONF="/etc/nginx/sites-available/showon"
+NGINX_LINK="/etc/nginx/sites-enabled/showon"
 
-log() {
-  echo "[$(date '+%F %T')][SSL] $*" | tee -a "$DEBUG_LOG"
-}
+CERT_DIR="/etc/ssl/showon"
+CERT_FILE="$CERT_DIR/fullchain.pem"
+KEY_FILE="$CERT_DIR/privkey.pem"
 
-mkdir -p "$SSL_DIR"
+log() { echo "[$(date '+%F %T')][SSL] $*" >> "$DEBUG_LOG"; }
 
-# --- Detect domain from PANEL_URL or fallback to IP ---
-if [[ -n "${PANEL_URL:-}" ]]; then
-  DOMAIN=$(echo "$PANEL_URL" | sed -E 's#^https?://([^:/]+).*#\1#')
-else
-  DOMAIN=$(hostname -I | awk '{print $1}')
-fi
+mkdir -p "$CERT_DIR"
 
-# --- Common existing cert locations to scan ---
-SEARCH_PATHS=(
-  "/etc/letsencrypt/live/$DOMAIN"
-  "/root/cert/$DOMAIN"
-  "/etc/x-ui/cert"
-  "/etc/nginx/ssl/$DOMAIN"
-)
-
+# === ค้นหาไฟล์ SSL เดิม ===
 FOUND_CERT=""
 FOUND_KEY=""
 
-for path in "${SEARCH_PATHS[@]}"; do
-  if [[ -f "$path/fullchain.pem" && -f "$path/privkey.pem" ]]; then
-    FOUND_CERT="$path/fullchain.pem"
-    FOUND_KEY="$path/privkey.pem"
+for p in \
+  "/root/cert/$HOSTNAME/fullchain.pem:/root/cert/$HOSTNAME/privkey.pem" \
+  "/root/cert/${PANEL_URL#*://}/fullchain.pem:/root/cert/${PANEL_URL#*://}/privkey.pem" \
+  "/etc/letsencrypt/live/$HOSTNAME/fullchain.pem:/etc/letsencrypt/live/$HOSTNAME/privkey.pem" \
+  "/etc/x-ui/server.crt:/etc/x-ui/server.key" \
+  "/etc/v2ray/server.crt:/etc/v2ray/server.key"
+do
+  c="${p%%:*}"
+  k="${p##*:}"
+  if [[ -f "$c" && -f "$k" ]]; then
+    FOUND_CERT="$c"
+    FOUND_KEY="$k"
     break
   fi
 done
 
-# --- If existing cert found, reuse ---
 if [[ -n "$FOUND_CERT" && -n "$FOUND_KEY" ]]; then
-  cp "$FOUND_CERT" "$CERT_FILE"
-  cp "$FOUND_KEY" "$KEY_FILE"
-  log "[OK] ตรวจพบ SSL เดิมที่ $FOUND_CERT → ใช้งานต่อ"
+  cp -f "$FOUND_CERT" "$CERT_FILE"
+  cp -f "$FOUND_KEY" "$KEY_FILE"
+  log "[OK] ตรวจพบ SSL เดิมที่ $(dirname "$FOUND_CERT") → ใช้งานต่อ"
+  echo -e "\e[32m[OK]\e[0m ตรวจพบ SSL เดิมที่ $(dirname "$FOUND_CERT") → ใช้งานต่อ"
 else
-  # --- Try to install certbot if not exist ---
-  if ! command -v certbot >/dev/null 2>&1; then
-    log "[INFO] Installing certbot..."
-    apt-get update -y >/dev/null 2>&1 || true
-    apt-get install -y certbot >/dev/null 2>&1 || true
-  fi
+  log "[WARN] ไม่พบไฟล์ SSL เดิม จะใช้ self-signed cert แทน"
+  echo -e "\e[33m[WARN]\e[0m ไม่พบไฟล์ SSL เดิม จะใช้ self-signed cert แทน"
 
-  if command -v certbot >/dev/null 2>&1; then
-    log "[INFO] Requesting Let's Encrypt certificate for $DOMAIN"
-    if certbot certonly --standalone -d "$DOMAIN" --non-interactive --agree-tos -m admin@$DOMAIN; then
-      cp "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" "$CERT_FILE"
-      cp "/etc/letsencrypt/live/$DOMAIN/privkey.pem" "$KEY_FILE"
-      log "[OK] SSL certificate issued for $DOMAIN"
-    else
-      log "[WARN] ไม่สามารถออก SSL Certificate ได้ → ใช้ HTTP เท่านั้น"
-      exit 0
-    fi
-  else
-    log "[WARN] certbot ไม่พร้อมใช้งาน → ใช้ HTTP เท่านั้น"
-    exit 0
-  fi
+  openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
+    -subj "/CN=${HOSTNAME}" \
+    -keyout "$KEY_FILE" \
+    -out "$CERT_FILE" >/dev/null 2>&1
 fi
 
-# --- Write nginx config with both HTTP/HTTPS ---
-NGINX_CONF="/etc/nginx/sites-available/showon"
-
+# === เขียน nginx conf ===
 cat >"$NGINX_CONF" <<EOF
+# HTTP
 server {
     listen 82 default_server;
+    server_name _;
+
+    location = / {
+        return 302 /server/;
+    }
+    location /server/ {
+        alias $WWW_DIR/;
+        index index.html;
+        autoindex off;
+        add_header Cache-Control "no-store";
+    }
+}
+
+# HTTPS
+server {
     listen 82 ssl;
-    server_name $DOMAIN;
+    server_name ${PANEL_URL#*://};
 
     ssl_certificate     $CERT_FILE;
     ssl_certificate_key $KEY_FILE;
@@ -99,12 +92,14 @@ server {
 }
 EOF
 
-ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/showon
+ln -sf "$NGINX_CONF" "$NGINX_LINK"
 
 if nginx -t; then
-  systemctl reload nginx || systemctl restart nginx
-  log "[OK] Nginx reloaded with SSL for $DOMAIN"
+  systemctl reload nginx
+  log "[OK] SSL nginx config applied"
+  echo -e "\e[32m[OK]\e[0m SSL nginx config applied"
 else
   log "[ERROR] nginx config test failed (SSL)"
+  echo -e "\e[31m[ERROR]\e[0m nginx config test failed (SSL)"
   exit 1
 fi
