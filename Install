@@ -1,119 +1,418 @@
 #!/bin/bash
-# ShowOn Script Manager V.1.0.5
-# ตัวจัดการหลัก: เมนู Install / Uninstall / Update / Debug
-# ------------------------------------------------------------
+# =====================================================
+# ShowOn Script Installer V.1.0.5 (Split Files Edition)
+# Author: TspKchn
+# =====================================================
 
 VERSION="V.1.0.5"
-INSTALL_DIR="/usr/local/bin"
-CONF_FILE="/etc/showon.conf"
+REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main"  # ใช้กับเมนู Update Script
+SELF_PATH="/root/Install"   # path ไฟล์นี้ (จะเขียน/อัปเดตตัวเองด้วยในเมนู Update)
+
+# ---------- สี ----------
+GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; NC="\e[0m"
+
+# ---------- พาธหลัก ----------
 WWW_DIR="/var/www/html/server"
+CONF_FILE="/etc/showon.conf"
 DEBUG_LOG="/var/log/showon-debug.log"
 
+# ---------- ไฟล์ปฏิบัติการ ----------
+BIN_ONLINE="/usr/local/bin/online-check.sh"
+BIN_VNSTAT="/usr/local/bin/vnstat-traffic.sh"
+BIN_SYSINFO="/usr/local/bin/sysinfo.sh"
+SHOWON_CMD="/usr/local/bin/showon"
+
+# ---------- systemd ----------
+SVC_ONLINE="/etc/systemd/system/online-check.service"
+SVC_VNSTAT="/etc/systemd/system/vnstat-traffic.service"
+SVC_SYSINFO="/etc/systemd/system/sysinfo.service"
+
+# ---------- Nginx ----------
+NGX_SITE_AVAIL="/etc/nginx/sites-available/showon"
+NGX_SITE_ENABL="/etc/nginx/sites-enabled/showon"
+
+# =====================================================
+# เมนูหลัก
+# =====================================================
 show_menu() {
   clear
-  echo "==============================="
-  echo "   ShowOn Script Manager $VERSION"
-  echo "==============================="
-  echo "[OK] You are using the latest version."
+  echo -e "==============================="
+  echo -e "   ShowOn Script Manager ${VERSION}"
+  echo -e "==============================="
+
+  # ตรวจเวอร์ชัน (อ่านจากไฟล์ Install ใน GitHub)
+  set +e
+  LATEST=$(curl -fsSL "${REPO_RAW}/Install" | grep -m1 '^VERSION=' | cut -d'"' -f2)
+  RC=$?
+  set -e
+  if [[ $RC -ne 0 || -z "$LATEST" ]]; then
+    echo -e "curl: (23) Failure writing output to destination"
+  else
+    if [[ "$LATEST" != "$VERSION" ]]; then
+      echo -e "${YELLOW}[UPDATE AVAILABLE]${NC} Latest: ${LATEST} (Current: ${VERSION})"
+    else
+      echo -e "${GREEN}[OK]${NC} You are using the latest version."
+    fi
+  fi
+
   echo "1) Install Script"
   echo "2) Uninstall Script"
   echo "3) Update Script"
   echo "4) Check Debug Log"
   echo "0) Exit"
   echo "==============================="
-  read -p "Choose an option [0,1,2,3,4]: " choice
-  case $choice in
+  read -rp "Choose an option [0,1,2,3,4]: " choice
+  case "$choice" in
     1) install_script ;;
     2) uninstall_script ;;
     3) update_script ;;
-    4) tail -n 50 "$DEBUG_LOG" ;;
+    4) check_debug ;;
     0) exit 0 ;;
-    *) echo "Invalid choice"; sleep 2 ;;
+    *) echo -e "${RED}[ERROR] Invalid choice${NC}"; sleep 1; show_menu ;;
   esac
-  show_menu
 }
 
-install_script() {
-  echo "[INFO] Installing ShowOn ($VERSION)..."
-  apt update -y && apt upgrade -y
-  apt install -y curl jq net-tools psmisc nginx iproute2 vnstat
+# =====================================================
+# ฟังก์ชันช่วย
+# =====================================================
+ensure_packages() {
+  echo -e "${CYAN}[INFO]${NC} Updating system packages..."
+  apt update -y >/dev/null 2>&1 || true
+  echo -e "${CYAN}[INFO]${NC} Installing dependencies..."
+  DEBIAN_FRONTEND=noninteractive apt install -y curl jq nginx net-tools psmisc iproute2 ca-certificates vnstat >/dev/null 2>&1 || true
+  systemctl enable --now vnstat >/dev/null 2>&1 || true
+}
 
+ensure_dirs() {
   mkdir -p "$WWW_DIR"
-  systemctl enable --now vnstat
+  chmod 755 "$WWW_DIR"
+  touch "$DEBUG_LOG"; chmod 644 "$DEBUG_LOG"
+}
 
-  # ตั้งค่า 3x-ui
-  echo "[INFO] ตั้งค่า 3x-ui (ถ้าไม่มีให้กด Enter ข้ามได้)"
-  read -p "3X-UI URL (copy login link): " PANEL_BASE
-  PANEL_BASE=${PANEL_BASE%/}
-  read -p "3X-UI Username: " XUI_USER
-  read -p "3X-UI Password: " XUI_PASS
-  read -p "Limit User Online (Default: 2000): " LIMIT
-  LIMIT=${LIMIT:-2000}
+detect_iface() {
+  # try default-route dev
+  IFACE=$(ip route 2>/dev/null | awk '/^default/ {print $5; exit}')
+  if [[ -z "$IFACE" ]]; then
+    IFACE=$(ip -o -4 addr show 2>/dev/null | awk '$2!="lo"{print $2; exit}')
+  fi
+  [[ -z "$IFACE" ]] && IFACE="eth0"
+  echo "$IFACE"
+}
 
-  cat > "$CONF_FILE" <<EOF
-VERSION=$VERSION
-WWW_DIR=$WWW_DIR
-LIMIT=$LIMIT
-DEBUG_LOG=$DEBUG_LOG
-PANEL_BASE=$PANEL_BASE
-XUI_USER=$XUI_USER
-XUI_PASS=$XUI_PASS
+write_conf() {
+  local panel url user pass limit iface
+  panel="$1"; user="$2"; pass="$3"; limit="$4"; iface="$5"
+  cat >"$CONF_FILE" <<EOF
+VERSION="${VERSION}"
+WWW_DIR="${WWW_DIR}"
+LIMIT=${limit}
+DEBUG_LOG="${DEBUG_LOG}"
+PANEL_BASE="${panel}"
+XUI_USER="${user}"
+XUI_PASS="${pass}"
+NET_IFACE="${iface}"
 EOF
+  chmod 600 "$CONF_FILE"
+}
 
-  # Nginx site
-  cat > /etc/nginx/sites-available/showon <<EOF
+write_nginx() {
+  # สร้าง include sites-enabled หาก nginx.conf ไม่มี
+  if ! grep -q "sites-enabled" /etc/nginx/nginx.conf; then
+cat >>/etc/nginx/nginx.conf <<'EOF'
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+    sendfile        on;
+    keepalive_timeout  65;
+    include /etc/nginx/sites-enabled/*;
+}
+EOF
+  fi
+
+  mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+
+  cat >"$NGX_SITE_AVAIL" <<'EOF'
 server {
     listen 82 default_server;
-    root $WWW_DIR;
-    index index.html;
-    location / {
-        autoindex on;
+    server_name _;
+
+    # redirect root -> /server/
+    location = / {
+        return 302 /server/;
+    }
+
+    location /server/ {
+        alias /var/www/html/server/;
+        index index.html;
+        add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0";
     }
 }
 EOF
-  ln -sf /etc/nginx/sites-available/showon /etc/nginx/sites-enabled/showon
-  nginx -t && systemctl restart nginx
+  ln -sf "$NGX_SITE_AVAIL" "$NGX_SITE_ENABL"
 
-  # Services
+  nginx -t && systemctl reload nginx || {
+    echo -e "${YELLOW}[WARN]${NC} nginx test failed, attempting graceful fix..."
+    # ถ้าล้มเหลว ให้เอา default site ออกก่อนแล้วลองใหม่
+    rm -f /etc/nginx/sites-enabled/default
+    nginx -t && systemctl reload nginx || {
+      echo -e "${RED}[ERROR]${NC} Nginx config still invalid. Please check /etc/nginx/nginx.conf and sites."
+    }
+  }
+  echo -e "${GREEN}[OK]${NC} Nginx ready at :82 (/server/)"
+}
+
+write_index_html() {
+  # หน้า Dashboard แบบเรียบง่าย + แสดง online_app.json + sysinfo.json + netinfo.json
+  cat >"${WWW_DIR}/index.html" <<'EOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ShowOn Dashboard V.1.0.5</title>
+<style>
+ body{background:#111;color:#fff;font-family:Arial,sans-serif;padding:20px}
+ .card{background:#1e1e1e;border-radius:10px;padding:16px;margin:12px 0}
+ h1{color:#0f0}
+ table{width:100%;border-collapse:collapse}
+ th,td{border:1px solid #333;padding:8px;text-align:center}
+ th{background:#222}
+ .muted{color:#aaa}
+</style>
+</head>
+<body>
+<h1>ShowOn Dashboard <span class="muted">V.1.0.5</span></h1>
+
+<div class="card">
+  <h2>Online Summary</h2>
+  <table>
+    <thead>
+      <tr><th>Onlines</th><th>Limit</th><th>SSH</th><th>OpenVPN</th><th>Dropbear</th><th>V2Ray</th></tr>
+    </thead>
+    <tbody id="online_rows"><tr><td colspan="6">Loading...</td></tr></tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>System & Network</h2>
+  <div id="sys">Loading...</div>
+</div>
+
+<div class="card">
+  <h2>Traffic (vnStat & V2Ray)</h2>
+  <div id="net">Loading...</div>
+</div>
+
+<script>
+async function loadOnline(){
+  try{
+    const r = await fetch('./online_app.json?_=' + Date.now());
+    const d = await r.json();
+    const o = d[0];
+    document.getElementById('online_rows').innerHTML =
+      `<tr><td>${o.onlines}</td><td>${o.limite}</td><td>${o.ssh}</td><td>${o.openvpn}</td><td>${o.dropbear}</td><td>${o.v2ray}</td></tr>`;
+  }catch(e){
+    document.getElementById('online_rows').innerHTML = `<tr><td colspan="6">Error loading</td></tr>`;
+  }
+}
+
+async function loadSys(){
+  try{
+    const r = await fetch('./sysinfo.json?_=' + Date.now());
+    const s = await r.json();
+    const html = `
+      <b>Uptime:</b> ${s.uptime}<br>
+      <b>CPU:</b> ${s.cpu_usage}<br>
+      <b>RAM:</b> ${s.ram_usage}<br>
+      <b>Disk:</b> ${s.disk_usage}
+    `;
+    document.getElementById('sys').innerHTML = html;
+  }catch(e){
+    document.getElementById('sys').innerHTML = 'Error loading';
+  }
+}
+
+async function loadNet(){
+  try{
+    const r = await fetch('./netinfo.json?_=' + Date.now());
+    const n = await r.json();
+    let v2 = n.v2ray ? `<br><b>V2Ray</b> up: ${n.v2ray.up}  down: ${n.v2ray.down}` : '';
+    document.getElementById('net').innerHTML =
+      `<b>vnStat</b> rx: ${n.vnstat.rx}  tx: ${n.vnstat.tx} ${v2}`;
+  }catch(e){
+    document.getElementById('net').innerHTML = 'Error loading';
+  }
+}
+
+function loop(){
+  loadOnline(); loadSys(); loadNet();
+}
+loop(); setInterval(loop, 5000);
+</script>
+</body>
+</html>
+EOF
+  chmod 644 "${WWW_DIR}/index.html"
+}
+
+write_services() {
+  # online-check.service
+  cat >"$SVC_ONLINE" <<EOF
+[Unit]
+Description=ShowOn Online Users JSON Generator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -lc "while true; do \\"${BIN_ONLINE}\\"; sleep 5; done"
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  # vnstat-traffic.service
+  cat >"$SVC_VNSTAT" <<EOF
+[Unit]
+Description=ShowOn vnStat + V2Ray Traffic JSON Generator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -lc "while true; do \\"${BIN_VNSTAT}\\"; sleep 5; done"
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  # sysinfo.service
+  cat >"$SVC_SYSINFO" <<EOF
+[Unit]
+Description=ShowOn System Info JSON Generator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -lc "while true; do \\"${BIN_SYSINFO}\\"; sleep 5; done"
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+enable_services() {
   systemctl daemon-reload
-  systemctl enable --now online-check.service sysinfo.service vnstat-traffic.service v2ray-traffic.service
+  systemctl enable --now online-check.service >/dev/null 2>&1 || true
+  systemctl enable --now vnstat-traffic.service >/dev/null 2>&1 || true
+  systemctl enable --now sysinfo.service >/dev/null 2>&1 || true
+}
 
-  echo "[OK] Installed ShowOn $VERSION"
-  echo "[INFO] Open: http://$(hostname -I | awk '{print $1}'):82/server/"
+install_script() {
+  set -e
+  ensure_packages
+  ensure_dirs
+
+  # ถามค่าการตั้งค่า 3x-ui (ใส่ URL เต็ม, user/pass ไม่ซ่อน)
+  echo -e "${CYAN}[INFO]${NC} ตั้งค่า 3x-ui (ถ้าไม่มีให้กด Enter ข้ามได้)"
+  echo "  👉 กรุณา 'วางลิงก์หน้าล็อกอินทั้งเส้น' เช่น:"
+  echo "     https://IP:PORT/RandomPath  หรือ  http://domain:port/"
+  read -rp "3X-UI URL (copy login link): " PANEL_URL
+  PANEL_URL=$(echo "$PANEL_URL" | sed 's:/*$::')  # ตัด / ท้าย
+  [[ -n "$PANEL_URL" ]] && echo "Using URL: ${PANEL_URL}"
+
+  read -rp "3X-UI Username: " XUI_USER
+  read -rp "3X-UI Password: " XUI_PASS
+  read -rp "Limit User Online (Default: 2000): " LIMIT
+  [[ -z "$LIMIT" ]] && LIMIT=2000
+
+  IFACE=$(detect_iface)
+
+  # เขียนไฟล์ conf
+  write_conf "$PANEL_URL" "$XUI_USER" "$XUI_PASS" "$LIMIT" "$IFACE"
+
+  # ทดสอบล็อกอิน 3x-ui ถ้ากรอกมา
+  if [[ -n "$PANEL_URL" && -n "$XUI_USER" && -n "$XUI_PASS" ]]; then
+    set +e
+    LOGIN=$(curl -sk -c /tmp/showon_cookie -X POST "${PANEL_URL}/login" \
+        -d "username=${XUI_USER}&password=${XUI_PASS}")
+    set -e
+    if echo "$LOGIN" | jq -e '.success==true' >/dev/null 2>&1; then
+      echo -e "${GREEN}[OK]${NC} Login to 3x-ui OK"
+    else
+      echo -e "${YELLOW}[WARN]${NC} 3x-ui login failed. V2Ray online may be 0."
+    fi
+  fi
+
+  # คัดลอกสคริปต์ปฏิบัติการ (จากไฟล์ที่อยู่โฟลเดอร์เดียวกัน)
+  install -m 755 ./online-check.sh "$BIN_ONLINE"
+  install -m 755 ./vnstat-traffic.sh "$BIN_VNSTAT"
+  install -m 755 ./sysinfo.sh "$BIN_SYSINFO"
+
+  # เขียน index.html + nginx site
+  write_index_html
+  write_nginx
+
+  # เขียน service และเปิดใช้งาน
+  write_services
+  enable_services
+
+  # คำสั่ง showon
+  cat >"$SHOWON_CMD" <<EOF
+#!/bin/bash
+bash "$SELF_PATH"
+EOF
+  chmod +x "$SHOWON_CMD"
+
+  echo -e "${GREEN}[OK]${NC} Installed ShowOn ${VERSION}"
+  echo -e "${CYAN}[INFO]${NC} Open: http://$(hostname -I | awk '{print $1}'):82/server/"
+  read -rp "Press Enter to return to menu..." _
+  show_menu
 }
 
 uninstall_script() {
-  echo "[INFO] Uninstalling ShowOn Script..."
-  systemctl stop online-check.service sysinfo.service vnstat-traffic.service v2ray-traffic.service 2>/dev/null
-  systemctl disable online-check.service sysinfo.service vnstat-traffic.service v2ray-traffic.service 2>/dev/null
+  echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script..."
 
-  rm -f /usr/local/bin/online-check.sh
-  rm -f /usr/local/bin/vnstat-traffic.sh
-  rm -f /usr/local/bin/sysinfo.sh
-  rm -f /etc/systemd/system/online-check.service
-  rm -f /etc/systemd/system/vnstat-traffic.service
-  rm -f /etc/systemd/system/sysinfo.service
-  rm -f /etc/systemd/system/v2ray-traffic.service
-  rm -f "$CONF_FILE"
+  systemctl stop online-check.service vnstat-traffic.service sysinfo.service 2>/dev/null || true
+  systemctl disable online-check.service vnstat-traffic.service sysinfo.service 2>/dev/null || true
+
+  rm -f "$SVC_ONLINE" "$SVC_VNSTAT" "$SVC_SYSINFO"
+  systemctl daemon-reload
+
+  rm -f "$BIN_ONLINE" "$BIN_VNSTAT" "$BIN_SYSINFO"
+  rm -f "$CONF_FILE" "$SHOWON_CMD"
   rm -rf "$WWW_DIR"
 
-  systemctl daemon-reload
-  systemctl restart nginx
+  rm -f "$NGX_SITE_ENABL" "$NGX_SITE_AVAIL"
+  nginx -t >/dev/null 2>&1 && systemctl reload nginx || echo -e "${YELLOW}[WARN]${NC} nginx reload failed (site removed)."
 
-  echo "[SUCCESS] Uninstalled completely."
+  echo -e "${GREEN}[SUCCESS]${NC} Uninstalled completely."
+  read -rp "Press Enter to return to menu..." _
+  show_menu
 }
 
 update_script() {
-  echo "[INFO] Checking for updates..."
-  curl -s https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install -o /tmp/Install.new
-  if ! cmp -s /tmp/Install.new "$0"; then
-    cp /tmp/Install.new "$0"
-    chmod +x "$0"
-    echo "[OK] Updated! Run ./Install again."
-    exit 0
-  else
-    echo "[OK] Already latest version."
-  fi
+  echo -e "${CYAN}[INFO]${NC} Updating Install from repo..."
+  set -e
+  TMPF="/tmp/Install.$$"
+  curl -fsSL "${REPO_RAW}/Install" -o "$TMPF"
+  chmod +x "$TMPF"
+  mv -f "$TMPF" "$SELF_PATH"
+  echo -e "${GREEN}[OK]${NC} Updated. Run: showon"
+  read -rp "Press Enter to return to menu..." _
+  show_menu
 }
 
+check_debug() {
+  echo -e "${CYAN}[INFO]${NC} Tail $DEBUG_LOG (Ctrl+C to quit)"
+  tail -n 100 -F "$DEBUG_LOG"
+}
+
+# เริ่มเมนู
 show_menu
