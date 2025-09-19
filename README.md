@@ -1,92 +1,84 @@
-# ShowOn Dashboard
+# ![ShowOn](ShowOn.png)
 
-แสดงข้อมูล **Online Users / System / Traffic** จากเซิร์ฟเวอร์ VPN  
-รองรับ SSH, OpenVPN, Dropbear, และ V2Ray/Xray (3x-ui)
+# 🚀 ShowOn Dashboard V.1.0.5
 
-## 📂 โครงสร้างไฟล์
+Dashboard สำหรับตรวจสอบสถานะ Online ของผู้ใช้งาน VPN  
+✅ รองรับ SSH / OpenVPN / Dropbear / V2Ray(Xray)  
+✅ แสดง System Info (Uptime, CPU, RAM, Disk)  
+✅ แสดง Traffic จาก vnStat และ V2Ray รวมทุก inbound  
+✅ แสดงผลผ่าน Web Dashboard ที่ใช้งานง่าย (Nginx port 82)
 
-```
-/usr/local/bin/
-  ├─ online-check.sh      # สร้าง online_app.json
-  ├─ sysinfo.sh           # สร้าง sysinfo.json
-  ├─ vnstat-traffic.sh    # สร้าง netinfo.json
-  └─ v2ray-traffic.sh     # (optional) สร้าง v2ray_traffic.json
+---
 
-/var/www/html/server/
-  ├─ index.html           # Dashboard หน้าเว็บ
-  ├─ online_app.json      # JSON แสดงจำนวนออนไลน์
-  ├─ sysinfo.json         # JSON ข้อมูลระบบ
-  ├─ netinfo.json         # JSON ข้อมูลการใช้งานเน็ต
-  └─ v2ray_traffic.json   # JSON เฉพาะ V2Ray (optional)
-```
+## 📦 Supported OS
+- 🐧 **Ubuntu 20.04 LTS** (recommended)
+- 🐧 **Ubuntu 22.04 LTS**
+- 🐧 **Ubuntu 18.04 LTS** (ยังรองรับแต่ไม่แนะนำ)
 
-## ⚙️ การตั้งค่า
+---
 
-ไฟล์ config: `/etc/showon.conf`
+## ⚙️ วิธีติดตั้ง (Installation)
 
+### วิธีที่ 1: ใช้ `curl`
 ```bash
-VERSION=V.1.0.5
-WWW_DIR=/var/www/html/server
-LIMIT=2000
-DEBUG_LOG=/var/log/showon-debug.log
-
-PANEL_URL="https://your-domain:port/randomPath"
-XUI_USER="admin"
-XUI_PASS="yourpassword"
-NET_IFACE="ens3"
+curl -fsSL https://raw.githubusercontent.com/your-repo/showon/main/install.sh | bash
 ```
 
-## 🚀 วิธีใช้งาน
-
-รันสคริปต์แต่ละตัวเพื่ออัปเดต JSON
-
+### วิธีที่ 2: ใช้ `wget`
 ```bash
-bash /usr/local/bin/online-check.sh
-bash /usr/local/bin/sysinfo.sh
-bash /usr/local/bin/vnstat-traffic.sh
-bash /usr/local/bin/v2ray-traffic.sh   # optional
+wget -qO- https://raw.githubusercontent.com/your-repo/showon/main/install.sh | bash
 ```
 
-## 🔄 ตั้งค่า systemd service + timer
-
-ตัวอย่าง: `/etc/systemd/system/online-check.service`
-
-```ini
-[Unit]
-Description=ShowOn Online Users JSON Generator
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/online-check.sh
-Restart=always
-```
-
-ตัวอย่าง timer `/etc/systemd/system/online-check.timer`
-
-```ini
-[Unit]
-Description=Run online-check every 5s
-
-[Timer]
-OnUnitActiveSec=5s
-AccuracySec=1s
-
-[Install]
-WantedBy=timers.target
-```
-
-เปิดใช้งาน:
-
+### วิธีที่ 3: ใช้ `git clone`
 ```bash
-systemctl enable --now online-check.timer
+git clone https://github.com/your-repo/showon.git
+cd showon
+chmod +x *.sh
+./install.sh
 ```
 
-ทำเช่นเดียวกันกับ `sysinfo`, `vnstat-traffic`, `v2ray-traffic`
+---
 
-## 🌐 เปิดใช้งาน Dashboard
-
-เปิดเบราว์เซอร์ไปที่:
-
+## 🔄 อัปเดต (Update)
+```bash
+cd /script/
+git pull origin main
+./install.sh
 ```
-http://YOUR_SERVER:82/server/
+
+---
+
+## ❌ ถอนการติดตั้ง (Uninstall)
+```bash
+bash /script/uninstall.sh
+reboot
 ```
+
+---
+
+## 📂 โครงสร้างไฟล์ (Project Structure)
+```
+/script/
+├── install.sh
+├── uninstall.sh
+├── online-check.sh
+├── sysinfo.sh
+├── vnstat-traffic.sh
+├── v2ray-traffic.sh
+├── /var/www/html/server/
+    ├── index.html
+    ├── online_app.json
+    ├── sysinfo.json
+    ├── netinfo.json
+    └── v2ray_traffic.json
+```
+
+---
+
+## 📝 Changelog
+ดูเพิ่มเติมที่ [CHANGELOG.md](CHANGELOG.md)
+
+---
+
+## ❤️ Credits
+พัฒนาโดย **คุณ** และ AI ผู้ช่วย 🤖
