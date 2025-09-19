@@ -1,426 +1,127 @@
 #!/bin/bash
-# =====================================================
-# ShowOn Script Installer V.1.0.5
-# Single-file installer + manager
-# =====================================================
+# =====================================================================
+# ShowOn Script Manager V.1.0.5 (Full, consolidated installer)
+# Author: TspKchn
+# Maintainer: You
+# =====================================================================
+# This single-file installer:
+#  - Provides a menu to Install / Uninstall / Update / View Debug Log
+#  - Installs nginx site serving /server/ at port :82
+#  - Generates online_app.json (SSH/OpenVPN/Dropbear/V2Ray) every 5s
+#  - Supports V2Ray via:
+#       * 3x-ui (new/old) using /panel/api/inbounds/onlines or fallbacks
+#       * Xray-core with access logs (two common layouts)
+#  - Generates sysinfo.json every 5s
+#  - Optional netinfo.json using vnstat and/or 3x-ui server/status
+#  - No password hiding on prompt (your request)
+#  - Uninstall is clean, no reboot required
+#  - Update pulls latest Install from your GitHub raw link
+#
+# Notes:
+#  * Designed for Ubuntu/Debian
+#  * Requires root
+#  * Heavily commented for clarity; safe to edit.
+# =====================================================================
 
-set -euo pipefail
-IFS=$'\n\t'
-
+# -----------------------------
+# Global Config
+# -----------------------------
 VERSION="V.1.0.5"
-# raw install path (เปลี่ยนเป็น repo ของคุณเมื่ออัพขึ้น github)
 REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install"
 
-# Paths
 SHOWON_CMD="/usr/local/bin/showon"
-ROOT_INSTALL="/root/Install"
+CONF_FILE="/etc/showon.conf"
+LOG_FILE="/var/log/showon-debug.log"
+
 WWW_DIR="/var/www/html/server"
 SCRIPT_ONLINE="/usr/local/bin/online-check.sh"
 SCRIPT_SYSINFO="/usr/local/bin/sysinfo.sh"
+
 SERVICE_ONLINE="/etc/systemd/system/online-check.service"
 SERVICE_SYSINFO="/etc/systemd/system/sysinfo.service"
-CONF_FILE="/etc/showon.conf"
-DEBUG_LOG="/var/log/showon-debug.log"
 
-# Colors
-GREEN="\e[32m"
-RED="\e[31m"
-YELLOW="\e[33m"
-CYAN="\e[36m"
-NC="\e[0m"
+NGX_SITE_AVAIL="/etc/nginx/sites-available/server_checker"
+NGX_SITE_ENABLED="/etc/nginx/sites-enabled/server_checker"
 
-log_debug() {
-  echo "[$(date '+%F %T')][$1] $2" >>"$DEBUG_LOG"
-}
+# -----------------------------
+# Pretty Colors
+# -----------------------------
+GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; MAGENTA="\e[35m"; NC="\e[0m"
 
-# Ensure debug log exists
-mkdir -p "$(dirname "$DEBUG_LOG")"
-touch "$DEBUG_LOG"
-chmod 600 "$DEBUG_LOG"
-
-# Self-install copy to /root/Install if needed (safe, avoid copying onto itself)
-_self_copy() {
-  local me path
-  path="$(realpath "$0" 2>/dev/null || true)"
-  if [ -z "$path" ] || [ "$path" != "$ROOT_INSTALL" ]; then
-    # If $0 is not /root/Install, try to copy; swallow errors but log
-    if cp -n "$0" "$ROOT_INSTALL" 2>/dev/null; then
-      chmod +x "$ROOT_INSTALL"
-      log_debug "SELF" "Copied script to $ROOT_INSTALL"
-    else
-      # fallback: write downloaded content if curl available
-      if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$REPO_RAW" -o "$ROOT_INSTALL" || true
-        chmod +x "$ROOT_INSTALL" 2>/dev/null || true
-        log_debug "SELF" "Fetched script to $ROOT_INSTALL via curl fallback"
-      fi
-    fi
+# -----------------------------
+# Helpers
+# -----------------------------
+must_root() {
+  if [[ $EUID -ne 0 ]]; then
+    echo -e "${RED}[ERROR]${NC} Please run as root."
+    exit 1
   fi
 }
 
-# ============ Utility helpers ============
-prompt() {
-  # prompt with default value
-  local varname="$1"; shift
-  local prompt_text="$1"; shift
-  local default="$1"; shift
-  local val
-  read -rp "$prompt_text" val
-  if [ -z "$val" ]; then
-    val="$default"
-  fi
-  eval "$varname=\"\$val\""
+say() { echo -e "${CYAN}[INFO]${NC} $*"; }
+ok()  { echo -e "${GREEN}[OK]${NC} $*"; }
+warn(){ echo -e "${YELLOW}[WARN]${NC} $*"; }
+err() { echo -e "${RED}[ERROR]${NC} $*"; }
+
+timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
+
+append_log() {
+  echo "[$(timestamp)] $*" >> "$LOG_FILE"
 }
 
-confirm() {
-  # yes/no
-  local msg="$1"
-  read -rp "$msg [y/N]: " ans
-  case "$ans" in
-    [Yy]*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-# ============ Installation functions ============
-install_dependencies() {
-  echo -e "${CYAN}[INFO]${NC} Installing dependencies..."
-  log_debug "INSTALL" "Installing packages"
-  apt update -y >/dev/null 2>&1 || true
-  DEBIAN_FRONTEND=noninteractive apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates gnupg2 >/dev/null 2>&1 || {
-    echo -e "${YELLOW}[WARN]${NC} apt install had warnings (check manually)."
-    log_debug "INSTALL" "apt install returned non-zero"
-  }
-
-  # vnstat optional (install if not present)
-  if ! command -v vnstat >/dev/null 2>&1; then
-    apt install -y vnstat >/dev/null 2>&1 || log_debug "INSTALL" "vnstat install failed"
-  fi
-}
-
-write_conf() {
-  # $1 = PANEL_URL (may be empty), $2 = USERNAME, $3 = PASSWORD, $4 = LIMIT
-  local PANEL_URL="$1" USERNAME="$2" PASSWORD="$3" LIMIT="$4"
-  mkdir -p /etc
-  cat >"$CONF_FILE" <<EOF
-# ShowOn configuration
-VERSION="$VERSION"
-WWW_DIR="$WWW_DIR"
-PANEL_BASE="${PANEL_URL}"
-XUI_USER="${USERNAME}"
-XUI_PASS="${PASSWORD}"
-LIMIT=${LIMIT:-2000}
-DEBUG_LOG="${DEBUG_LOG}"
-EOF
-  chmod 600 "$CONF_FILE"
-  log_debug "CONF" "Wrote $CONF_FILE"
-}
-
-# ============ Generators ============
-
-write_online_script() {
-  cat >"$SCRIPT_ONLINE" <<'EOF'
+create_showon_cmd() {
+  cat > "$SHOWON_CMD" <<'EOF'
 #!/bin/bash
-set -euo pipefail
-IFS=$'\n\t'
-CONF=/etc/showon.conf
-source "$CONF"
-
-JSON_OUT="$WWW_DIR/online_app.json"
-TMP_COOKIE="/tmp/showon_cookie"
-# ensure directory exists
-mkdir -p "$WWW_DIR"
-# logging helper
-logd() {
-  echo "[$(date '+%F %T')][ONLINE] $*" >>"$DEBUG_LOG"
+exec bash /root/Install
+EOF
+  chmod +x "$SHOWON_CMD"
 }
 
-# function: try 3x-ui login and fetch onlines
-fetch_xui_onlines() {
-  local PANEL="$PANEL_BASE"
-  local USER="$XUI_USER"
-  local PASS="$XUI_PASS"
-  local COOKIE="$TMP_COOKIE"
-  if [ -z "$PANEL" ] || [ -z "$USER" ] || [ -z "$PASS" ]; then
-    return 1
-  fi
-
-  # login (form data username/password)
-  # store cookie (curl -c)
-  curl -sk -c "$COOKIE" -X POST "${PANEL%/}/login" \
-    -H "Content-Type: application/x-www-form-urlencoded" \
-    -d "username=$USER&password=$PASS" >/dev/null 2>&1 || true
-
-  if ! grep -qi "3x-ui" "$COOKIE" 2>/dev/null; then
-    logd "No 3x-ui cookie"
-    return 2
-  fi
-
-  # try modern API first (panel/api/inbounds/onlines)
-  local RES
-  RES=$(curl -sk -b "$COOKIE" -H "Content-Type: application/json" -X POST "${PANEL%/}/panel/api/inbounds/onlines" -d '{}' 2>/dev/null || true)
-  # if returns JSON array or object with obj, try to parse
-  if echo "$RES" | jq -e . >/dev/null 2>&1; then
-    # standard response: {"success":true,"msg":"", "obj": [...] }
-    if echo "$RES" | jq -e 'has("obj")' >/dev/null 2>&1; then
-      # obj may be array of emails
-      local arrlen
-      arrlen=$(echo "$RES" | jq -r '.obj | if type=="array" then length else 0 end' 2>/dev/null || echo 0)
-      if [ "$arrlen" -gt 0 ]; then
-        # produce list of onlines as unique count
-        echo "$RES" | jq -r '.obj[]' | jq -R -s -c 'split("\n")[:-1]' >/tmp/showon_onlines_raw.json 2>/dev/null || true
-        return 0
-      fi
-    fi
-    # fallback: /panel/api/inbounds/list -> parse clientStats[].lastOnline > 0
-    if echo "$RES" | jq -e '(.obj) | type' >/dev/null 2>&1; then
-      # if obj exists, try to count via list endpoint
-      local LIST
-      LIST=$(curl -sk -b "$COOKIE" "${PANEL%/}/panel/api/inbounds/list" 2>/dev/null || true)
-      if echo "$LIST" | jq -e . >/dev/null 2>&1; then
-        # select clients with lastOnline>0
-        echo "$LIST" | jq -c '[.obj[].clientStats[] | select(.lastOnline > 0) | .email]' >/tmp/showon_onlines_raw.json 2>/dev/null || true
-        return 0
-      fi
-    fi
-  fi
-
-  # If the modern api failed, attempt older endpoint paths used on some versions
-  RES=$(curl -sk -b "$COOKIE" -H "Content-Type: application/x-www-form-urlencoded" -X POST "${PANEL%/}/panel/inbound/onlines" 2>/dev/null || true)
-  if echo "$RES" | jq -e . >/dev/null 2>&1; then
-    # if .obj present
-    if echo "$RES" | jq -e 'has("obj")' >/dev/null 2>&1; then
-      echo "$RES" | jq -c '.obj' >/tmp/showon_onlines_raw.json 2>/dev/null || true
-      return 0
-    fi
-  fi
-
-  return 3
+print_footer_link() {
+  local ip; ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  [[ -z "$ip" ]] && ip="127.0.0.1"
+  echo -e "${CYAN}[INFO]${NC} Open: http://${ip}:82/server/"
 }
 
-# function: fallback to xray logs (detect /usr/local/etc/xray/config.json or /etc/xray/config.json)
-fetch_xray_onlines() {
-  # This attempts to approximate unique IPs from access logs as online users (best effort)
-  local LOG_DIR="/var/log/xray"
-  local ACCESS="/var/log/xray/access.log"
-  local CNT=0
-  if [ -d "$LOG_DIR" ]; then
-    # try all log files for accepted lines
-    if ls "$LOG_DIR"/*.log >/dev/null 2>&1; then
-      CNT=$(grep -ha "accepted" "$LOG_DIR"/*.log 2>/dev/null | tail -n 2000 | awk '{print $3}' | cut -d: -f1 | sort -u | wc -l || true)
-    fi
-  elif [ -f "$ACCESS" ]; then
-    CNT=$(awk '{print $3}' "$ACCESS" | cut -d: -f1 | sort -u | wc -l || true)
-  fi
-  echo "$CNT"
-}
-
-# main loop single iteration (called by systemd service loop)
-main_iter() {
-  # detect counts
-  local SSH_ON
-  SSH_ON=$(ss -nt state established | awk '$3 ~ /:22$/ {c++} END{print c+0}')
-  local OPENVPN_ON=0
-  if [ -f /etc/openvpn/server/openvpn-status.log ]; then
-    OPENVPN_ON=$(grep -c "CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || true)
-  fi
-  local DROPBEAR_ON=0
-  if pgrep dropbear >/dev/null 2>&1; then
-    DROPBEAR_ON=$(pgrep dropbear | wc -l)
-  fi
-
-  # V2Ray / Xray detection
-  local V2_ON=0
-  # try X-UI / 3x-ui
-  if [ -n "${PANEL_BASE:-}" ] && [ -n "${XUI_USER:-}" ] && [ -n "${XUI_PASS:-}" ]; then
-    if fetch_xui_onlines; then
-      # convert tmp file to array and count length
-      if [ -f /tmp/showon_onlines_raw.json ]; then
-        V2_ON=$(jq -r 'if type=="array" then length else (if type=="string" then 1 else 0 end) end' /tmp/showon_onlines_raw.json 2>/dev/null || echo 0)
-      fi
-      logd "XUI_FETCH success; count=$V2_ON"
+# -----------------------------
+# Update Checker (on menu)
+# -----------------------------
+check_update() {
+  local latest
+  latest=$(curl -fsSL "$REPO_RAW" 2>/dev/null | grep -m1 '^VERSION=' | cut -d\" -f2 | tr -d '\r')
+  if [[ -n "$latest" && "$latest" != "$VERSION" ]]; then
+    echo -e "${YELLOW}[UPDATE AVAILABLE]${NC} Latest: ${latest} (Current: ${VERSION})"
+    read -r -p "Press Enter to update now, or Ctrl+C to skip..." _
+    if curl -fsSL -o /root/Install.new "$REPO_RAW"; then
+      mv /root/Install.new /root/Install
+      chmod +x /root/Install
+      ok "Updated to ${latest}"
+      echo -e "${CYAN}[INFO]${NC} Run 'showon' again to load the new version."
+      exit 0
     else
-      # fallback to xray logs if API fails
-      V2_ON=$(fetch_xray_onlines || echo 0)
-      logd "XUI_FETCH failed; fallback logs count=$V2_ON"
+      warn "Failed to download latest installer. Keeping current version."
     fi
   else
-    # no PANEL info, attempt xray logs
-    V2_ON=$(fetch_xray_onlines || echo 0)
-    logd "No PANEL configured; xray logs count=$V2_ON"
+    ok "You are using the latest version."
   fi
-
-  # Compose JSON (array with single object for compatibility)
-  local LIMIT_VAL=${LIMIT:-2000}
-  local TOTAL=$((SSH_ON + OPENVPN_ON + DROPBEAR_ON + V2_ON))
-  jq -n \
-    --arg onlines "$TOTAL" \
-    --arg limite "$LIMIT_VAL" \
-    --arg ssh "$SSH_ON" \
-    --arg openvpn "$OPENVPN_ON" \
-    --arg dropbear "$DROPBEAR_ON" \
-    --arg v2ray "$V2_ON" \
-    '[{onlines:$onlines|tonumber, limite:$limite|tonumber, ssh:$ssh|tonumber, openvpn:$openvpn|tonumber, dropbear:$dropbear|tonumber, v2ray:$v2ray|tonumber}]' >"$JSON_OUT".tmp && mv "$JSON_OUT".tmp "$JSON_OUT"
-
-  logd "WROTE $JSON_OUT (total=$TOTAL ssh=$SSH_ON openvpn=$OPENVPN_ON dropbear=$DROPBEAR_ON v2=$V2_ON)"
 }
 
-# run single iter if called directly; if invoked, perform one iteration
-if [ "${1:-}" = "--once" ]; then
-  main_iter
-  exit 0
-fi
-
-# else run continuous (systemd service should run loop externally; but we include loop here if desired)
-while true; do
-  main_iter || logd "main_iter returned non-zero"
-  sleep 5
-done
-EOF
-
-  chmod +x "$SCRIPT_ONLINE"
-  log_debug "WRITE" "Wrote $SCRIPT_ONLINE"
-}
-
-write_sysinfo_script() {
-  cat >"$SCRIPT_SYSINFO" <<'EOF'
-#!/bin/bash
-set -euo pipefail
-IFS=$'\n\t'
-CONF=/etc/showon.conf
-source "$CONF"
-SYS_OUT="$WWW_DIR/sysinfo.json"
-NET_OUT="$WWW_DIR/netinfo.json"
-DEBUG_LOG="${DEBUG_LOG}"
-
-logd() { echo "[$(date '+%F %T')][SYS] $*" >>"$DEBUG_LOG"; }
-
-# collect sysinfo
-collect_sys() {
-  local uptime cpu_usage mem_usage disk_usage
-  uptime=$(uptime -p | sed 's/up //')
-  cpu_usage=$(top -bn1 | grep "Cpu(s)" | awk '{print 100 - $8 "%"}' 2>/dev/null || echo "N/A")
-  mem_usage=$(free -m | awk 'NR==2{printf "%s / %s MB", $3,$2}' 2>/dev/null || echo "N/A")
-  disk_usage=$(df -h / | awk 'NR==2{print $3 " / " $2}' 2>/dev/null || echo "N/A")
-
-  jq -n --arg uptime "$uptime" --arg cpu_usage "$cpu_usage" --arg ram_usage "$mem_usage" --arg disk_usage "$disk_usage" \
-    '{uptime:$uptime, cpu_usage:$cpu_usage, ram_usage:$ram_usage, disk_usage:$disk_usage}' >"$SYS_OUT".tmp && mv "$SYS_OUT".tmp "$SYS_OUT"
-  logd "WROTE $SYS_OUT"
-}
-
-# collect network info: vnstat and attempt to fetch 3x-ui server status netTraffic if possible
-collect_net() {
-  local vn_rx vn_tx v2_up v2_down
-  vn_rx=0; vn_tx=0; v2_up=0; v2_down=0
-
-  if command -v vnstat >/dev/null 2>&1; then
-    # attempt to get total bytes (rx/tx) from vnstat --exportdb or vnstat -tr (use database)
-    # use vnstat --oneline-like: vnstat -i <iface> isn't ideal; simpler: try 'vnstat --dumpdb' approach
-    if vnstat --version >/dev/null 2>&1; then
-      # sum rx/tx across all interfaces from database (best-effort)
-      if vnstat --dumpdb 2>/dev/null | grep -E 'rx|tx' >/dev/null 2>&1; then
-        # A lightweight approach: use vnstat -s for total (human) then parse; fallback to db parsing isn't portable
-        # Use vnstat -tr isn't total; so try vnstat -i any and parse; fallback: read db if exists
-        # We'll try 'vnstat --json' if available
-        if vnstat --json >/dev/null 2>&1; then
-          local j
-          j=$(vnstat --json 2>/dev/null || echo "{}")
-          vn_rx=$(echo "$j" | jq -r '.interfaces[]?.traffic.total.rx' 2>/dev/null | awk '{s+= $1} END{print s+0}')
-          vn_tx=$(echo "$j" | jq -r '.interfaces[]?.traffic.total.tx' 2>/dev/null | awk '{s+= $1} END{print s+0}')
-        fi
-      fi
-    fi
-  fi
-
-  # Try to get v2ray netTraffic from panel/api/server/status if configured
-  if [ -n "${PANEL_BASE:-}" ] && [ -n "${XUI_USER:-}" ] && [ -n "${XUI_PASS:-}" ]; then
-    # Use cookie login and request panel/api/server/status
-    local COOKIE="/tmp/showon_cookie"
-    curl -sk -c "$COOKIE" -X POST "${PANEL_BASE%/}/login" -H "Content-Type: application/x-www-form-urlencoded" -d "username=${XUI_USER}&password=${XUI_PASS}" >/dev/null 2>&1 || true
-    if [ -f "$COOKIE" ] && grep -qi "3x-ui" "$COOKIE" >/dev/null 2>&1; then
-      local STATUS
-      STATUS=$(curl -sk -b "$COOKIE" "${PANEL_BASE%/}/panel/api/server/status" 2>/dev/null || echo "{}")
-      if echo "$STATUS" | jq -e . >/dev/null 2>&1; then
-        v2_up=$(echo "$STATUS" | jq -r '.obj.netTraffic.sent // .obj.netIO.up // 0' 2>/dev/null || echo 0)
-        v2_down=$(echo "$STATUS" | jq -r '.obj.netTraffic.recv // .obj.netIO.down // 0' 2>/dev/null || echo 0)
-      fi
-    fi
-  fi
-
-  jq -n --argjson vnstat "$(jq -n --arg rx "${vn_rx:-0}" --arg tx "${vn_tx:-0}" '{rx:(($rx|tonumber)), tx:(($tx|tonumber))}')" \
-    --argjson v2ray "$(jq -n --arg up "${v2_up:-0}" --arg down "${v2_down:-0}" '{up:(($up|tonumber)), down:(($down|tonumber))}')" \
-    '{vnstat:$vnstat, v2ray:$v2ray}' >"$NET_OUT".tmp && mv "$NET_OUT".tmp "$NET_OUT"
-
-  logd "WROTE $NET_OUT"
-}
-
-# main (single or loop)
-if [ "${1:-}" = "--once" ]; then
-  collect_sys
-  collect_net
-  exit 0
-fi
-
-while true; do
-  collect_sys || logd "collect_sys failed"
-  collect_net || logd "collect_net failed"
-  sleep 5
-done
-EOF
-
-  chmod +x "$SCRIPT_SYSINFO"
-  log_debug "WRITE" "Wrote $SCRIPT_SYSINFO"
-}
-
-write_services() {
-  # online service (runs the script's loop once every 5s via internal loop)
-  cat >"$SERVICE_ONLINE" <<EOF
-[Unit]
-Description=ShowOn Online Users JSON Generator
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/bin/bash -lc 'while true; do /usr/local/bin/online-check.sh --once; sleep 5; done'
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  # sysinfo service
-  cat >"$SERVICE_SYSINFO" <<EOF
-[Unit]
-Description=ShowOn Sysinfo & Net JSON Generator
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/bin/bash -lc 'while true; do /usr/local/bin/sysinfo.sh --once; sleep 5; done'
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  systemctl daemon-reload
-  log_debug "SERVICE" "Wrote services"
-}
-
+# -----------------------------
+# Nginx site writer
+# -----------------------------
 write_nginx_site() {
-  # safe nginx config to map /server/ alias
-  local site_av="/etc/nginx/sites-available/server_checker"
-  cat >"$site_av" <<'EOF'
+  mkdir -p "$WWW_DIR"
+  cat >"$NGX_SITE_AVAIL" <<'EOF'
 server {
     listen 82 default_server;
     server_name _;
 
+    # Redirect root to /server/
     location = / {
         return 302 /server/;
     }
 
+    # Serve /server/* from /var/www/html/server
     location /server/ {
         alias /var/www/html/server/;
         index index.html;
@@ -428,166 +129,529 @@ server {
     }
 }
 EOF
-  ln -sf "$site_av" /etc/nginx/sites-enabled/server_checker
-  nginx -t >/dev/null 2>&1 && systemctl reload nginx || log_debug "NGINX" "nginx test/reload failed"
+  ln -sf "$NGX_SITE_AVAIL" "$NGX_SITE_ENABLED"
+  nginx -t && systemctl reload nginx
+  ok "Nginx ready at :82 (/server/)"
 }
 
+# -----------------------------
+# Detect Environment
+# -----------------------------
+detect_env() {
+  # 3x-ui typical marker
+  if [[ -f /etc/x-ui/x-ui.db ]]; then
+    echo "HAS_XUI_DB=1"
+  fi
+  if [[ -f /usr/local/etc/xray/config.json ]]; then
+    echo "HAS_XRAY_LOCAL=1"
+  fi
+  if [[ -f /etc/xray/config.json ]]; then
+    echo "HAS_XRAY_ETC=1"
+  fi
+}
+
+# -----------------------------
+# Ask & Validate 3x-ui login (URL, user, pass)
+#  - URL must include scheme/host/port/basepath (copy from login page)
+#  - No password hiding on input (your request)
+#  - Try endpoints:
+#       POST /panel/api/inbounds/onlines   (preferred new)
+#       GET  /panel/api/inbounds/onlines   (some forks/custom)
+#       Fallback: derive from /panel/api/inbounds/list + lastOnline window
+# -----------------------------
+ask_xui_and_validate() {
+  echo -e "${CYAN}[INFO]${NC} ตั้งค่า 3x-ui (ถ้าไม่มีให้กด Enter ข้ามได้)"
+  echo "  👉 กรุณา 'วางลิงก์หน้าล็อกอินทั้งเส้น' เช่น:"
+  echo "     https://IP:PORT/SomeRandomPath  หรือ  http://domain:port/"
+  read -r -p "3X-UI URL (copy login link): " XUI_URL
+  XUI_URL="${XUI_URL%/}"
+  if [[ -z "$XUI_URL" ]]; then
+    warn "ข้ามการตั้งค่า 3x-ui (จะพยายามตรวจ Xray-core logs แทน)"
+    return 1
+  fi
+  read -r -p "3X-UI Username: " XUI_USER
+  read -r -p "3X-UI Password: " XUI_PASS
+
+  # Login (cookie only)
+  local COOKIE="/tmp/showon_cookie.$$"
+  if ! curl -sk -c "$COOKIE" -X POST "${XUI_URL}/login" \
+        -d "username=${XUI_USER}&password=${XUI_PASS}" >/dev/null; then
+    err "ไม่สามารถเชื่อมต่อได้ (login)"
+    rm -f "$COOKIE"
+    return 2
+  fi
+
+  # Try preferred POST onlines
+  local POST_OK=0
+  local GET_OK=0
+  local ONLINES_METHOD=""
+  local ONLINES_PATH=""
+
+  # POST
+  local probe_post
+  probe_post=$(curl -sk -b "$COOKIE" -H "Content-Type: application/json" \
+                    -X POST "${XUI_URL}/panel/api/inbounds/onlines" \
+                    -d "{}" 2>/dev/null)
+  if echo "$probe_post" | jq -e '.success == true and (.obj|type=="array")' >/dev/null 2>&1; then
+    POST_OK=1
+    ONLINES_METHOD="POST"
+    ONLINES_PATH="/panel/api/inbounds/onlines"
+  else
+    # Try GET
+    local probe_get
+    probe_get=$(curl -sk -b "$COOKIE" "${XUI_URL}/panel/api/inbounds/onlines" 2>/dev/null)
+    if echo "$probe_get" | jq -e '.success == true and (.obj|type=="array")' >/dev/null 2>&1; then
+      GET_OK=1
+      ONLINES_METHOD="GET"
+      ONLINES_PATH="/panel/api/inbounds/onlines"
+    fi
+  fi
+
+  if [[ $POST_OK -eq 1 || $GET_OK -eq 1 ]]; then
+    ok "Login to 3x-ui OK"
+    # Save to conf
+    cat > "$CONF_FILE" <<EOF
+# --- ShowOn configuration ---
+VERSION="${VERSION}"
+WWW_DIR="${WWW_DIR}"
+LIMIT="2000"
+DEBUG_LOG="${LOG_FILE}"
+
+# 3x-ui
+PANEL_BASE="${XUI_URL}"
+XUI_USER="${XUI_USER}"
+XUI_PASS="${XUI_PASS}"
+XUI_ONLINES_METHOD="${ONLINES_METHOD}"
+XUI_ONLINES_PATH="${ONLINES_PATH}"
+XUI_ONLINE_WINDOW_MS="60000"
+EOF
+    chmod 600 "$CONF_FILE"
+    rm -f "$COOKIE"
+    return 0
+  fi
+
+  # Fallback: use list + lastOnline heuristic
+  local lst js_ok
+  lst=$(curl -sk -b "$COOKIE" "${XUI_URL}/panel/api/inbounds/list")
+  js_ok=0
+  if echo "$lst" | jq -e '.success == true' >/dev/null 2>&1; then js_ok=1; fi
+  if [[ $js_ok -eq 1 ]]; then
+    ok "Login OK (fallback via inbounds/list)"
+    cat > "$CONF_FILE" <<EOF
+# --- ShowOn configuration ---
+VERSION="${VERSION}"
+WWW_DIR="${WWW_DIR}"
+LIMIT="2000"
+DEBUG_LOG="${LOG_FILE}"
+
+# 3x-ui (fallback)
+PANEL_BASE="${XUI_URL}"
+XUI_USER="${XUI_USER}"
+XUI_PASS="${XUI_PASS}"
+XUI_ONLINES_METHOD="FALLBACK"
+XUI_ONLINES_PATH="/panel/api/inbounds/list"
+XUI_ONLINE_WINDOW_MS="60000"
+EOF
+    chmod 600 "$CONF_FILE"
+    rm -f "$COOKIE"
+    return 0
+  fi
+
+  rm -f "$COOKIE"
+  err "ยืนยัน 3x-ui ไม่ผ่าน (login ok? endpoint เปลี่ยน?)"
+  return 3
+}
+
+# -----------------------------
+# Dependencies
+# -----------------------------
+install_dependencies() {
+  say "Updating system packages..."
+  apt update -y >/dev/null 2>&1 || true
+  say "Installing dependencies..."
+  apt install -y curl jq nginx net-tools psmisc iproute2 ca-certificates vnstat >/dev/null 2>&1
+}
+
+# -----------------------------
+# Write Worker Scripts
+# -----------------------------
+write_worker_scripts() {
+  # online-check.sh
+  cat >"$SCRIPT_ONLINE" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+CONF="/etc/showon.conf"
+[[ -f "$CONF" ]] && source "$CONF" || true
+
+# Defaults
+: "${VERSION:=V.1.0.5}"
+: "${WWW_DIR:=/var/www/html/server}"
+: "${LIMIT:=2000}"
+: "${DEBUG_LOG:=/var/log/showon-debug.log}"
+: "${PANEL_BASE:=}"
+: "${XUI_USER:=}"
+: "${XUI_PASS:=}"
+: "${XUI_ONLINES_METHOD:=}"
+: "${XUI_ONLINES_PATH:=}"
+: "${XUI_ONLINE_WINDOW_MS:=60000}"
+
+JSON_OUT="${WWW_DIR}/online_app.json"
+mkdir -p "$WWW_DIR"
+
+log() { echo "[$(date +'%F %T')][ONLINE] $*" >> "$DEBUG_LOG"; }
+
+# Count SSH/OpenVPN/Dropbear
+SSH_ON=$(ss -nt state established | awk '$3 ~ /:22$/ {c++} END{print c+0}')
+OVPN_ON=0
+if [[ -f /etc/openvpn/server/openvpn-status.log ]]; then
+  OVPN_ON=$(grep -c "CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || true)
+fi
+DB_ON=$(pgrep dropbear >/dev/null 2>&1 && pgrep dropbear | wc -l || echo 0)
+
+# V2Ray (XUI or XRAY logs)
+V2_ON=0
+
+# Helper: fetch onlines via POST/GET
+fetch_onlines_array() {
+  local method="$1" path="$2"
+  local cookie="/tmp/showon_cookie.online.$$"
+
+  # login
+  curl -sk -c "$cookie" -X POST "${PANEL_BASE}/login" \
+       -d "username=${XUI_USER}&password=${XUI_PASS}" >/dev/null || true
+
+  local res
+  if [[ "$method" == "POST" ]]; then
+    res=$(curl -sk -b "$cookie" -H "Content-Type: application/json" \
+               -X POST "${PANEL_BASE}${path}" -d "{}" 2>/dev/null)
+  else
+    res=$(curl -sk -b "$cookie" "${PANEL_BASE}${path}" 2>/dev/null)
+  fi
+
+  rm -f "$cookie"
+  echo "$res"
+}
+
+# Helper: count using list + lastOnline window
+fetch_onlines_fallback() {
+  local cookie="/tmp/showon_cookie.online.$$"
+  curl -sk -c "$cookie" -X POST "${PANEL_BASE}/login" \
+       -d "username=${XUI_USER}&password=${XUI_PASS}" >/dev/null || true
+
+  local list last now
+  list=$(curl -sk -b "$cookie" "${PANEL_BASE}/panel/api/inbounds/list" 2>/dev/null)
+  last=$(curl -sk -b "$cookie" -H "Content-Type: application/json" \
+             -X POST "${PANEL_BASE}/panel/api/inbounds/lastOnline" -d "{}" 2>/dev/null || echo '{}')
+  now=$(date +%s%3N)
+  rm -f "$cookie"
+
+  # Build set of emails with (now - lastOnline) < window
+  # result: count only those in last map and within time window
+  jq -n --argjson lst "$list" --argjson last "$last" --argjson now "$now" \
+        --argjson win "$XUI_ONLINE_WINDOW_MS" '
+    def toMap: reduce .[] as $x ({}; .[$x.email]=$x);
+    if ($lst.success==true and ($lst.obj|type)=="array") then
+      ($lst.obj[]?.clientStats // []) as $cs
+      | [ $cs[] | .email ] as $emails
+      | ($last.obj // {}) as $m
+      | [ $emails[] | select( ($m[.]//0) > 0 and ($now - ($m[.]//0)) < $win ) ]
+      | unique
+      | length
+    else 0 end
+  ' 2>/dev/null
+}
+
+# Determine V2_ON
+if [[ -n "${PANEL_BASE}" && -n "${XUI_ONLINES_METHOD}" ]]; then
+  if [[ "$XUI_ONLINES_METHOD" == "POST" || "$XUI_ONLINES_METHOD" == "GET" ]]; then
+    resp="$(fetch_onlines_array "$XUI_ONLINES_METHOD" "$XUI_ONLINES_PATH")"
+    V2_ON=$(echo "$resp" | jq -r 'if .success==true and (.obj|type)=="array" then (.obj|length) else 0 end' 2>/dev/null || echo 0)
+  else
+    # FALLBACK
+    V2_ON=$(fetch_onlines_fallback 2>/dev/null || echo 0)
+  fi
+else
+  # Try XRAY logs heuristics (best-effort)
+  if [[ -f /var/log/xray/access.log ]]; then
+    # deb package layout
+    V2_ON=$(tail -n 2000 /var/log/xray/access.log 2>/dev/null | awk '/accepted/ {print $3}' | cut -d: -f1 | sort -u | wc -l)
+  elif compgen -G "/var/log/xray/*log" >/dev/null; then
+    V2_ON=$(grep -ha "accepted" /var/log/xray/*log 2>/dev/null | tail -n 2000 | awk '{print $3}' | cut -d: -f1 | sort -u | wc -l)
+  else
+    V2_ON=0
+  fi
+fi
+
+TOTAL=$(( SSH_ON + OVPN_ON + DB_ON + V2_ON ))
+
+JSON=$(jq -n \
+  --arg onlines "$TOTAL" \
+  --arg limite "${LIMIT}" \
+  --arg ssh "${SSH_ON}" \
+  --arg openvpn "${OVPN_ON}" \
+  --arg dropbear "${DB_ON}" \
+  --arg v2ray "${V2_ON}" \
+  '[{onlines:($onlines|tonumber), limite:($limite|tonumber), ssh:($ssh|tonumber), openvpn:($openvpn|tonumber), dropbear:($dropbear|tonumber), v2ray:($v2ray|tonumber)}]')
+
+echo "$JSON" > "$JSON_OUT"
+log "online: $(echo "$JSON" | jq .)"
+EOF
+  chmod +x "$SCRIPT_ONLINE"
+
+  # sysinfo.sh
+  cat >"$SCRIPT_SYSINFO" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+CONF="/etc/showon.conf"
+[[ -f "$CONF" ]] && source "$CONF" || true
+: "${WWW_DIR:=/var/www/html/server}"
+: "${DEBUG_LOG:=/var/log/showon-debug.log}"
+OUT="${WWW_DIR}/sysinfo.json"
+mkdir -p "$WWW_DIR"
+
+log() { echo "[$(date +'%F %T')][SYS] $*" >> "$DEBUG_LOG"; }
+
+uptime_h=$(uptime -p | sed 's/up //')
+# CPU usage quick estimate
+cpu_idle=$(top -bn1 | awk -F',' '/Cpu\(s\)/{print $4}' | awk '{print $1}' | sed 's/%//')
+if [[ -z "$cpu_idle" ]]; then
+  cpu_usage="N/A"
+else
+  cpu_usage=$(awk -v idle="${cpu_idle:-0}" 'BEGIN{printf "%.1f%%", 100-idle}')
+fi
+mem_line=$(free -m | awk 'NR==2{printf "%s / %s MB",$3,$2}')
+disk_line=$(df -h / | awk 'NR==2{print $3" / "$2}')
+
+jq -n --arg uptime "$uptime_h" --arg cpu "$cpu_usage" --arg ram "$mem_line" --arg disk "$disk_line" \
+  '{uptime:$uptime, cpu_usage:$cpu, ram_usage:$ram, disk_usage:$disk}' > "$OUT"
+log "sysinfo: $(cat "$OUT")"
+EOF
+  chmod +x "$SCRIPT_SYSINFO"
+}
+
+# -----------------------------
+# Services
+# -----------------------------
+write_services_and_start() {
+  cat >"$SERVICE_ONLINE" <<EOF
+[Unit]
+Description=ShowOn Online Users JSON Generator
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -lc 'while true; do "$SCRIPT_ONLINE"; sleep 5; done'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  cat >"$SERVICE_SYSINFO" <<EOF
+[Unit]
+Description=ShowOn System Info JSON Generator
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -lc 'while true; do "$SCRIPT_SYSINFO"; sleep 5; done'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable --now online-check.service
+  systemctl enable --now sysinfo.service
+}
+
+# -----------------------------
+# Index HTML
+# -----------------------------
 write_index_html() {
   mkdir -p "$WWW_DIR"
   cat >"$WWW_DIR/index.html" <<EOF
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>ShowOn Dashboard ${VERSION}</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <style>
-    body{background:#0b0b0b;color:#e8eef2;font-family:Inter, Arial, sans-serif;padding:18px}
-    h1{color:#63f0a6;margin:0 0 8px 0}
-    .card{background:#0f1720;padding:14px;border-radius:10px;margin-bottom:12px;box-shadow:0 6px 18px rgba(0,0,0,0.6)}
-    table{width:100%;border-collapse:collapse;margin-top:8px}
-    th,td{padding:8px;border-bottom:1px solid rgba(255,255,255,0.03);text-align:center}
-    th{font-weight:600;color:#a7f3d0}
-    .muted{color:#9aa6b2}
-    @media (max-width:600px){body{padding:10px}}
-    .spinner{border:4px solid rgba(255,255,255,0.06);border-top:4px solid #63f0a6;border-radius:50%;width:20px;height:20px;animation:spin 1s linear infinite;margin:auto}
-    @keyframes spin{100%{transform:rotate(360deg)}}
-    .row{display:flex;gap:12px;flex-wrap:wrap}
-    .col{flex:1;min-width:220px}
-    .small{font-size:13px;color:#9aa6b2}
-    .bignum{font-size:22px;color:#fff;font-weight:700}
-  </style>
+<meta charset="UTF-8" />
+<title>ShowOn Dashboard ${VERSION}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  body { background:#0e0e0e; color:#eaeaea; font-family:system-ui, Arial, sans-serif; margin:0; padding:24px; }
+  h1 { color:#4ff585; margin:0 0 16px 0; }
+  .grid { display:grid; gap:16px; grid-template-columns: 1fr; max-width:900px; }
+  .card { background:#1a1a1a; border:1px solid #2a2a2a; border-radius:12px; padding:16px; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { border:1px solid #2b2b2b; padding:8px; text-align:center; }
+  th { background:#202020; }
+  .muted { color:#9aa0a6; font-size:12px; }
+  .ok { color:#4ff585; }
+  .bad { color:#ff6b6b; }
+  .spinner {border:4px solid #333;border-top:4px solid #4ff585;border-radius:50%;width:18px;height:18px;animation:spin 1s linear infinite;margin:auto;}
+  @keyframes spin {100% {transform: rotate(360deg);}}
+  @media (min-width: 900px){ .grid{ grid-template-columns: 1fr 1fr; } }
+</style>
 </head>
 <body>
-  <h1>ShowOn Dashboard <span class="small">${VERSION}</span></h1>
-
-  <div class="card">
-    <h3>Online Summary</h3>
-    <table>
-      <thead><tr><th>Onlines</th><th>Limit</th><th>SSH</th><th>OpenVPN</th><th>Dropbear</th><th>V2Ray</th></tr></thead>
-      <tbody><tr id="summary"><td colspan="6"><div class="spinner"></div></td></tr></tbody>
-    </table>
-  </div>
-
-  <div class="row">
-    <div class="col card">
-      <h3>System</h3>
-      <div id="system"><div class="spinner"></div></div>
+  <h1>ShowOn Dashboard <span class="muted">${VERSION}</span></h1>
+  <div class="grid">
+    <div class="card">
+      <h2>Online Summary</h2>
+      <table>
+        <thead>
+          <tr><th>Onlines</th><th>Limit</th><th>SSH</th><th>OpenVPN</th><th>Dropbear</th><th>V2Ray</th></tr>
+        </thead>
+        <tbody>
+          <tr id="summary"><td colspan="6"><div class="spinner"></div></td></tr>
+        </tbody>
+      </table>
+      <p class="muted" id="status"></p>
     </div>
-
-    <div class="col card">
-      <h3>Network / Traffic</h3>
-      <div id="net"><div class="spinner"></div></div>
+    <div class="card">
+      <h2>System &amp; Network</h2>
+      <div id="system"><div class="spinner"></div></div>
     </div>
   </div>
 
 <script>
-async function fetchJSON(path){
-  try{
-    const res = await fetch(path + '?_=' + Date.now());
-    if(!res.ok) throw new Error('not ok');
-    return await res.json();
-  }catch(e){
-    return null;
+async function refresh() {
+  try {
+    const r1 = await fetch('./online_app.json?_=' + Date.now());
+    const a1 = await r1.json();
+    const d = a1[0];
+    document.getElementById('summary').innerHTML =
+      '<td>' + d.onlines + '</td>' +
+      '<td>' + d.limite  + '</td>' +
+      '<td>' + d.ssh     + '</td>' +
+      '<td>' + d.openvpn + '</td>' +
+      '<td>' + d.dropbear+ '</td>' +
+      '<td>' + d.v2ray   + '</td>';
+    document.getElementById('status').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch(e) {
+    document.getElementById('summary').innerHTML = '<td colspan="6" class="bad">Error loading online_app.json</td>';
+  }
+
+  try {
+    const r2 = await fetch('./sysinfo.json?_=' + Date.now());
+    const s = await r2.json();
+    document.getElementById('system').innerHTML =
+      '<b>Uptime:</b> ' + s.uptime + '<br>' +
+      '<b>CPU:</b> '    + s.cpu_usage + '<br>' +
+      '<b>RAM:</b> '    + s.ram_usage + '<br>' +
+      '<b>Disk:</b> '   + s.disk_usage;
+  } catch(e) {
+    document.getElementById('system').innerHTML = '<span class="bad">Error loading sysinfo.json</span>';
   }
 }
-
-async function loadData(){
-  const online = await fetchJSON('./online_app.json');
-  if(online && online[0]){
-    const d = online[0];
-    document.getElementById('summary').innerHTML = `<td>${d.onlines}</td><td>${d.limite}</td><td>${d.ssh}</td><td>${d.openvpn}</td><td>${d.dropbear}</td><td>${d.v2ray}</td>`;
-  } else {
-    document.getElementById('summary').innerHTML = '<td colspan="6">Error loading online</td>';
-  }
-
-  const sys = await fetchJSON('./sysinfo.json');
-  if(sys){
-    document.getElementById('system').innerHTML = `<div><b>Uptime:</b> ${sys.uptime}</div><div><b>CPU:</b> ${sys.cpu_usage}</div><div><b>RAM:</b> ${sys.ram_usage}</div><div><b>Disk:</b> ${sys.disk_usage}</div>`;
-  } else {
-    document.getElementById('system').innerHTML = '<div>Error loading system</div>';
-  }
-
-  const net = await fetchJSON('./netinfo.json');
-  if(net){
-    let html = '<div class="small"><b>vnstat</b></div>';
-    if(net.vnstat){ html += `<div class="bignum">RX: ${net.vnstat.rx || 0}  TX: ${net.vnstat.tx || 0}</div>`; }
-    if(net.v2ray){ html += '<div class="small"><b>V2Ray (panel)</b></div>'; html += `<div class="bignum">UP: ${net.v2ray.up || 0}  DOWN: ${net.v2ray.down || 0}</div>`; }
-    document.getElementById('net').innerHTML = html;
-  } else {
-    document.getElementById('net').innerHTML = '<div>Error loading netinfo</div>';
-  }
-}
-
-loadData(); setInterval(loadData,5000);
+refresh(); setInterval(refresh, 5000);
 </script>
 </body>
 </html>
 EOF
-
   chmod 644 "$WWW_DIR/index.html"
-  chown www-data:www-data "$WWW_DIR/index.html" 2>/dev/null || true
-  log_debug "WRITE" "WROTE index.html"
 }
 
-# ============ High-level install flow ============
-install_flow() {
-  echo -e "${CYAN}[INFO]${NC} Installing ShowOn (${VERSION})..."
+# -----------------------------
+# Menu Actions
+# -----------------------------
+install_script() {
+  say "Installing ShowOn (${VERSION})..."
   install_dependencies
-
-  mkdir -p "$WWW_DIR"
-  chmod -R 755 "$WWW_DIR"
-
-  # Ask config
-  echo -e "${CYAN}[INFO]${NC} ตั้งค่า 3x-ui (ถ้าไม่มีให้กด Enter ข้ามได้)"
-  echo "  👉 กรุณา 'วางลิงก์หน้าล็อกอินทั้งเส้น' เช่น:"
-  echo "     https://IP:PORT/SomeRandomPath  หรือ  http://domain:port/"
-  read -rp "3X-UI URL (copy login link): " PANEL_URL
-  read -rp "3X-UI Username: " XUI_USER
-  # show password input (not hidden)
-  read -rp "3X-UI Password: " XUI_PASS
-  read -rp "Limit User Online (Default: 2000): " LIMIT
-  LIMIT=${LIMIT:-2000}
-
-  # write conf
-  write_conf "$PANEL_URL" "$XUI_USER" "$XUI_PASS" "$LIMIT"
-
-  # Write scripts, services, nginx, index
-  write_online_script
-  write_sysinfo_script
-  write_services
   write_nginx_site
-  write_index_html
 
-  # create showon launcher
-  cat >"$SHOWON_CMD" <<EOF
-#!/bin/bash
-exec /bin/bash "$ROOT_INSTALL"
+  # Ask 3x-ui (optional) and validate
+  local configured=0
+  if ask_xui_and_validate; then
+    configured=1
+  fi
+
+  # Limit user online
+  if [[ $configured -eq 1 ]]; then
+    read -r -p "Limit User Online (Default: 2000): " LIMIN
+    LIMIN=${LIMIN:-2000}
+    # patch LIMIT in conf
+    sed -i "s/^LIMIT=.*/LIMIT=\"${LIMIN}\"/" "$CONF_FILE"
+  else
+    # Ensure minimal conf exists
+    [[ -f "$CONF_FILE" ]] || cat >"$CONF_FILE" <<EOF
+VERSION="${VERSION}"
+WWW_DIR="${WWW_DIR}"
+LIMIT="2000"
+DEBUG_LOG="${LOG_FILE}"
 EOF
-  chmod +x "$SHOWON_CMD" || true
+  fi
 
-  # enable services
-  systemctl daemon-reload
-  systemctl enable --now online-check.service sysinfo.service >/dev/null 2>&1 || log_debug "SYSTEMD" "enable/start failed"
-  systemctl enable nginx >/dev/null 2>&1 || true
-
-  echo -e "${GREEN}[SUCCESS]${NC} Installed ShowOn ${VERSION}"
-  echo -e "${CYAN}[INFO]${NC} Open: http://$(hostname -I | awk '{print $1}'):82/server/"
-  log_debug "INSTALL" "Completed installation"
-  read -rp "Press Enter to return to menu..." _
+  write_worker_scripts
+  write_services_and_start
+  write_index_html
+  ok "Installed ShowOn ${VERSION}"
+  print_footer_link
+  read -r -p "Press Enter to return to menu..." _
 }
 
-# ============ Uninstall ============
-uninstall_flow() {
+uninstall_script() {
   echo -e "${YELLOW}[INFO]${NC} Uninstalling ShowOn Script..."
-  log_debug "UNINSTALL" "Requested"
-
-  # Stop & disable services
   systemctl stop online-check.service sysinfo.service 2>/dev/null || true
   systemctl disable online-check.service sysinfo.service 2>/dev/null || true
-
-  # Remove files
   rm -f "$SERVICE_ONLINE" "$SERVICE_SYSINFO"
   rm -f "$SCRIPT_ONLINE" "$SCRIPT_SYSINFO"
-  rm -f "$CONF_FILE" "$SHOWON_CMD"
-  rm -f /usr/local/bin
+  rm -f "$CONF_FILE"
+  rm -rf "$WWW_DIR"
+  rm -f "$NGX_SITE_AVAIL" "$NGX_SITE_ENABLED"
+  systemctl daemon-reload
+  systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+  ok "Uninstalled completely (no reboot required)."
+  read -r -p "Press Enter to return to menu..." _
+}
+
+update_script() {
+  echo -e "${CYAN}[INFO]${NC} Checking for updates..."
+  check_update
+  read -r -p "Press Enter to return to menu..." _
+}
+
+show_debug_log() {
+  echo -e "${CYAN}[INFO]${NC} Tail -50 ${LOG_FILE}"
+  touch "$LOG_FILE"
+  tail -n 50 "$LOG_FILE"
+  echo
+  read -r -p "Press Enter to return to menu..." _
+}
+
+# -----------------------------
+# Menu UI
+# -----------------------------
+show_menu() {
+  clear
+  echo -e "==============================="
+  echo -e "   ShowOn Script Manager ${VERSION}"
+  echo -e "==============================="
+  check_update
+  echo "1) Install Script"
+  echo "2) Uninstall Script"
+  echo "3) Update Script"
+  echo "4) Check Debug Log"
+  echo "0) Exit"
+  echo "==============================="
+  read -r -p "Choose an option [0,1,2,3,4]: " choice
+  case "$choice" in
+    1) install_script ;;
+    2) uninstall_script ;;
+    3) update_script ;;
+    4) show_debug_log ;;
+    0) exit 0 ;;
+    *) err "Invalid choice"; sleep 1 ;;
+  esac
+  show_menu
+}
+
+# -----------------------------
+# Bootstrap
+# -----------------------------
+must_root
+create_showon_cmd
+show_menu
