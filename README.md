@@ -1,4 +1,6 @@
-# ![ShowOn](ShowOn.png)
+# <p align="center">
+  <img src="ShowOn.png" alt="ShowOn Logo" width="300"/>
+</p>
 
 # 🚀 ShowOn Dashboard V.1.0.5
 
