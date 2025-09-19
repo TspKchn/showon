@@ -1,73 +1,65 @@
 #!/bin/bash
-# Generate online_app.json (every 5s by systemd)
-set -euo pipefail
+# =====================================================
+# ShowOn - Online Users JSON Generator
+# =====================================================
 
-CONF="/etc/showon.conf"
+set -euo pipefail
+CONF=/etc/showon.conf
 source "$CONF"
 
 JSON_OUT="$WWW_DIR/online_app.json"
 TMP_COOKIE="/tmp/showon_cookie_$$"
-NOW_MS=$(date +%s%3N)
 
-log() { echo "[$(date '+%F %T')][ONLINE] $*" >> "$DEBUG_LOG"; }
-
-# --- Count SSH / OpenVPN / Dropbear ---
-SSH_ON=$(ss -nt state established | awk '$3 ~ /:22$/ {c++} END{print c+0}')
+# ---------- ค่าเริ่มต้น ----------
+SSH_ON=0
 OVPN_ON=0
-[[ -f /etc/openvpn/server/openvpn-status.log ]] && OVPN_ON=$(grep -c "CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || true)
-DB_ON=$(pgrep dropbear | wc -l | awk '{print $1+0}')
-
+DB_ON=0
 V2_ON=0
 
-if [[ -n "${PANEL_URL}" ]]; then
-  # login -> cookie
-  LOGIN_OK=false
-  if curl -sk -c "$TMP_COOKIE" -X POST "$PANEL_URL/login" \
-      -H "Content-Type: application/x-www-form-urlencoded" \
-      --data "username=${XUI_USER}&password=${XUI_PASS}" | grep -q '"success":true'; then
-    LOGIN_OK=true
-  else
-    if curl -sk -c "$TMP_COOKIE" -X POST "$PANEL_URL/login" \
-        -H "Content-Type: application/json" \
-        -d "{\"username\":\"${XUI_USER}\",\"password\":\"${XUI_PASS}\"}" | grep -q '"success":true'; then
-      LOGIN_OK=true
-    fi
-  fi
+# ---------- SSH ----------
+SSH_ON=$(ss -nt state established | awk '$3 ~ /:22$/ {c++} END {print c+0}')
 
-  if $LOGIN_OK; then
-    # online emails
-    ONLINES=$(curl -sk -b "$TMP_COOKIE" -H "Content-Type: application/json" \
-      -X POST "$PANEL_URL/panel/api/inbounds/onlines" -d "{}" 2>/dev/null || echo "")
-
-    if echo "$ONLINES" | grep -q '"success":true'; then
-      # list for lastOnline cross-check
-      DETAILS=$(curl -sk -b "$TMP_COOKIE" "$PANEL_URL/panel/api/inbounds/list" 2>/dev/null || echo "")
-      # อนุโลม 5000ms ภายใน 5 วิ
-      V2_ON=$(echo "$ONLINES" | jq -r '.obj[]?' 2>/dev/null | while read -r EMAIL; do
-        LAST=$(echo "$DETAILS" | jq ".obj[].clientStats[] | select(.email==\"$EMAIL\") | .lastOnline" 2>/dev/null)
-        if [[ -n "$LAST" && "$LAST" != "null" ]]; then
-          DIFF=$(( NOW_MS - LAST ))
-          [[ $DIFF -lt 5000 ]] && echo 1 || echo 0
-        else
-          echo 0
-        fi
-      done | awk '{s+=$1} END{print s+0}')
-    fi
-  fi
+# ---------- OpenVPN ----------
+if [[ -f /etc/openvpn/server/openvpn-status.log ]]; then
+  OVPN_ON=$(grep -c "^CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || echo 0)
 fi
 
-TOTAL=$(( SSH_ON + OVPN_ON + DB_ON + V2_ON ))
+# ---------- Dropbear ----------
+DB_ON=$(pgrep dropbear | wc -l || echo 0)
 
-JSON=$(jq -n \
-  --argjson onlines "$TOTAL" \
-  --argjson limite "$LIMIT" \
-  --argjson ssh "$SSH_ON" \
-  --argjson openvpn "$OVPN_ON" \
-  --argjson dropbear "$DB_ON" \
-  --argjson v2ray "$V2_ON" \
-  '[{onlines:$onlines, limite:$limite, ssh:$ssh, openvpn:$openvpn, dropbear:$dropbear, v2ray:$v2ray}]')
+# ---------- V2Ray / 3x-ui ----------
+V2_ON=0
+CLIENTS=()
+if [[ -n "${PANEL_URL}" ]]; then
+  COOKIE_FILE=$(mktemp)
 
-echo "$JSON" > "$JSON_OUT"
-log "online: $JSON"
+  # login -> cookie
+  if curl -sk -c "$COOKIE_FILE" -X POST "$PANEL_URL/login" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      --data "username=$XUI_USER&password=$XUI_PASS" | grep -q '"success":true'; then
 
-rm -f "$TMP_COOKIE" || true
+    CLIENTS_JSON=$(curl -sk -b "$COOKIE_FILE" "$PANEL_URL/xui/inbound/list" || echo "")
+    if [[ -n "$CLIENTS_JSON" ]]; then
+      V2_ON=$(echo "$CLIENTS_JSON" | jq '[.obj[]?.clientStats[]? | select(.online==true)] | length')
+      CLIENTS=$(echo "$CLIENTS_JSON" | jq '[.obj[]?.clientStats[]? | {email: .email, up: .up, down: .down, online: .online}]')
+    fi
+  fi
+  rm -f "$COOKIE_FILE"
+fi
+
+# ---------- รวมทั้งหมด ----------
+TOTAL=$((SSH_ON + OVPN_ON + DB_ON + V2_ON))
+
+cat >"$JSON_OUT" <<EOF
+{
+  "total": $TOTAL,
+  "limit": $LIMIT,
+  "ssh": $SSH_ON,
+  "openvpn": $OVPN_ON,
+  "dropbear": $DB_ON,
+  "v2ray": $V2_ON,
+  "clients": $CLIENTS
+}
+EOF
+
+chmod 644 "$JSON_OUT"
