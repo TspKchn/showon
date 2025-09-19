@@ -1,67 +1,64 @@
 #!/bin/bash
-# =====================================================
-# ShowOn - Online Users JSON Generator (Fixed Edition)
-# =====================================================
 set -euo pipefail
 
-CONF="/etc/showon.conf"
+CONF=/etc/showon.conf
 source "$CONF"
 
 JSON_OUT="$WWW_DIR/online_app.json"
-TMP_COOKIE="/tmp/showon_cookie_$$"
+TMP_COOKIE=$(mktemp /tmp/showon_cookie_XXXXXX)
+
 NOW_MS=$(date +%s%3N)
 
 SSH_ON=0
 OVPN_ON=0
 DB_ON=0
 V2_ON=0
-CLIENTS_JSON="[]"
 
-# ==== SSH ====
-SSH_ON=$(ss -nt state established 2>/dev/null | awk '$3 ~ /:22$/ {c++} END{print c+0}')
+# --- SSH ---
+SSH_ON=$(ss -nt state established | awk '$3 ~ /:22$/ {c++} END{print c+0}')
 
-# ==== OpenVPN ====
+# --- OpenVPN ---
 if [[ -f /etc/openvpn/server/openvpn-status.log ]]; then
   OVPN_ON=$(grep -c '^CLIENT_LIST' /etc/openvpn/server/openvpn-status.log || true)
 fi
 
-# ==== Dropbear ====
+# --- Dropbear ---
 if pgrep dropbear >/dev/null 2>&1; then
   DB_ON=$(pgrep dropbear | wc -l)
 fi
 
-# ==== 3x-ui (V2Ray/Xray) ====
+# --- V2Ray / 3x-ui ---
 if [[ -n "${PANEL_URL:-}" ]]; then
-  # login
+  LOGIN_OK=false
+
+  # login (ลอง 2 แบบ)
   if curl -sk -c "$TMP_COOKIE" -X POST "$PANEL_URL/login" \
-      -H "Content-Type: application/json" \
-      -d "{\"username\":\"$XUI_USER\",\"password\":\"$XUI_PASS\"}" \
-      | grep -q '"success":true'; then
-
-    RESP=$(curl -sk -b "$TMP_COOKIE" "$PANEL_URL/xui/inbound/list" || echo "")
-    CLIENTS=$(echo "$RESP" | jq -r '.obj[]?.clientStats[]?' 2>/dev/null || echo "")
-
-    if [[ -n "$CLIENTS" ]]; then
-      CLIENTS_JSON=$(echo "$CLIENTS" | jq -c --argjson now "$NOW_MS" '
-        [ . | select(.online == true or ((.lastOnline|tonumber) > ($now - 5000)))
-          | {email, up, down, total: (.up + .down), lastOnline} ]')
-      V2_ON=$(echo "$CLIENTS_JSON" | jq 'length')
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      --data "username=$XUI_USER&password=$XUI_PASS" | grep -q '"success":true'; then
+    LOGIN_OK=true
+  else
+    if curl -sk -c "$TMP_COOKIE" -X POST "$PANEL_URL/login" \
+        -H "Content-Type: application/json" \
+        -d "{\"username\":\"$XUI_USER\",\"password\":\"$XUI_PASS\"}" | grep -q '"success":true'; then
+      LOGIN_OK=true
     fi
+  fi
+
+  if $LOGIN_OK; then
+    RESP=$(curl -sk -b "$TMP_COOKIE" "$PANEL_URL/panel/api/inbounds/list")
+    V2_ON=$(echo "$RESP" | jq '[.obj[]?.clientStats[]? | select(.lastOnline > 0)] | length')
   fi
 fi
 
-# ==== รวม JSON ====
-TOTAL=$((SSH_ON + OVPN_ON + DB_ON + V2_ON))
+# --- Write JSON ---
 mkdir -p "$WWW_DIR"
-
 cat > "$JSON_OUT" <<EOF
 {
-  "total": $TOTAL,
+  "total": $((SSH_ON + OVPN_ON + DB_ON + V2_ON)),
   "ssh": $SSH_ON,
   "openvpn": $OVPN_ON,
   "dropbear": $DB_ON,
   "v2ray": $V2_ON,
-  "clients": $CLIENTS_JSON,
   "timestamp": $NOW_MS
 }
 EOF
