@@ -40,14 +40,15 @@ if [[ -n "${PANEL_URL}" ]]; then
   fi
 fi
 
-JSON=$(jq -n \
+# --- สร้าง JSON แบบบรรทัดเดียว ---
+JSON=$(jq -nc \
   --argjson rx "$RX" \
   --argjson tx "$TX" \
   --argjson up "$VUP" \
   --argjson down "$VDOWN" \
   '{vnstat:{rx:$rx,tx:$tx}, v2ray:{up:$up,down:$down}}')
 
-echo "$JSON" > "$OUT"
+echo -n "$JSON" > "$OUT"
 log "netinfo: $JSON"
 
 rm -f "$TMP_COOKIE" || true
