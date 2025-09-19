@@ -13,9 +13,9 @@ Dashboard สำหรับตรวจสอบสถานะ Online ขอ�
 ---
 
 ## 📦 Supported OS
+- 🐧 **Ubuntu 18.04 LTS**
 - 🐧 **Ubuntu 20.04 LTS** (recommended)
 - 🐧 **Ubuntu 22.04 LTS**
-- 🐧 **Ubuntu 18.04 LTS** (ยังรองรับแต่ไม่แนะนำ)
 
 ---
 
@@ -23,22 +23,25 @@ Dashboard สำหรับตรวจสอบสถานะ Online ขอ�
 
 ### วิธีที่ 1: ใช้ `curl`
 ```bash
-curl -fsSL https://raw.githubusercontent.com/TspKchn/showon/main/Install | bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install)"
 
 ```
 
 ### วิธีที่ 2: ใช้ `wget`
 ```bash
-wget -qO- https://raw.githubusercontent.com/TspKchn/showon/main/Install | bash
+wget -O /root/Install https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install
+chmod +x /root/Install
+/root/Install
 
 ```
 
 ### วิธีที่ 3: ใช้ `git clone`
 ```bash
-git clone https://github.com/TspKchn/showon.git
-cd showon
-chmod +x *.sh
-./Install
+git clone https://github.com/TspKchn/showon.git /opt/showon
+cd /opt/showon
+cp Install /root/Install
+chmod +x /root/Install
+/root/Install
 
 ```
 
