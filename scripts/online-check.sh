@@ -59,7 +59,7 @@ if [[ -n "${PANEL_URL:-}" ]]; then
         if echo "$RESP" | grep -q '"success":true'; then
           V2_ON=$(echo "$RESP" | jq --argjson now "$NOW" '
             [ .obj[]?.clientStats[]?
-              | select(.lastOnline != null and ($now - .lastOnline) < 20000)
+              | select(.lastOnline != null and ($now - .lastOnline) < 5000)
             ] | length')
         else
           V2_ON=0
