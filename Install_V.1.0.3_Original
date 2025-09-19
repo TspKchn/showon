@@ -1,0 +1,623 @@
+#!/bin/bash
+# =====================================================
+# ShowOn Script Installer V.1.0.3 (Full Extended)
+# Author: TspKchn
+# =====================================================
+
+# ------------------------------
+# Version & Remote
+# ------------------------------
+VERSION="V.1.0.3"
+REPO_URL="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install"
+
+# ------------------------------
+# Colors
+# ------------------------------
+GREEN="\e[32m"
+RED="\e[31m"
+YELLOW="\e[33m"
+CYAN="\e[36m"
+NC="\e[0m"
+
+# ------------------------------
+# Paths & Files
+# ------------------------------
+SHOWON_CMD="/usr/local/bin/showon"
+
+WWW_DIR="/var/www/html/server"
+
+SCRIPT_ONLINE="/usr/local/bin/online-check.sh"
+SCRIPT_SYSINFO="/usr/local/bin/sysinfo.sh"
+SCRIPT_NETINFO="/usr/local/bin/netinfo.sh"
+
+SERVICE_ONLINE="/etc/systemd/system/online-check.service"
+SERVICE_SYSINFO="/etc/systemd/system/sysinfo.service"
+SERVICE_NETINFO="/etc/systemd/system/netinfo.service"
+
+CONF_FILE="/etc/showon.conf"
+DEBUG_LOG="/var/log/showon-debug.log"
+
+# ป้องกัน error ตอนยังไม่มี log
+touch "$DEBUG_LOG"
+chmod 600 "$DEBUG_LOG"
+
+# =====================================================
+# Utility Functions
+# =====================================================
+
+pause() {
+  read -p "Press Enter to return to menu..." _
+}
+
+header() {
+  clear
+  echo -e "==============================="
+  echo -e "   ShowOn Script Manager ${VERSION}"
+  echo -e "==============================="
+}
+
+msg_info()   { echo -e "${CYAN}[INFO]${NC} $*"; }
+msg_ok()     { echo -e "${GREEN}[SUCCESS]${NC} $*"; }
+msg_warn()   { echo -e "${YELLOW}[WARN]${NC} $*"; }
+msg_err()    { echo -e "${RED}[ERROR]${NC} $*"; }
+
+# ลบ nginx site เดิมๆ ของพอร์ต 82 (กันชนกัน)
+clean_nginx_dupes() {
+  msg_info "Cleaning duplicate nginx configs on port 82 (if any)..."
+  grep -Rl "listen 82" /etc/nginx/sites-enabled/ /etc/nginx/sites-available/ 2>/dev/null | while read -r f; do
+    [ -e "$f" ] && rm -f "$f"
+  done
+}
+
+# ตรวจ version ใหม่ แล้วเสนออัปเดต
+check_update() {
+  local latest
+  latest=$(curl -s "$REPO_URL" | grep -m1 'VERSION=' | cut -d'"' -f2)
+  if [[ -n "$latest" && "$latest" != "$VERSION" ]]; then
+    echo -e "${YELLOW}[UPDATE AVAILABLE]${NC} Latest: ${latest} (Current: ${VERSION})"
+    read -p "Press Enter to update now, or Ctrl+C to cancel..." _
+    wget -q -O /root/Install "$REPO_URL" && chmod +x /root/Install \
+      && echo -e "${GREEN}[SUCCESS]${NC} Updated to ${latest}" \
+      && echo -e "${CYAN}[INFO]${NC} Please run 'showon' again to load the new version." \
+      && exit 0
+  else
+    msg_ok "You are using the latest version."
+  fi
+}
+
+# =====================================================
+# Menu
+# =====================================================
+
+show_menu() {
+  header
+  check_update
+  echo "1) Install Script"
+  echo "2) Update Script"
+  echo "3) Check Debug Log"
+  echo "0) Exit"
+  echo "==============================="
+  read -p "Choose an option [0,1,2,3]: " choice
+
+  case "$choice" in
+    1) install_script ;;
+    2) update_script ;;
+    3) check_debug ;;
+    0) exit 0 ;;
+    *) msg_err "Invalid choice..."; sleep 1; show_menu ;;
+  esac
+}
+
+# =====================================================
+# Install / Update / Debug
+# =====================================================
+
+install_script() {
+  header
+  msg_info "Updating system..."
+  apt update -y && apt upgrade -y
+
+  msg_info "Installing dependencies..."
+  apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates vnstat
+
+  # Ensure vnstat service running (บางระบบต้อง enable เอง)
+  systemctl enable --now vnstat >/dev/null 2>&1 || true
+
+  # Web dir
+  mkdir -p "$WWW_DIR"
+  chmod -R 755 "$WWW_DIR"
+
+  # --------------------------------------------
+  # Ask Configuration (3x-ui หรือ xray-core)
+  # --------------------------------------------
+  # ถ้ามีฐานข้อมูล x-ui → ถือว่าใช้ 3x-ui
+  if [ -f /etc/x-ui/x-ui.db ]; then
+    echo
+    echo -e "${CYAN}[INFO]${NC} Detected 3x-ui. Please provide:"
+    echo "  - 3X-UI URL (ให้ก็อปปี้ลิงก์หน้า Login ทั้งหมด เช่น https://host:port/xxxx/ หรือ https://host:port/ )"
+    echo
+
+    # วนถามจน login ได้ (ช่วยกันกรอก URL ผิด/ถูก)
+    while :; do
+      read -p "3X-UI URL (copy full login URL): " PANEL_URL
+      read -p "3X-UI Username : " USERNAME
+      read -p "3X-UI Password : " PASSWORD
+
+      # ทดสอบ login
+      COOKIE=$(
+        curl -sk -c - -X POST "${PANEL_URL%/}/login" \
+          -H "Content-Type: application/json" \
+          -d "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" \
+        | grep 3x-ui | awk '{print $7}'
+      )
+
+      if [ -n "$COOKIE" ]; then
+        msg_ok "Login success. Cookie captured."
+        break
+      else
+        msg_err "Login failed! Please check URL/username/password and try again."
+        echo "$(date) ERROR: 3x-ui login failed for URL=${PANEL_URL}" >> "$DEBUG_LOG"
+        read -p "Press Enter to re-try..." _
+      fi
+    done
+
+    # เขียน config
+    cat > "$CONF_FILE" <<EOF
+PANEL_URL="${PANEL_URL%/}"
+USERNAME="$USERNAME"
+PASSWORD="$PASSWORD"
+WWW_DIR="$WWW_DIR"
+EOF
+    chmod 600 "$CONF_FILE"
+
+  else
+    msg_warn "3x-ui not found → using Xray-core/vnstat mode (no 3x-ui API)."
+    cat > "$CONF_FILE" <<EOF
+WWW_DIR="$WWW_DIR"
+EOF
+    chmod 600 "$CONF_FILE"
+  fi
+
+  echo
+  read -p "Limit User Online (default 2000): " LIMIT
+  LIMIT=${LIMIT:-2000}
+  echo "LIMIT=$LIMIT" >> "$CONF_FILE"
+
+  # --------------------------------------------
+  # Write online-check.sh
+  # --------------------------------------------
+  cat > "$SCRIPT_ONLINE" <<'EOF'
+#!/bin/bash
+# --------------------------------------------
+# online-check.sh
+#   - สรุปจำนวนผู้ใช้ออนไลน์: SSH/OpenVPN/Dropbear/V2Ray
+#   - 3x-ui: /panel/inbound/onlines (เก่า), /panel/api/server/status (ใหม่)
+#   - xray-core: พยายามอ่าน log หาจำนวนไอพีที่ active ล่าสุด (ประมาณ)
+# --------------------------------------------
+set -e
+CONF="/etc/showon.conf"
+[ -f "$CONF" ] && source "$CONF"
+LOG="/var/log/showon-debug.log"
+LIMIT=${LIMIT:-2000}
+WWW_DIR=${WWW_DIR:-/var/www/html/server}
+
+# ป้องกัน error json ตอนเริ่ม
+mkdir -p "$WWW_DIR"
+
+# -------- SSH (port 22 established) --------
+ssh=$(ss -nt state established 2>/dev/null | grep -E ':22 ' | wc -l)
+
+# -------- OpenVPN from status log --------
+openvpn=0
+if [ -f /etc/openvpn/server/openvpn-status.log ]; then
+  openvpn=$(grep -c "CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || true)
+fi
+
+# -------- Dropbear processes --------
+dropbear=$(pgrep dropbear 2>/dev/null | wc -l)
+
+# -------- V2Ray via 3x-ui or xray-core logs --------
+v2ray=0
+
+if [ -f /etc/x-ui/x-ui.db ] && [ -n "$PANEL_URL" ]; then
+  # --- โหมด 3x-ui ---
+  COOKIE=$(curl -sk -c - -X POST "${PANEL_URL%/}/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" \
+    2>>"$LOG" | grep 3x-ui | awk '{print $7}')
+  if [ -n "$COOKIE" ]; then
+    # 1) endpoint เก่า: /panel/inbound/onlines
+    DATA1=$(curl -sk -b "3x-ui=$COOKIE" "${PANEL_URL%/}/panel/inbound/onlines" 2>>"$LOG")
+    if echo "$DATA1" | jq empty 2>/dev/null; then
+      # บางเวอร์ชัน obj เป็น array ของ online objects
+      v2_1=$(echo "$DATA1" | jq '.obj | length' 2>/dev/null || echo "0")
+    else
+      v2_1=0
+    fi
+    # 2) endpoint ใหม่: /panel/api/server/status (เผื่อบางเวอร์ชันโครงสร้าง clients)
+    DATA2=$(curl -sk -b "3x-ui=$COOKIE" "${PANEL_URL%/}/panel/api/server/status" 2>>"$LOG")
+    if echo "$DATA2" | jq empty 2>/dev/null; then
+      # พยายามอ่าน clients | length (ถ้ามี)
+      v2_2=$(echo "$DATA2" | jq '.clients | length' 2>/dev/null || echo "0")
+    else
+      v2_2=0
+    fi
+    # เลือกค่าที่มากสุด (บางระบบอาจให้เพียง endpoint ใด endpoint หนึ่ง)
+    if [ "$v2_1" -ge "$v2_2" ]; then
+      v2ray="$v2_1"
+    else
+      v2ray="$v2_2"
+    fi
+  else
+    echo "$(date) ERROR: 3x-ui cookie empty (login failed)." >> "$LOG"
+  fi
+
+else
+  # --- โหมด xray-core ---
+  # แบบ manual/binary: มักอยู่ /usr/local/etc/xray/ และ log หลายไฟล์ใน /var/log/xray/*.log
+  # แบบ deb: /etc/xray/config.json และ log: /var/log/xray/access.log
+  if [ -d /var/log/xray ]; then
+    # นับจำนวนไอพีล่าสุดแบบคร่าวๆ
+    v2ray=$(grep -h "accepted" /var/log/xray/*.log 2>/dev/null | tail -n 2000 | awk '{print $3}' | cut -d: -f1 | sort -u | wc -l)
+  elif [ -f /var/log/xray/access.log ]; then
+    v2ray=$(grep "accepted" /var/log/xray/access.log 2>/dev/null | tail -n 2000 | awk '{print $3}' | cut -d: -f1 | sort -u | wc -l)
+  fi
+fi
+
+# -------- Build JSON --------
+json=$(jq -n \
+  --arg onlines "$(( ssh + openvpn + dropbear + v2ray ))" \
+  --arg ssh "$ssh" \
+  --arg openvpn "$openvpn" \
+  --arg dropbear "$dropbear" \
+  --arg v2ray "$v2ray" \
+  --arg limite "${LIMIT}" \
+  '[{onlines:$onlines|tonumber, limite:$limite|tonumber, ssh:$ssh|tonumber, openvpn:$openvpn|tonumber, dropbear:$dropbear|tonumber, v2ray:$v2ray|tonumber}]')
+
+echo "$json" > "$WWW_DIR/online_app.json"
+
+# ---- Debug auto-truncate (~5m) ----
+# ตัด log ให้เหลือท้ายไฟล์ประมาณ 2000 บรรทัด เพื่อลดการโตของไฟล์
+LINES=$(wc -l < "$LOG" 2>/dev/null || echo 0)
+if [ "$LINES" -gt 2000 ]; then
+  tail -n 1000 "$LOG" > "${LOG}.tmp" && mv "${LOG}.tmp" "$LOG"
+fi
+EOF
+  chmod +x "$SCRIPT_ONLINE"
+
+  # --------------------------------------------
+  # Write sysinfo.sh
+  # --------------------------------------------
+  cat > "$SCRIPT_SYSINFO" <<'EOF'
+#!/bin/bash
+# --------------------------------------------
+# sysinfo.sh
+#   - uptime, CPU usage, RAM usage, Disk usage
+# --------------------------------------------
+set -e
+CONF="/etc/showon.conf"
+[ -f "$CONF" ] && source "$CONF"
+WWW_DIR=${WWW_DIR:-/var/www/html/server}
+
+mkdir -p "$WWW_DIR"
+
+uptime=$(uptime -p | sed 's/up //')
+cpu=$(top -bn1 | grep "Cpu(s)" | awk '{print 100 - $8"%"}')
+ram=$(free -m | awk 'NR==2{printf "%s / %s MB", $3,$2}')
+disk=$(df -h / | awk 'NR==2{print $3 " / " $2}')
+
+jq -n \
+  --arg uptime "$uptime" \
+  --arg cpu "$cpu" \
+  --arg ram "$ram" \
+  --arg disk "$disk" \
+  '{uptime:$uptime,cpu:$cpu,ram:$ram,disk:$disk}' > "$WWW_DIR/sysinfo.json"
+EOF
+  chmod +x "$SCRIPT_SYSINFO"
+
+  # --------------------------------------------
+  # Write netinfo.sh
+  # --------------------------------------------
+  cat > "$SCRIPT_NETINFO" <<'EOF'
+#!/bin/bash
+# --------------------------------------------
+# netinfo.sh
+#   - รวม traffic จาก vnstat (รวมทั้งเครื่อง)
+#   - รวม traffic จาก 3x-ui API (V2Ray) หรือ xray-core log ถ้ามี
+#   - ถ้าไม่มีค่า V2Ray → จะไม่ใส่ field v2ray ใน JSON (ไม่แสดง 0 ให้สับสน)
+# --------------------------------------------
+set -e
+CONF="/etc/showon.conf"
+[ -f "$CONF" ] && source "$CONF"
+
+LOG="/var/log/showon-debug.log"
+WWW_DIR=${WWW_DIR:-/var/www/html/server}
+mkdir -p "$WWW_DIR"
+
+# ---------------- vnstat (รวมทั้งเครื่อง) ----------------
+# ใช้ vnstat --json (รวมสถิติปัจจุบันทั้งหมด)
+vnstat_json=$(vnstat --json 2>/dev/null || echo "{}")
+
+# ---------------- V2Ray (ทางเลือก) ----------------
+# ตั้ง default ว่างเปล่า ถ้าหาไม่ได้จะไม่โชว์ field นี้
+v2_down=""
+v2_up=""
+
+if [ -f /etc/x-ui/x-ui.db ] && [ -n "$PANEL_URL" ]; then
+  # 3x-ui mode → ใช้ API ใหม่ /panel/api/server/status (มี netTraffic)
+  COOKIE=$(curl -sk -c - -X POST "${PANEL_URL%/}/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" \
+    2>>"$LOG" | grep 3x-ui | awk '{print $7}')
+  if [ -n "$COOKIE" ]; then
+    stats=$(curl -sk -b "3x-ui=$COOKIE" "${PANEL_URL%/}/panel/api/server/status" 2>>"$LOG")
+    if echo "$stats" | jq empty 2>/dev/null; then
+      # บางเวอร์ชัน: netTraffic.down/up, บางเวอร์ชัน: obj.netTraffic (รองรับทั้งสอง)
+      v2_down=$(echo "$stats" | jq -r '.netTraffic.down // .obj.netTraffic.down // empty')
+      v2_up=$(echo "$stats"   | jq -r '.netTraffic.up   // .obj.netTraffic.up   // empty')
+    else
+      echo "$(date) WARN: cannot parse server/status JSON" >> "$LOG"
+    fi
+  else
+    echo "$(date) ERROR: 3x-ui cookie empty in netinfo" >> "$LOG"
+  fi
+
+else
+  # xray-core mode → ใช้ log ถ้ามี (ถ้าไม่มี log จะไม่สร้าง field v2ray)
+  # log: /var/log/xray/access.log หรือหลายไฟล์ใน /var/log/xray/*.log
+  if [ -f /var/log/xray/access.log ]; then
+    v2_down=$(awk '{sum+=$10} END{print sum}' /var/log/xray/access.log 2>/dev/null || echo "")
+    v2_up=$(awk '{sum+=$11} END{print sum}' /var/log/xray/access.log 2>/dev/null || echo "")
+  elif ls /var/log/xray/*.log >/dev/null 2>&1; then
+    v2_down=$(awk '{sum+=$10} END{print sum}' /var/log/xray/*.log 2>/dev/null || echo "")
+    v2_up=$(awk '{sum+=$11} END{print sum}' /var/log/xray/*.log 2>/dev/null || echo "")
+  fi
+fi
+
+# ---------------- Build JSON ----------------
+# ถ้า v2_down/up ว่าง → จะไม่ใส่ field v2ray
+if [ -n "$v2_down" ] && [ -n "$v2_up" ]; then
+  jq -n \
+    --argjson vn "$vnstat_json" \
+    --argjson v2d "${v2_down:-0}" \
+    --argjson v2u "${v2_up:-0}" \
+    '{vnstat:$vn, v2ray:{down:$v2d, up:$v2u}}' > "$WWW_DIR/netinfo.json"
+else
+  jq -n \
+    --argjson vn "$vnstat_json" \
+    '{vnstat:$vn}' > "$WWW_DIR/netinfo.json"
+fi
+
+# ---- Debug auto-truncate (~5m) ----
+LINES=$(wc -l < "$LOG" 2>/dev/null || echo 0)
+if [ "$LINES" -gt 2000 ]; then
+  tail -n 1000 "$LOG" > "${LOG}.tmp" && mv "${LOG}.tmp" "$LOG"
+fi
+EOF
+  chmod +x "$SCRIPT_NETINFO"
+
+  # --------------------------------------------
+  # Services
+  # --------------------------------------------
+  cat > "$SERVICE_ONLINE" <<EOF
+[Unit]
+Description=ShowOn Online Users JSON Generator
+After=network.target
+
+[Service]
+ExecStart=/bin/bash -c 'while true; do $SCRIPT_ONLINE; sleep 5; done'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  cat > "$SERVICE_SYSINFO" <<EOF
+[Unit]
+Description=ShowOn System Info JSON Generator
+After=network.target
+
+[Service]
+ExecStart=/bin/bash -c 'while true; do $SCRIPT_SYSINFO; sleep 5; done'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  cat > "$SERVICE_NETINFO" <<EOF
+[Unit]
+Description=ShowOn Network Traffic JSON Generator
+After=network.target
+
+[Service]
+ExecStart=/bin/bash -c 'while true; do $SCRIPT_NETINFO; sleep 30; done'
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reexec
+  systemctl enable --now online-check.service sysinfo.service netinfo.service
+
+  # --------------------------------------------
+  # Nginx site
+  # --------------------------------------------
+  clean_nginx_dupes
+  rm -f /etc/nginx/sites-available/server_checker
+  rm -f /etc/nginx/sites-enabled/server_checker
+
+  cat > /etc/nginx/sites-available/server_checker <<'EOF'
+server {
+    listen 82 default_server;
+    server_name _;
+
+    # Redirect root -> /server/
+    location = / {
+        return 302 /server/;
+    }
+
+    # Serve /server/ from /var/www/html/server (alias ป้องกัน path ซ้อน)
+    location /server/ {
+        alias /var/www/html/server/;
+        index index.html;
+        autoindex off;
+    }
+}
+EOF
+
+  ln -sf /etc/nginx/sites-available/server_checker /etc/nginx/sites-enabled/server_checker
+  nginx -t && systemctl reload nginx
+
+  # --------------------------------------------
+  # index.html (เรียบง่าย โชว์ตัวเลข/ข้อความ ชัดๆ)
+  # --------------------------------------------
+  cat > "$WWW_DIR/index.html" <<EOF
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>ShowOn Dashboard ${VERSION}</title>
+  <style>
+    body { background:#111; color:#fff; font-family:Arial, sans-serif; padding:20px; }
+    h1 { color:#0f0; margin-bottom:10px; }
+    .card { background:#222; border-radius:8px; padding:16px; margin:0 0 16px; }
+    .muted { color:#aaa; font-size:12px; }
+    .err { color:#f66; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; }
+    .kv { background:#1a1a1a; padding:8px 10px; border-radius:6px; }
+    .kv b { color:#0ff; }
+    pre { background:#000; padding:10px; border-radius:6px; overflow-x:auto; }
+  </style>
+</head>
+<body>
+  <h1>ShowOn Dashboard <span style="color:#0ff;">${VERSION}</span></h1>
+  <div class="muted">Auto refresh every 5 seconds</div>
+
+  <div class="card">
+    <h2>Online Summary</h2>
+    <div id="online">Loading...</div>
+  </div>
+
+  <div class="card">
+    <h2>System</h2>
+    <div class="row" id="sys">Loading...</div>
+  </div>
+
+  <div class="card">
+    <h2>Network</h2>
+    <div id="net">Loading...</div>
+  </div>
+
+<script>
+async function loadOnline(){
+  try{
+    const r = await fetch('./online_app.json?_=' + Date.now());
+    const d = await r.json();
+    const o = d[0];
+    document.getElementById('online').innerHTML =
+      '<div class="row">'
+      + '<div class="kv"><b>Onlines</b>: ' + o.onlines + '</div>'
+      + '<div class="kv"><b>Limit</b>: ' + o.limite + '</div>'
+      + '<div class="kv"><b>SSH</b>: ' + o.ssh + '</div>'
+      + '<div class="kv"><b>OpenVPN</b>: ' + o.openvpn + '</div>'
+      + '<div class="kv"><b>Dropbear</b>: ' + o.dropbear + '</div>'
+      + '<div class="kv"><b>V2Ray</b>: ' + o.v2ray + '</div>'
+      + '</div>';
+  }catch(e){
+    document.getElementById('online').innerHTML = '<span class="err">Error loading online_app.json</span>';
+  }
+}
+
+async function loadSys(){
+  try{
+    const r = await fetch('./sysinfo.json?_=' + Date.now());
+    const s = await r.json();
+    document.getElementById('sys').innerHTML =
+      '<div class="kv"><b>Uptime</b>: ' + s.uptime + '</div>'
+      + '<div class="kv"><b>CPU</b>: ' + s.cpu + '</div>'
+      + '<div class="kv"><b>RAM</b>: ' + s.ram + '</div>'
+      + '<div class="kv"><b>Disk</b>: ' + s.disk + '</div>';
+  }catch(e){
+    document.getElementById('sys').innerHTML = '<span class="err">Error loading sysinfo.json</span>';
+  }
+}
+
+async function loadNet(){
+  try{
+    const r = await fetch('./netinfo.json?_=' + Date.now());
+    const n = await r.json();
+
+    // vnstat ตัวเลขรวมทั้งหมด (โครงสร้าง json ของ vnstat มี interfaces/traffic)
+    let vn = 'N/A';
+    try {
+      const iface = n.vnstat.interfaces[0];
+      const total = iface.traffic.total; // rx / tx (kB)
+      vn = 'vnstat RX: ' + total.rx + ' kB | TX: ' + total.tx + ' kB';
+    } catch(_){ /* ignore */ }
+
+    // ถ้ามี v2ray (ค่า down/up) ให้โชว์ด้วย, ถ้าไม่มีให้โชว์เฉพาะ vnstat
+    let v2 = '';
+    if (n.v2ray && typeof n.v2ray.down !== 'undefined' && typeof n.v2ray.up !== 'undefined') {
+      v2 = ' | V2Ray Down: ' + n.v2ray.down + ' | Up: ' + n.v2ray.up;
+    }
+
+    document.getElementById('net').innerText = vn + v2;
+  }catch(e){
+    document.getElementById('net').innerHTML = '<span class="err">Error loading netinfo.json</span>';
+  }
+}
+
+async function refresh(){
+  await loadOnline();
+  await loadSys();
+  await loadNet();
+}
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
+EOF
+
+  chmod 644 "$WWW_DIR/index.html"
+  chown www-data:www-data "$WWW_DIR/index.html"
+
+  msg_ok "Installed ShowOn ${VERSION}"
+  msg_info "Open: http://$(hostname -I | awk '{print $1}'):82/server/"
+  pause
+  show_menu
+}
+
+update_script() {
+  # อัปเดต = ติดตั้งทับ โดยคง logic ปัจจุบันทั้งหมด
+  msg_info "Re-run installer (update in-place)..."
+  install_script
+}
+
+check_debug() {
+  header
+  echo -e "${CYAN}[INFO]${NC} Tail debug log (Ctrl+C to stop): $DEBUG_LOG"
+  echo "----------------------------------------------------"
+  tail -n 80 -f "$DEBUG_LOG"
+  pause
+  show_menu
+}
+
+# =====================================================
+# Create showon command (เขียนทับเสมอ)
+# =====================================================
+cat > "$SHOWON_CMD" <<'EOF'
+#!/bin/bash
+bash /root/Install
+EOF
+chmod +x "$SHOWON_CMD"
+
+# =====================================================
+# Start Menu
+# =====================================================
+show_menu
