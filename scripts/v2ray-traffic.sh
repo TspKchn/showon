@@ -31,8 +31,10 @@ if [[ -n "${PANEL_URL}" ]]; then
   fi
 fi
 
-JSON=$(jq -n --argjson up "$UP" --argjson down "$DOWN" '{up:$up, down:$down}')
-echo "$JSON" > "$OUT"
+# --- JSON แบบ [] ครอบ และบรรทัดเดียว ---
+JSON=$(jq -nc --argjson up "$UP" --argjson down "$DOWN" '[{up:$up, down:$down}]')
+
+echo -n "$JSON" > "$OUT"
 log "v2: $JSON"
 
 rm -f "$TMP_COOKIE" || true
