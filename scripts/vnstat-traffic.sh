@@ -40,13 +40,13 @@ if [[ -n "${PANEL_URL}" ]]; then
   fi
 fi
 
-# --- สร้าง JSON แบบบรรทัดเดียว ---
+# ✅ ห่อด้วย [] และบีบให้อยู่บรรทัดเดียว
 JSON=$(jq -nc \
   --argjson rx "$RX" \
   --argjson tx "$TX" \
   --argjson up "$VUP" \
   --argjson down "$VDOWN" \
-  '{vnstat:{rx:$rx,tx:$tx}, v2ray:{up:$up,down:$down}}')
+  '[{vnstat:{rx:$rx,tx:$tx}, v2ray:{up:$up,down:$down}}]')
 
 echo -n "$JSON" > "$OUT"
 log "netinfo: $JSON"
