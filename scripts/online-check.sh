@@ -1,65 +1,69 @@
 #!/bin/bash
 # =====================================================
-# ShowOn - Online Users JSON Generator
+# ShowOn - Online Users JSON Generator (Fixed Edition)
 # =====================================================
-
 set -euo pipefail
-CONF=/etc/showon.conf
+
+CONF="/etc/showon.conf"
 source "$CONF"
 
 JSON_OUT="$WWW_DIR/online_app.json"
 TMP_COOKIE="/tmp/showon_cookie_$$"
+NOW_MS=$(date +%s%3N)
 
-# ---------- ค่าเริ่มต้น ----------
 SSH_ON=0
 OVPN_ON=0
 DB_ON=0
 V2_ON=0
+CLIENTS_JSON="[]"
 
-# ---------- SSH ----------
-SSH_ON=$(ss -nt state established | awk '$3 ~ /:22$/ {c++} END {print c+0}')
+# ==== SSH ====
+SSH_ON=$(ss -nt state established 2>/dev/null | awk '$3 ~ /:22$/ {c++} END{print c+0}')
 
-# ---------- OpenVPN ----------
+# ==== OpenVPN ====
 if [[ -f /etc/openvpn/server/openvpn-status.log ]]; then
-  OVPN_ON=$(grep -c "^CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || echo 0)
+  OVPN_ON=$(grep -c '^CLIENT_LIST' /etc/openvpn/server/openvpn-status.log || true)
 fi
 
-# ---------- Dropbear ----------
-DB_ON=$(pgrep dropbear | wc -l || echo 0)
+# ==== Dropbear ====
+if pgrep dropbear >/dev/null 2>&1; then
+  DB_ON=$(pgrep dropbear | wc -l)
+fi
 
-# ---------- V2Ray / 3x-ui ----------
-V2_ON=0
-CLIENTS=()
-if [[ -n "${PANEL_URL}" ]]; then
-  COOKIE_FILE=$(mktemp)
+# ==== 3x-ui (V2Ray/Xray) ====
+if [[ -n "${PANEL_URL:-}" ]]; then
+  # login
+  if curl -sk -c "$TMP_COOKIE" -X POST "$PANEL_URL/login" \
+      -H "Content-Type: application/json" \
+      -d "{\"username\":\"$XUI_USER\",\"password\":\"$XUI_PASS\"}" \
+      | grep -q '"success":true'; then
 
-  # login -> cookie
-  if curl -sk -c "$COOKIE_FILE" -X POST "$PANEL_URL/login" \
-      -H "Content-Type: application/x-www-form-urlencoded" \
-      --data "username=$XUI_USER&password=$XUI_PASS" | grep -q '"success":true'; then
+    RESP=$(curl -sk -b "$TMP_COOKIE" "$PANEL_URL/xui/inbound/list" || echo "")
+    CLIENTS=$(echo "$RESP" | jq -r '.obj[]?.clientStats[]?' 2>/dev/null || echo "")
 
-    CLIENTS_JSON=$(curl -sk -b "$COOKIE_FILE" "$PANEL_URL/xui/inbound/list" || echo "")
-    if [[ -n "$CLIENTS_JSON" ]]; then
-      V2_ON=$(echo "$CLIENTS_JSON" | jq '[.obj[]?.clientStats[]? | select(.online==true)] | length')
-      CLIENTS=$(echo "$CLIENTS_JSON" | jq '[.obj[]?.clientStats[]? | {email: .email, up: .up, down: .down, online: .online}]')
+    if [[ -n "$CLIENTS" ]]; then
+      CLIENTS_JSON=$(echo "$CLIENTS" | jq -c --argjson now "$NOW_MS" '
+        [ . | select(.online == true or ((.lastOnline|tonumber) > ($now - 5000)))
+          | {email, up, down, total: (.up + .down), lastOnline} ]')
+      V2_ON=$(echo "$CLIENTS_JSON" | jq 'length')
     fi
   fi
-  rm -f "$COOKIE_FILE"
 fi
 
-# ---------- รวมทั้งหมด ----------
+# ==== รวม JSON ====
 TOTAL=$((SSH_ON + OVPN_ON + DB_ON + V2_ON))
+mkdir -p "$WWW_DIR"
 
-cat >"$JSON_OUT" <<EOF
+cat > "$JSON_OUT" <<EOF
 {
   "total": $TOTAL,
-  "limit": $LIMIT,
   "ssh": $SSH_ON,
   "openvpn": $OVPN_ON,
   "dropbear": $DB_ON,
   "v2ray": $V2_ON,
-  "clients": $CLIENTS
+  "clients": $CLIENTS_JSON,
+  "timestamp": $NOW_MS
 }
 EOF
 
-chmod 644 "$JSON_OUT"
+rm -f "$TMP_COOKIE"
