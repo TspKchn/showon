@@ -287,16 +287,27 @@ uninstall_script() {
 }
 
 update_script() {
-  echo -e "${CYAN}[INFO]${NC} Updating local scripts from repo..."
-  download_or_die "$SRC_ONLINE" "$SCRIPT_ONLINE"
-  download_or_die "$SRC_VNSTAT" "$SCRIPT_VNSTAT"
-  download_or_die "$SRC_V2RAY" "$SCRIPT_V2RAY"
-  download_or_die "$SRC_SYSINFO" "$SCRIPT_SYSINFO"
-  download_or_die "$SRC_INDEX" "$WWW_DIR/index.html"
-  chmod +x "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
-  systemctl restart online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service
-  echo -e "${GREEN}[OK]${NC} Updated and services restarted."
-  press
+    echo "[INFO] Checking update..."
+
+    # ✅ เช็คว่ามีการติดตั้งแล้วหรือยัง
+    if [[ ! -f /etc/showon.conf ]]; then
+        echo "[ERROR] คุณยังไม่ได้ติดตั้ง ShowOn"
+        echo "กรุณาเลือกเมนู 1) Install Script ก่อน"
+        read -rp "กด Enter เพื่อกลับสู่เมนู..."
+        return
+    fi
+
+    TMP_SCRIPT="/tmp/Install.$$"
+
+    if curl -fsSL https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install -o "$TMP_SCRIPT"; then
+        chmod +x "$TMP_SCRIPT"
+        mv "$TMP_SCRIPT" /root/Install
+        echo "[OK] Update สำเร็จแล้ว → เวอร์ชันใหม่จะมีผลครั้งถัดไป"
+    else
+        echo "[ERROR] ดาวน์โหลดสคริปต์ไม่สำเร็จ"
+    fi
+
+    read -rp "กด Enter เพื่อกลับสู่เมนู..."
 }
 
 check_debug() {
