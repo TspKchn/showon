@@ -72,16 +72,6 @@ fi
 TOTAL=$((SSH_ON + OVPN_ON + DB_ON + V2_ON))
 
 mkdir -p "$WWW_DIR"
-cat > "$JSON_OUT" <<EOF
-{
-  "onlines": $TOTAL,
-  "limite": $LIMIT,
-  "ssh": $SSH_ON,
-  "openvpn": $OVPN_ON,
-  "dropbear": $DB_ON,
-  "v2ray": $V2_ON,
-  "timestamp": $NOW
-}
-EOF
+echo -n "[{\"onlines\":$TOTAL,\"limite\":$LIMIT,\"ssh\":$SSH_ON,\"openvpn\":$OVPN_ON,\"dropbear\":$DB_ON,\"v2ray\":$V2_ON,\"timestamp\":$NOW}]" > "$JSON_OUT"
 
 rm -f "$TMP_COOKIE"
