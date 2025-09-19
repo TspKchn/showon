@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================
-# ShowOn SSL Setup Helper (Fixed v2)
+# ShowOn SSL Setup Helper (Fixed v3)
 # =====================================================
 set -euo pipefail
 
@@ -56,15 +56,17 @@ else
     -out "$CERT_FILE" >/dev/null 2>&1
 fi
 
-# === สร้าง HTTPS block เฉพาะถ้าไฟล์ cert/key มีอยู่จริง ===
+# === ลบ HTTPS block เก่าออกก่อน ===
+sed -i '/# HTTPS START/,/# HTTPS END/d' "$NGINX_CONF"
+
+# === เพิ่ม HTTPS block ===
 if [[ -s "$CERT_FILE" && -s "$KEY_FILE" ]]; then
-  if ! grep -q "listen 82 ssl" "$NGINX_CONF"; then
 cat >>"$NGINX_CONF" <<EOF
 
-# HTTPS
+# HTTPS START
 server {
     listen 82 ssl;
-    server_name bm.xq-vpn.com;
+    server_name _;
 
     ssl_certificate     $CERT_FILE;
     ssl_certificate_key $KEY_FILE;
@@ -79,8 +81,8 @@ server {
         add_header Cache-Control "no-store";
     }
 }
+# HTTPS END
 EOF
-  fi
 
   ln -sf "$NGINX_CONF" "$NGINX_LINK"
 
