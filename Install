@@ -1,10 +1,10 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.6 (Split-Files + SSL Edition)
+# ShowOn Script Manager V.1.0.5 (Split-Files Edition)
 # Author: TspKchn
 # =====================================================
 
-VERSION="V.1.0.6"
+VERSION="V.1.0.5"
 
 # ===== ปรับลิงก์นี้ให้ชี้ไปยัง repo ของคุณ =====
 REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main"
@@ -15,7 +15,6 @@ SRC_VNSTAT="$REPO_RAW/scripts/vnstat-traffic.sh"
 SRC_V2RAY="$REPO_RAW/scripts/v2ray-traffic.sh"
 SRC_SYSINFO="$REPO_RAW/scripts/sysinfo.sh"
 SRC_INDEX="$REPO_RAW/web/index.html"
-SRC_SSL="$REPO_RAW/scripts/setup-ssl.sh"
 
 # ตำแหน่งติดตั้งปลายทาง
 WWW_DIR="/var/www/html/server"
@@ -27,7 +26,6 @@ SCRIPT_ONLINE="$BIN_DIR/online-check.sh"
 SCRIPT_VNSTAT="$BIN_DIR/vnstat-traffic.sh"
 SCRIPT_V2RAY="$BIN_DIR/v2ray-traffic.sh"
 SCRIPT_SYSINFO="$BIN_DIR/sysinfo.sh"
-SCRIPT_SSL="$BIN_DIR/setup-ssl.sh"
 
 SERVICE_ONLINE="/etc/systemd/system/online-check.service"
 SERVICE_VNSTAT="/etc/systemd/system/vnstat-traffic.service"
@@ -37,15 +35,8 @@ SERVICE_SYSINFO="/etc/systemd/system/sysinfo.service"
 SITE_AV="/etc/nginx/sites-available/showon"
 SITE_EN="/etc/nginx/sites-enabled/showon"
 
-# ===== SSL Paths =====
-SSL_DIR="/etc/ssl/showon"
-SSL_CERT="$SSL_DIR/fullchain.pem"
-SSL_KEY="$SSL_DIR/privkey.pem"
-
 # ===== Colors =====
 GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; NC="\e[0m"
-
-# ==================== ฟังก์ชันหลัก ====================
 
 require_root() {
   if [[ $EUID -ne 0 ]]; then
@@ -90,10 +81,40 @@ check_update() {
     echo -e "${GREEN}[OK]${NC} You are using the latest version."
   else
     echo -e "${CYAN}[UPDATE]${NC} มีเวอร์ชันใหม่: $remote (ปัจจุบัน: $VERSION)"
-    read -rp "กด Enter เพื่อตกลงอัปเดต..." _
-    update_script
-    exit 0
   fi
+}
+
+write_nginx() {
+  mkdir -p "$WWW_DIR"
+  mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+
+  cat >"$SITE_AV" <<EOF
+server {
+    listen 82 default_server;
+    server_name _;
+
+    location = / {
+        return 302 /server/;
+    }
+    location /server/ {
+        alias $WWW_DIR/;
+        index index.html;
+        autoindex off;
+        add_header Cache-Control "no-store";
+    }
+}
+EOF
+
+  ln -sf "$SITE_AV" "$SITE_EN"
+
+  if nginx -t; then
+    systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+  else
+    echo -e "${YELLOW}[WARN]${NC} nginx config test failed → will try to start nginx..."
+    systemctl start nginx 2>/dev/null || true
+  fi
+
+  echo -e "${GREEN}[OK]${NC} Nginx ready at :82 (/server/)"
 }
 
 download_or_die() {
@@ -104,7 +125,6 @@ download_or_die() {
   fi
 }
 
-# ==================== INSTALL ====================
 install_script() {
   echo -e "${CYAN}[INFO]${NC} Installing ShowOn (${VERSION})..."
   echo -e "${CYAN}[INFO]${NC} Updating system packages..."
@@ -133,7 +153,7 @@ install_script() {
   # ==== ถามค่าตั้งต้น 3x-ui ====
   echo -e "${CYAN}[INFO]${NC} ตั้งค่า 3x-ui (ถ้าไม่มีให้กด Enter ข้ามได้)"
   echo "  👉 กรุณา 'วางลิงก์หน้าล็อกอินทั้งเส้น' เช่น:"
-  echo "     https://DOMAIN:PORT/RandomPath หรือ https://IP:PORT/RandomPath"
+  echo "     https://IP:PORT/RandomPath"
   read -rp "3X-UI URL (copy login link): " PANEL_URL
   PANEL_URL="$(echo "$PANEL_URL" | sed 's:/*$::')"
 
@@ -198,16 +218,8 @@ EOF
   download_or_die "$SRC_INDEX" "$WWW_DIR/index.html"
   chmod 644 "$WWW_DIR/index.html"
 
-  # ==== SSL setup ====
-  echo -e "${CYAN}[INFO]${NC} Setting up SSL..."
-  mkdir -p "$SSL_DIR"
-  download_or_die "$SRC_SSL" "$SCRIPT_SSL"
-  chmod +x "$SCRIPT_SSL"
-  $SCRIPT_SSL "$SSL_CERT" "$SSL_KEY"
-
-  # ==== nginx site cleanup ====
-  rm -f "$SITE_AV" "$SITE_EN"
-  ln -sf "$SITE_AV" "$SITE_EN"
+  # ==== nginx site ====
+  write_nginx
 
   # ==== systemd services ====
   cat >"$SERVICE_ONLINE" <<'EOF'
@@ -225,7 +237,8 @@ RestartSec=2
 [Install]
 WantedBy=multi-user.target
 EOF
-cat >"$SERVICE_VNSTAT" <<'EOF'
+
+  cat >"$SERVICE_VNSTAT" <<'EOF'
 [Unit]
 Description=ShowOn vnStat + V2Ray Traffic JSON Generator
 After=network-online.target
@@ -276,21 +289,11 @@ EOF
   systemctl daemon-reload
   systemctl enable --now online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service
 
-  # ==== Domain/IP ใน output ====
-  HOST_DISPLAY=$(echo "$PANEL_URL" | awk -F[/:] '{print $4}')
-  [[ -z "$HOST_DISPLAY" ]] && HOST_DISPLAY=$(hostname -I | awk '{print $1}')
-
   echo -e "${GREEN}[OK]${NC} Installed ShowOn ${VERSION}"
-  echo -e "${CYAN}[INFO]${NC} Open (HTTP):  http://$HOST_DISPLAY:82/server/"
-  if [[ -f "$SSL_CERT" && -f "$SSL_KEY" ]]; then
-    echo -e "${CYAN}[INFO]${NC} Open (HTTPS): https://$HOST_DISPLAY:82/server/"
-  else
-    echo -e "${YELLOW}[WARN]${NC} HTTPS is not active (no valid cert found)."
-  fi
+  echo -e "${CYAN}[INFO]${NC} Open: http://$(hostname -I | awk '{print $1}'):82/server/"
   press
 }
 
-# ==================== UNINSTALL ====================
 uninstall_script() {
   echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script..."
 
@@ -300,7 +303,7 @@ uninstall_script() {
   rm -f "$SERVICE_ONLINE" "$SERVICE_VNSTAT" "$SERVICE_V2RAY" "$SERVICE_SYSINFO"
   systemctl daemon-reload
 
-  rm -f "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO" "$SCRIPT_SSL"
+  rm -f "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
   rm -f "$CONF_FILE" "$DEBUG_LOG"
 
   rm -f "$SITE_AV" "$SITE_EN"
@@ -314,7 +317,6 @@ uninstall_script() {
   press
 }
 
-# ==================== UPDATE ====================
 update_script() {
   echo -e "${CYAN}[INFO]${NC} Updating all ShowOn components..."
 
@@ -326,9 +328,6 @@ update_script() {
 
   download_or_die "$SRC_INDEX" "$WWW_DIR/index.html"
   chmod 644 "$WWW_DIR/index.html"
-
-  download_or_die "$SRC_SSL" "$SCRIPT_SSL"
-  chmod +x "$SCRIPT_SSL"
 
   local TMP_SCRIPT="/tmp/Install.$$"
   if curl -fsSL "$REPO_RAW/Install" -o "$TMP_SCRIPT"; then
@@ -343,7 +342,6 @@ update_script() {
   press
 }
 
-# ==================== DEBUG ====================
 check_debug() {
   if [[ -f "$DEBUG_LOG" ]]; then
     tail -n 100 "$DEBUG_LOG"
@@ -353,7 +351,6 @@ check_debug() {
   press
 }
 
-# ==================== MENU ====================
 show_menu() {
   header
   check_update
@@ -375,6 +372,5 @@ show_menu() {
   show_menu
 }
 
-# ==================== MAIN ====================
 require_root
 show_menu
