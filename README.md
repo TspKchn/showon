@@ -23,37 +23,20 @@ Dashboard สำหรับตรวจสอบสถานะ Online ขอ�
 
 ### วิธีที่ 1: ใช้ `curl`
 ```bash
-curl -fsSL https://raw.githubusercontent.com/your-repo/showon/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/TspKchn/showon/main/Install | bash
 ```
 
 ### วิธีที่ 2: ใช้ `wget`
 ```bash
-wget -qO- https://raw.githubusercontent.com/your-repo/showon/main/install.sh | bash
+wget -qO- https://raw.githubusercontent.com/TspKchn/showon/main/Install | bash
 ```
 
 ### วิธีที่ 3: ใช้ `git clone`
 ```bash
-git clone https://github.com/your-repo/showon.git
+git clone https://github.com/TspKchn/showon.git
 cd showon
 chmod +x *.sh
-./install.sh
-```
-
----
-
-## 🔄 อัปเดต (Update)
-```bash
-cd /script/
-git pull origin main
-./install.sh
-```
-
----
-
-## ❌ ถอนการติดตั้ง (Uninstall)
-```bash
-bash /script/uninstall.sh
-reboot
+./Install
 ```
 
 ---
@@ -61,12 +44,11 @@ reboot
 ## 📂 โครงสร้างไฟล์ (Project Structure)
 ```
 /script/
-├── install.sh
-├── uninstall.sh
-├── online-check.sh
+├── Install
 ├── sysinfo.sh
-├── vnstat-traffic.sh
+├── online-check.sh
 ├── v2ray-traffic.sh
+├── vnstat-traffic.sh
 ├── /var/www/html/server/
     ├── index.html
     ├── online_app.json
