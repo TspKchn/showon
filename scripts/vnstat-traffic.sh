@@ -35,13 +35,16 @@ if [[ -n "${PANEL_URL}" ]]; then
   fi
   if $LOGIN_OK; then
     LIST=$(curl -sk -b "$TMP_COOKIE" "$PANEL_URL/panel/api/inbounds/list" 2>/dev/null || echo "")
-    # รวมทุก inbound (รองรับหลายพอร์ต)
     VUP=$(echo "$LIST"   | jq '[.obj[]?.up]   | add // 0')
     VDOWN=$(echo "$LIST" | jq '[.obj[]?.down] | add // 0')
   fi
 fi
 
-JSON=$(jq -n --argjson rx "$RX" --argjson tx "$TX" --argjson up "$VUP" --argjson down "$VDOWN" \
+JSON=$(jq -n \
+  --argjson rx "$RX" \
+  --argjson tx "$TX" \
+  --argjson up "$VUP" \
+  --argjson down "$VDOWN" \
   '{vnstat:{rx:$rx,tx:$tx}, v2ray:{up:$up,down:$down}}')
 
 echo "$JSON" > "$OUT"
