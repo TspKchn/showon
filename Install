@@ -1,15 +1,15 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.6 (Split-Files + SSL Edition + Logging)
+# ShowOn Script Manager V.1.0.6 (Split-Files + SSL Edition)
 # Author: TspKchn
 # =====================================================
 
 VERSION="V.1.0.6"
 
-# ===== Repo =====
+# ===== ปรับลิงก์นี้ให้ชี้ไปยัง repo ของคุณ =====
 REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main"
 
-# ===== Sources =====
+# โครงสร้างไฟล์บน repo (ต้องมีตามนี้)
 SRC_ONLINE="$REPO_RAW/scripts/online-check.sh"
 SRC_VNSTAT="$REPO_RAW/scripts/vnstat-traffic.sh"
 SRC_V2RAY="$REPO_RAW/scripts/v2ray-traffic.sh"
@@ -17,7 +17,7 @@ SRC_SYSINFO="$REPO_RAW/scripts/sysinfo.sh"
 SRC_INDEX="$REPO_RAW/web/index.html"
 SRC_SSL="$REPO_RAW/scripts/setup-ssl.sh"
 
-# ===== Install paths =====
+# ตำแหน่งติดตั้งปลายทาง
 WWW_DIR="/var/www/html/server"
 BIN_DIR="/usr/local/bin"
 CONF_FILE="/etc/showon.conf"
@@ -37,12 +37,13 @@ SERVICE_SYSINFO="/etc/systemd/system/sysinfo.service"
 SITE_AV="/etc/nginx/sites-available/showon"
 SITE_EN="/etc/nginx/sites-enabled/showon"
 
-# ===== Colors =====
-GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; NC="\e[0m"
+# SSL location ที่ setup-ssl.sh จะใช้/สร้าง (ใช้เพื่อ detect ผลลัพธ์หลังติดตั้ง SSL)
+SHOWON_SSL_DIR="/etc/showon/ssl"
+SHOWON_FULLCHAIN="$SHOWON_SSL_DIR/fullchain.pem"
+SHOWON_PRIVKEY="$SHOWON_SSL_DIR/privkey.pem"
 
-log() {
-  echo "[$(date '+%F %T')][INSTALL] $*" >> "$DEBUG_LOG"
-}
+# ===== Colors =====
+GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; MAG="\e[35m"; NC="\e[0m"
 
 require_root() {
   if [[ $EUID -ne 0 ]]; then
@@ -60,53 +61,87 @@ header() {
 
 press() { read -rp "Press Enter to return to menu..." _; }
 
-# ===== Detect NIC =====
+# -------- Network helpers --------
+# เดา interface หลักแบบปลอดภัย
 get_nic() {
   ip -o -4 route get 8.8.8.8 2>/dev/null \
     | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' \
     | head -n1
 }
 
-# ===== GitHub update check =====
-check_update() {
+get_primary_ip() {
+  hostname -I 2>/dev/null | awk '{print $1}'
+}
+
+# ดึง host จาก URL (ไม่เอา protocol และ path) เช่น https://bm.xq-vpn.com:88/ → bm.xq-vpn.com
+extract_host_from_url() {
+  local url="$1"
+  # ตัดโปรโตคอล
+  url="${url#http://}"; url="${url#https://}"
+  # ตัด path หลัง /
+  url="${url%%/*}"
+  # ตัด port ตามหลัง :
+  url="${url%%:*}"
+  printf "%s" "$url"
+}
+
+# ตรวจ hostname เป็น IP ไหม
+is_ip() {
+  local h="$1"
+  [[ "$h" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+}
+
+# -------- GitHub version check & auto-update prompt --------
+check_update_and_maybe_prompt() {
   local remote install_raw
   install_raw="$(curl -fsSL "$REPO_RAW/Install" || true)"
 
   if [[ -z "$install_raw" ]]; then
     echo -e "${YELLOW}[WARN]${NC} ไม่สามารถเช็คเวอร์ชันจาก GitHub ได้"
-    return
+    return 0
   fi
 
   remote="$(printf '%s' "$install_raw" | grep -m1 '^VERSION=' | cut -d'"' -f2)"
   if [[ -z "$remote" ]]; then
     echo -e "${YELLOW}[WARN]${NC} พบไฟล์ Install ใน GitHub แต่หา VERSION ไม่เจอ"
-    return
+    return 0
   fi
 
   if [[ "$VERSION" == "$remote" ]]; then
     echo -e "${GREEN}[OK]${NC} You are using the latest version."
+    return 0
   else
-    echo -e "${CYAN}[UPDATE]${NC} มีเวอร์ชันใหม่: $remote (ปัจจุบัน: $VERSION)"
-    read -rp "กด Enter เพื่อตกลงอัปเดตเป็นเวอร์ชันใหม่... " _
-    update_script
-    exec bash /root/Install
-    exit 0
+    echo -e "${CYAN}[UPDATE]${NC} มีเวอร์ชันใหม่: ${remote} (ปัจจุบัน: ${VERSION})"
+    echo -en "${CYAN}[INFO]${NC} กด Enter เพื่ออัปเดตเดี๋ยวนี้ หรือพิมพ์ n เพื่อข้าม: "
+    read -r ans
+    if [[ -z "$ans" || "$ans" =~ ^[Yy]$ ]]; then
+      # ทำ update แล้ว re-exec ตัวเอง เพื่อให้ VERSION ใหม่ทำงานทันที
+      update_script --noninteractive || true
+      echo -e "${GREEN}[OK]${NC} Updated. Reloading installer..."
+      exec bash "$0"
+      exit 0
+    else
+      echo -e "${YELLOW}[SKIP]${NC} ข้ามการอัปเดต"
+      return 0
+    fi
   fi
 }
 
-write_nginx() {
+# -------- Nginx site writer (idempotent & no duplicate listen) --------
+write_nginx_http_only() {
+  # ล้างของเดิมอย่างปลอดภัย เพื่อเลี่ยง duplicate listen (ถ้าไฟล์ค้างอยู่จากรอบก่อน)
+  rm -f "$SITE_EN"
+  rm -f "$SITE_AV"
+
   mkdir -p "$WWW_DIR"
   mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
 
   cat >"$SITE_AV" <<EOF
 server {
-    listen 82 ssl http2 default_server;
-    listen 82;
+    listen 82 default_server;
     server_name _;
 
-    ssl_certificate     /etc/letsencrypt/live/default/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/default/privkey.pem;
-
+    # redirect / → /server/ (เฉพาะ HTTP block)
     location = / {
         return 302 /server/;
     }
@@ -128,25 +163,75 @@ EOF
     systemctl start nginx 2>/dev/null || true
   fi
 
-  echo -e "${GREEN}[OK]${NC} Nginx ready at :82 (HTTP/HTTPS)"
+  echo -e "${GREEN}[OK]${NC} Nginx ready at :82 (HTTP)"
+}
+
+# เรียกหลัง setup-ssl.sh ถ้าพบ cert ให้เติมบล็อค HTTPS:82 (ไม่ชน listen เดิม)
+append_nginx_https_block_if_certs() {
+  # ถ้าไม่มี cert ก็ไม่ทำอะไร
+  if [[ ! -s "$SHOWON_FULLCHAIN" || ! -s "$SHOWON_PRIVKEY" ]]; then
+    return 0
+  fi
+
+  # ใส่บล็อค HTTPS:82 (ใช้ ssl) — ป้องกันซ้ำด้วย marker
+  if ! grep -q "# BEGIN SHOWON_HTTPS_BLOCK" "$SITE_AV" 2>/dev/null; then
+    cat >>"$SITE_AV" <<'EOF'
+
+# BEGIN SHOWON_HTTPS_BLOCK
+server {
+    listen 82 ssl;
+    server_name _;
+
+    ssl_certificate     /etc/showon/ssl/fullchain.pem;
+    ssl_certificate_key /etc/showon/ssl/privkey.pem;
+
+    # Strict but simple TLS params
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+
+    location = / {
+        return 302 /server/;
+    }
+    location /server/ {
+        alias /var/www/html/server/;
+        index index.html;
+        autoindex off;
+        add_header Cache-Control "no-store";
+    }
+}
+# END SHOWON_HTTPS_BLOCK
+EOF
+  fi
+
+  if nginx -t; then
+    systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+    echo -e "${GREEN}[OK]${NC} Nginx HTTPS on :82 enabled"
+  else
+    echo -e "${YELLOW}[WARN]${NC} HTTPS block failed nginx test → keeping HTTP only"
+  fi
 }
 
 download_or_die() {
   local url="$1" dst="$2"
   if ! curl -fsSL "$url" -o "$dst"; then
     echo -e "${RED}[ERROR]${NC} Download failed: $url"
-    log "Download failed: $url"
     exit 1
   fi
 }
 
+detect_ssl_ready() {
+  [[ -s "$SHOWON_FULLCHAIN" && -s "$SHOWON_PRIVKEY" ]]
+}
+
 install_script() {
   echo -e "${CYAN}[INFO]${NC} Installing ShowOn (${VERSION})..."
-  log "Starting installation"
-
+  echo -e "${CYAN}[INFO]${NC} Updating system packages..."
   apt update -y >/dev/null 2>&1 || true
+
+  echo -e "${CYAN}[INFO]${NC} Installing dependencies..."
   apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates >/dev/null 2>&1 || true
 
+  # ==== ตรวจสอบเวอร์ชัน Ubuntu ====
   UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null || echo "0")
   if [[ "$UBUNTU_VERSION" == "18.04" ]]; then
     echo -e "${YELLOW}[WARN]${NC} Ubuntu 18.04 detected, installing vnstat from PPA..."
@@ -157,21 +242,53 @@ install_script() {
   else
     apt install -y vnstat >/dev/null 2>&1 || true
   fi
+
   systemctl enable vnstat >/dev/null 2>&1 || true
   systemctl start vnstat >/dev/null 2>&1 || true
 
   mkdir -p "$WWW_DIR" "$BIN_DIR" "$(dirname "$DEBUG_LOG")"
 
-  # ==== config input ====
+  # ==== ถามค่าตั้งต้น 3x-ui ====
   echo -e "${CYAN}[INFO]${NC} ตั้งค่า 3x-ui (ถ้าไม่มีให้กด Enter ข้ามได้)"
+  echo "  👉 กรุณา 'วางลิงก์หน้าล็อกอินทั้งเส้น' เช่น:"
+  echo "     https://DOMAIN:PORT/RandomPath หรือ https://IP:PORT/RandomPath"
   read -rp "3X-UI URL (copy login link): " PANEL_URL
   PANEL_URL="$(echo "$PANEL_URL" | sed 's:/*$::')"
+
   read -rp "3X-UI Username: " XUI_USER
   read -rp "3X-UI Password: " XUI_PASS
   read -rp "Limit User Online (Default: 2000): " LIMIT
   LIMIT=${LIMIT:-2000}
 
+  # ==== ตรวจสอบล็อกอิน (ถ้าใส่ URL) ====
+  if [[ -n "$PANEL_URL" ]]; then
+    COOKIE_FILE=$(mktemp)
+    LOGIN_OK=false
+
+    if curl -sk -c "$COOKIE_FILE" -X POST "$PANEL_URL/login" \
+         -H "Content-Type: application/x-www-form-urlencoded" \
+         --data "username=$XUI_USER&password=$XUI_PASS" | grep -q '"success":true'; then
+      LOGIN_OK=true
+    else
+      if curl -sk -c "$COOKIE_FILE" -X POST "$PANEL_URL/login" \
+           -H "Content-Type: application/json" \
+           -d "{\"username\":\"$XUI_USER\",\"password\":\"$XUI_PASS\"}" | grep -q '"success":true'; then
+        LOGIN_OK=true
+      fi
+    fi
+
+    if $LOGIN_OK; then
+      echo -e "${GREEN}[OK]${NC} Login to 3x-ui OK"
+    else
+      echo -e "${YELLOW}[WARN]${NC} Login to 3x-ui failed → continue without 3x-ui"
+      PANEL_URL=""
+    fi
+    rm -f "$COOKIE_FILE"
+  fi
+
+  # ==== เขียน config ====
   NIC=$(get_nic)
+  [[ -z "$NIC" ]] && NIC=$(ip -o -4 addr show up scope global | awk '{print $2}' | head -n1)
   [[ -z "$NIC" ]] && NIC="eth0"
 
   cat >"$CONF_FILE" <<EOF
@@ -179,32 +296,51 @@ VERSION="${VERSION}"
 WWW_DIR="$WWW_DIR"
 LIMIT=${LIMIT}
 DEBUG_LOG="$DEBUG_LOG"
+
 PANEL_URL="$PANEL_URL"
 XUI_USER="$XUI_USER"
 XUI_PASS="$XUI_PASS"
+
 NET_IFACE="$NIC"
 EOF
   chmod 600 "$CONF_FILE"
 
-  # ==== download scripts ====
+  # ==== ดาวน์โหลดสคริปต์จาก repo ====
   download_or_die "$SRC_ONLINE" "$SCRIPT_ONLINE"
   download_or_die "$SRC_VNSTAT" "$SCRIPT_VNSTAT"
   download_or_die "$SRC_V2RAY" "$SCRIPT_V2RAY"
   download_or_die "$SRC_SYSINFO" "$SCRIPT_SYSINFO"
   chmod +x "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
 
+  mkdir -p "$WWW_DIR"
   download_or_die "$SRC_INDEX" "$WWW_DIR/index.html"
   chmod 644 "$WWW_DIR/index.html"
 
-  # ==== nginx config ====
-  write_nginx
+  # ==== nginx site (HTTP:82) ====
+  write_nginx_http_only
 
   # ==== SSL setup ====
   echo -e "${CYAN}[INFO]${NC} Setting up SSL..."
-  log "Running setup-ssl.sh"
   download_or_die "$SRC_SSL" "$SCRIPT_SSL"
   chmod +x "$SCRIPT_SSL"
-  $SCRIPT_SSL || echo -e "${YELLOW}[WARN]${NC} SSL setup failed → HTTP only"
+
+  # ส่ง host ที่ผู้ใช้ใส่ไว้ใน PANEL_URL เพื่อ detect โดเมน ถ้าเป็น IP จะว่าง
+  PANEL_HOST="$(extract_host_from_url "$PANEL_URL")"
+  SSL_HOST=""
+  if [[ -n "$PANEL_HOST" && ! $(is_ip "$PANEL_HOST") ]]; then
+    SSL_HOST="$PANEL_HOST"
+  fi
+
+  # เรียก setup-ssl.sh: จะพยายามค้นหา/ลิงก์ cert เดิม หรือสร้าง self-signed (opt-in) และแจ้งผล
+  "$SCRIPT_SSL" "$SSL_HOST" || echo -e "${YELLOW}[WARN]${NC} SSL setup failed → HTTP only"
+
+  # ถ้ามี cert แล้ว → เติม HTTPS block (listen 82 ssl) เข้าไฟล์ nginx เดิม
+  if detect_ssl_ready; then
+    append_nginx_https_block_if_certs
+    HTTPS_READY="yes"
+  else
+    HTTPS_READY="no"
+  fi
 
   # ==== systemd services ====
   cat >"$SERVICE_ONLINE" <<'EOF'
@@ -212,11 +348,13 @@ EOF
 Description=ShowOn Online Users JSON Generator
 After=network-online.target
 Wants=network-online.target
+
 [Service]
 Type=simple
 ExecStart=/bin/bash -lc 'while true; do /usr/local/bin/online-check.sh; sleep 5; done'
 Restart=always
 RestartSec=2
+
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -226,11 +364,13 @@ EOF
 Description=ShowOn vnStat + V2Ray Traffic JSON Generator
 After=network-online.target
 Wants=network-online.target
+
 [Service]
 Type=simple
 ExecStart=/bin/bash -lc 'while true; do /usr/local/bin/vnstat-traffic.sh; sleep 5; done'
 Restart=always
 RestartSec=2
+
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -240,11 +380,13 @@ EOF
 Description=ShowOn V2Ray-Only Traffic JSON Generator
 After=network-online.target
 Wants=network-online.target
+
 [Service]
 Type=simple
 ExecStart=/bin/bash -lc 'while true; do /usr/local/bin/v2ray-traffic.sh; sleep 5; done'
 Restart=always
 RestartSec=2
+
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -254,11 +396,13 @@ EOF
 Description=ShowOn System Info JSON Generator
 After=network-online.target
 Wants=network-online.target
+
 [Service]
 Type=simple
 ExecStart=/bin/bash -lc 'while true; do /usr/local/bin/sysinfo.sh; sleep 5; done'
 Restart=always
 RestartSec=2
+
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -266,20 +410,26 @@ EOF
   systemctl daemon-reload
   systemctl enable --now online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service
 
-  if [[ "$PANEL_URL" == *.* ]]; then
-    SHOW_URL="https://$PANEL_URL:82/server/"
+  # สร้าง display host: ถ้า PANEL_URL เป็นโดเมน → ใช้โดเมน; ถ้าไม่ → ใช้ IP
+  local_host=""
+  if [[ -n "$PANEL_HOST" && ! $(is_ip "$PANEL_HOST") ]]; then
+    local_host="$PANEL_HOST"
   else
-    SHOW_URL="http://$(hostname -I | awk '{print $1}'):82/server/"
+    local_host="$(get_primary_ip)"
   fi
 
   echo -e "${GREEN}[OK]${NC} Installed ShowOn ${VERSION}"
-  echo -e "${CYAN}[INFO]${NC} Open: $SHOW_URL"
+  echo -e "${CYAN}[INFO]${NC} Open (HTTP):  \e[4mhttp://${local_host}:82/server/\e[0m"
+  if [[ "$HTTPS_READY" == "yes" ]]; then
+    echo -e "${CYAN}[INFO]${NC} Open (HTTPS): \e[4mhttps://${local_host}:82/server/\e[0m"
+  else
+    echo -e "${YELLOW}[WARN]${NC} HTTPS is not active (no valid cert found)."
+  fi
   press
 }
 
 uninstall_script() {
   echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script..."
-  log "Uninstalling..."
 
   systemctl stop online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
   systemctl disable online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
@@ -290,7 +440,8 @@ uninstall_script() {
   rm -f "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO" "$SCRIPT_SSL"
   rm -f "$CONF_FILE" "$DEBUG_LOG"
 
-  rm -f "$SITE_AV" "$SITE_EN"
+  rm -f "$SITE_EN"
+  rm -f "$SITE_AV"
   if nginx -t 2>/dev/null; then
     systemctl reload nginx 2>/dev/null || true
   else
@@ -298,13 +449,16 @@ uninstall_script() {
   fi
 
   echo -e "${GREEN}[SUCCESS]${NC} Uninstalled completely."
-  log "Uninstalled completed"
   press
 }
 
 update_script() {
+  local noni="no"
+  if [[ "$1" == "--noninteractive" ]]; then
+    noni="yes"
+  fi
+
   echo -e "${CYAN}[INFO]${NC} Updating all ShowOn components..."
-  log "Updating..."
 
   download_or_die "$SRC_ONLINE" "$SCRIPT_ONLINE"
   download_or_die "$SRC_VNSTAT" "$SCRIPT_VNSTAT"
@@ -318,6 +472,7 @@ update_script() {
   download_or_die "$SRC_SSL" "$SCRIPT_SSL"
   chmod +x "$SCRIPT_SSL"
 
+  # อัปเดตไฟล์ Install ตัวเอง
   local TMP_SCRIPT="/tmp/Install.$$"
   if curl -fsSL "$REPO_RAW/Install" -o "$TMP_SCRIPT"; then
     mv "$TMP_SCRIPT" /root/Install
@@ -327,9 +482,15 @@ update_script() {
     echo -e "${RED}[ERROR]${NC} Failed to update Install script."
   fi
 
+  # ถ้ามี cert อยู่แล้วเติม HTTPS block (กันหลุด)
+  if detect_ssl_ready; then
+    append_nginx_https_block_if_certs
+  fi
+
   echo -e "${GREEN}[OK]${NC} Update completed."
-  log "Update completed"
-  press
+  if [[ "$noni" != "yes" ]]; then
+    press
+  fi
 }
 
 check_debug() {
@@ -343,7 +504,9 @@ check_debug() {
 
 show_menu() {
   header
-  check_update
+  # เช็คและเสนออัปเดตแบบ auto-prompt (จะ re-exec เองถ้าอัปเดต)
+  check_update_and_maybe_prompt
+
   echo "1) Install Script"
   echo "2) Uninstall Script"
   echo "3) Update Script"
