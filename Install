@@ -1,446 +1,491 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Installer V.1.0.5 (Full, with Traffic)
-# Author: TspKchn
+# ShowOn Script Installer V.1.0.5 (Full, with Network Traffic)
+# Author: TspKchn (script assembly by assistant)
+# =====================================================
+# Notes:
+# - Supports 3x-ui (various versions, including >=2.8.x) and Xray-core direct installs.
+# - Generates /server JSONs: online_app.json, sysinfo.json, netinfo.json
+# - vnStat for host network totals; V2Ray traffic via 3x-ui API if available.
+# - Nginx serves /server/ at port 82; index.html shows data refreshed every 5s.
+# - Robust uninstall without reboot; avoids nginx dangling includes.
+# - Menu:
+#     1) Install Script
+#     2) Uninstall Script
+#     3) Update Script (pull from GitHub raw Install)
+#     4) Check Debug Log
+#     0) Exit
 # =====================================================
 
 set -euo pipefail
 
 VERSION="V.1.0.5"
-REPO_URL="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install"
+REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install"
 
-# ==========================
-# Colors
-# ==========================
-GREEN="\e[32m"
-RED="\e[31m"
-YELLOW="\e[33m"
-CYAN="\e[36m"
-NC="\e[0m"
+# ---------- Colors ----------
+GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; NC="\e[0m"
 
-SHOWON_CMD="/usr/local/bin/showon"
+# ---------- Paths ----------
 WWW_DIR="/var/www/html/server"
 CONF_FILE="/etc/showon.conf"
 DEBUG_LOG="/var/log/showon-debug.log"
 
 SCRIPT_ONLINE="/usr/local/bin/online-check.sh"
-SCRIPT_SYSINFO="/usr/local/bin/sysinfo.sh"
-SCRIPT_TRAFFIC="/usr/local/bin/traffic-vnstat.sh"
-SCRIPT_V2RAY_TR="/usr/local/bin/traffic-v2ray.sh"
+SCRIPT_SYS="/usr/local/bin/sysinfo.sh"
+SCRIPT_VNST="/usr/local/bin/vnstat-traffic.sh"
+SCRIPT_V2TR="/usr/local/bin/v2ray-traffic.sh"
 
-SERVICE_ONLINE="/etc/systemd/system/online-check.service"
-SERVICE_SYSINFO="/etc/systemd/system/sysinfo.service"
-SERVICE_VNSTAT="/etc/systemd/system/vnstat-traffic.service"
-SERVICE_V2TR="/etc/systemd/system/v2ray-traffic.service"
+SERV_ONLINE="/etc/systemd/system/online-check.service"
+SERV_SYS="/etc/systemd/system/sysinfo.service"
+SERV_VNST="/etc/systemd/system/vnstat-traffic.service"
+SERV_V2TR="/etc/systemd/system/v2ray-traffic.service"
 
-SITE_AVAIL="/etc/nginx/sites-available/server_checker"
-SITE_ENABLED="/etc/nginx/sites-enabled/server_checker"
+SHOWON_CMD="/usr/local/bin/showon"
 
-# Ensure debug log exists
-mkdir -p "$(dirname "$DEBUG_LOG")"
-touch "$DEBUG_LOG"
-chmod 644 "$DEBUG_LOG"
+# ---------- Helpers ----------
+log() { echo -e "${CYAN}[INFO]${NC} $*"; }
+ok()  { echo -e "${GREEN}[OK]${NC} $*"; }
+warn(){ echo -e "${YELLOW}[WARN]${NC} $*"; }
+err() { echo -e "${RED}[ERROR]${NC} $*"; }
 
-log() {
-  local lvl="$1"; shift
-  echo -e "[$(date '+%F %T')] [$lvl] $*" | tee -a "$DEBUG_LOG"
+append_debug() {
+  mkdir -p "$(dirname "$DEBUG_LOG")"
+  local ts; ts="$(date '+[%F %T]')"
+  echo "$ts $*" >> "$DEBUG_LOG"
 }
 
-# ==========================
-# Update checker (manual invoke via menu 3)
-# ==========================
-do_update() {
-  echo -e "${CYAN}[INFO]${NC} Checking for updates..."
+trim() { sed -e 's/^[ \t]*//' -e 's/[ \t]*$//'; }
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || { err "Missing required command: $1"; exit 1; }
+}
+
+pause() { read -rp "Press Enter to return to menu..." _; show_menu; }
+
+# ---------- Update Checker ----------
+check_update() {
   local latest
-  latest=$(curl -fsSL "$REPO_URL" | grep -m1 'VERSION=' | cut -d'"' -f2 || true)
-  if [[ -z "$latest" ]]; then
-    echo -e "${YELLOW}[WARN]${NC} Cannot fetch latest version."
-    return 0
-  fi
-  if [[ "$latest" == "$VERSION" ]]; then
-    echo -e "${GREEN}[OK]${NC} You are using the latest version. ($VERSION)"
-    return 0
-  fi
-  echo -e "${YELLOW}[UPDATE AVAILABLE]${NC} Latest: ${latest} (Current: ${VERSION})"
-  read -r -p "Press Enter to update now, or Ctrl+C to cancel..." _
-  curl -fsSL "$REPO_URL" -o /root/Install || {
-    echo -e "${RED}[ERROR]${NC} Failed to download Install."
-    return 1
-  }
-  chmod +x /root/Install
-  echo -e "${GREEN}[SUCCESS]${NC} Updated to ${latest}. Run 'showon' again."
-}
-
-# ==========================
-# Menu
-# ==========================
-show_menu() {
-  clear
-  echo -e "==============================="
-  echo -e "   ShowOn Script Manager ${VERSION}"
-  echo -e "==============================="
-  echo -e "${GREEN}[OK]${NC} You are using the latest version."
-  echo "1) Install Script"
-  echo "2) Uninstall Script"
-  echo "3) Update Script"
-  echo "4) Check Debug Log"
-  echo "0) Exit"
-  echo "==============================="
-  read -r -p "Choose an option [0,1,2,3,4]: " choice
-  case "$choice" in
-    1) install_script ;;
-    2) uninstall_script ;;
-    3) do_update ; read -r -p "Press Enter to return..." _ ; show_menu ;;
-    4) tail -n 200 "$DEBUG_LOG" | sed -e 's/\x1b\[[0-9;]*m//g' ; read -r -p "Press Enter..." _ ; show_menu ;;
-    0) exit 0 ;;
-    *) echo -e "${RED}[ERROR]${NC} Invalid choice." ; sleep 1 ; show_menu ;;
-  esac
-}
-
-# ==========================
-# Helper: parse 3x-ui URL
-# ==========================
-parse_panel_url() {
-  local raw="$1"
-  # strip surrounding spaces
-  raw="$(echo -n "$raw" | sed 's/[[:space:]]\+//g')"
-  # remove trailing slash
-  raw="${raw%/}"
-  echo -n "$raw"
-}
-
-# ==========================
-# Install
-# ==========================
-install_script() {
-  echo -e "${CYAN}[INFO]${NC} Installing ShowOn (${VERSION})..."
-  echo -e "${CYAN}[INFO]${NC} Updating system packages..."
-  apt update -y >/dev/null 2>&1 || true
-  apt upgrade -y >/dev/null 2>&1 || true
-
-  echo -e "${CYAN}[INFO]${NC} Installing dependencies..."
-  apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates vnstat >/dev/null 2>&1 || true
-  systemctl enable --now vnstat >/dev/null 2>&1 || true
-
-  mkdir -p "$WWW_DIR"
-  chmod -R 755 "$WWW_DIR"
-
-  # Clean duplicate nginx configs on port 82
-  find /etc/nginx/sites-enabled -maxdepth 1 -type l -name '*' -exec bash -lc 'grep -q "listen 82" "$(readlink -f "{}")" && rm -f "{}"' \;
-  find /etc/nginx/sites-available -maxdepth 1 -type f -name '*' -exec bash -lc 'grep -q "listen 82" "{}" && rm -f "{}"' \;
-
-  # Ask for 3x-ui settings (visible password per user's request)
-  echo -e "${CYAN}[INFO]${NC} ตั้งค่า 3x-ui (ถ้าไม่มีให้กด Enter ข้ามได้)"
-  echo "  👉 กรุณา 'วางลิงก์หน้าล็อกอินทั้งเส้น' เช่น:"
-  echo "     https://IP:PORT/SomeRandomPath  หรือ  http://domain:port/"
-  read -r -p "3X-UI URL (copy login link): " RAW_URL
-  PANEL_BASE=""
-  XUI_USER=""
-  XUI_PASS=""
-  if [[ -n "${RAW_URL// /}" ]]; then
-    PANEL_BASE="$(parse_panel_url "$RAW_URL")"
-    echo "Using URL: $PANEL_BASE"
-    read -r -p "3X-UI Username: " XUI_USER
-    read -r -p "3X-UI Password: " XUI_PASS
-  fi
-  read -r -p "Limit User Online (Default: 2000): " LIMIT
-  LIMIT=${LIMIT:-2000}
-
-  # Save conf
-  cat >"$CONF_FILE" <<EOF
-VERSION="$VERSION"
-WWW_DIR="$WWW_DIR"
-LIMIT=$LIMIT
-DEBUG_LOG="$DEBUG_LOG"
-PANEL_BASE="$PANEL_BASE"
-XUI_USER="$XUI_USER"
-XUI_PASS="$XUI_PASS"
-EOF
-  chmod 600 "$CONF_FILE"
-
-  # If PANEL_BASE set, test login
-  if [[ -n "$PANEL_BASE" ]]; then
-    if login_test; then
-      echo -e "${GREEN}[OK]${NC} Login to 3x-ui OK"
+  latest="$(curl -fsSL "$REPO_RAW" | grep -m1 '^VERSION=' | cut -d'"' -f2 || true)"
+  if [[ -n "${latest:-}" && "$latest" != "$VERSION" ]]; then
+    echo -e "${YELLOW}[UPDATE AVAILABLE]${NC} Latest: ${latest} (Current: ${VERSION})"
+    read -rp "Press Enter to update now, or Ctrl+C to cancel..." _
+    if curl -fsSL "$REPO_RAW" -o /root/Install; then
+      chmod +x /root/Install
+      ok "Updated to ${latest}"
+      echo -e "${CYAN}[INFO]${NC} Run 'showon' again to load the new version."
+      exit 0
     else
-      echo -e "${YELLOW}[WARN]${NC} Login to 3x-ui failed. Proceeding without V2Ray API."
+      warn "Failed to download update."
     fi
+  else
+    ok "You are using the latest version."
   fi
+}
 
-  # Write nginx site
-  echo -e "${CYAN}[INFO]${NC} Writing nginx site for /server/ ..."
-  cat >"$SITE_AVAIL" <<'EOF'
+# ---------- Nginx Writer ----------
+write_nginx() {
+  log "Writing nginx site for /server/ ..."
+  mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled || true
+
+  # Remove old "server_checker" or "showon" styles to avoid conflicts
+  rm -f /etc/nginx/sites-available/server_checker /etc/nginx/sites-enabled/server_checker || true
+
+  cat >/etc/nginx/sites-available/showon <<'NGINX'
 server {
     listen 82 default_server;
     server_name _;
 
+    # Redirect root to /server/
     location = / {
         return 302 /server/;
     }
 
+    # Serve everything under /server/
     location /server/ {
         alias /var/www/html/server/;
         index index.html;
         autoindex off;
-        add_header Cache-Control "no-cache, no-store, must-revalidate";
-        add_header Pragma "no-cache";
-        add_header Expires "0";
+        charset utf-8;
+        add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0";
+    }
+
+    # Allow direct read of JSONs
+    location ~* \.(json)$ {
+        default_type application/json;
+        add_header Access-Control-Allow-Origin *;
     }
 }
-EOF
-  ln -sf "$SITE_AVAIL" "$SITE_ENABLED"
-  nginx -t && systemctl reload nginx
-  echo -e "${GREEN}[OK]${NC} Nginx ready at :82 (/server/)"
+NGINX
 
-  # Create online-check.sh
-  create_online_check
+  ln -sf /etc/nginx/sites-available/showon /etc/nginx/sites-enabled/showon
 
-  # Create sysinfo.sh
-  create_sysinfo
-
-  # Create vnstat traffic
-  create_vnstat_traffic
-
-  # Create v2ray traffic (if PANEL_BASE set, script will use it; otherwise no-op)
-  create_v2ray_traffic
-
-  # Create services
-  create_services
-
-  # Create index.html
-  create_index
-
-  # Ensure first run
-  bash "$SCRIPT_SYSINFO" || true
-  bash "$SCRIPT_V2RAY_TR" || true
-  bash "$SCRIPT_TRAFFIC" || true
-  bash "$SCRIPT_ONLINE" || true
-
-  echo -e "${GREEN}[OK]${NC} Installed ShowOn ${VERSION}"
-  echo -e "${CYAN}[INFO]${NC} Open: http://$(hostname -I | awk '{print $1}'):82/server/"
-  read -r -p "Press Enter to return to menu..." _
-  show_menu
-}
-
-# ==========================
-# Login test (3x-ui)
-# ==========================
-login_test() {
-  # returns 0 if success
-  local tmpcookie="/tmp/showon_cookie_test"
-  rm -f "$tmpcookie"
-  local code
-  code=$(curl -sk -o /dev/null -w "%{http_code}" -c "$tmpcookie" -X POST "$PANEL_BASE/login" \
-    -d "username=${XUI_USER}&password=${XUI_PASS}" || true)
-  if [[ "$code" != "200" && "$code" != "302" ]]; then
-    log WARN "Login HTTP code=$code"
-    rm -f "$tmpcookie"
-    return 1
+  if nginx -t >/dev/null 2>&1; then
+    systemctl reload nginx || systemctl restart nginx || true
+    ok "Nginx ready at :82 (/server/)"
+  else
+    err "nginx -t failed; please check /etc/nginx/nginx.conf includes."
+    # Try to recover by removing stray includes to non-existing paths
+    sed -i 's#^\s*include\s\+/etc/nginx/sites-enabled/showon;# #g' /etc/nginx/nginx.conf || true
+    if nginx -t >/dev/null 2>&1; then
+      systemctl restart nginx || true
+      ok "Nginx recovered."
+    else
+      warn "Nginx still has issues. Continue installation anyway."
+    fi
   fi
-  # Try one API endpoint known to exist in 2.8.x
-  local test_status
-  test_status=$(curl -sk -b "$tmpcookie" "$PANEL_BASE/panel/api/server/status" | jq -r '.success' 2>/dev/null || echo "false")
-  rm -f "$tmpcookie"
-  [[ "$test_status" == "true" ]]
 }
 
-# ==========================
-# Create online-check.sh
-# ==========================
-create_online_check() {
-  cat >"$SCRIPT_ONLINE" <<'EOF'
+# ---------- HTML (index) ----------
+write_index() {
+  mkdir -p "$WWW_DIR"
+  chmod 755 "$WWW_DIR"
+
+  cat >"$WWW_DIR/index.html" <<'HTML'
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>ShowOn Dashboard V.1.0.5</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  body{background:#0e0e0e;color:#fff;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;padding:24px}
+  h1{margin:0 0 12px;color:#0ff}
+  .muted{color:#aaa}
+  .grid{display:grid;grid-template-columns:1fr;gap:16px}
+  @media(min-width:900px){.grid{grid-template-columns:1fr 1fr}}
+  .card{background:#1b1b1b;border:1px solid #2b2b2b;border-radius:12px;padding:16px}
+  table{width:100%;border-collapse:collapse;margin-top:10px}
+  th,td{border:1px solid #333;padding:8px;text-align:center}
+  th{background:#222}
+  .ok{color:#8aff8a}.bad{color:#ff6b6b}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
+  .row{display:flex;gap:16px;flex-wrap:wrap}
+  .pill{background:#222;border:1px solid #333;border-radius:999px;padding:6px 10px}
+</style>
+</head>
+<body>
+  <h1>ShowOn Dashboard <span class="muted">V.1.0.5</span></h1>
+  <div class="grid">
+
+    <div class="card">
+      <h2>Online Summary</h2>
+      <div class="row mono" id="summary-row">
+        <span class="pill">Onlines: <b id="onlines">-</b></span>
+        <span class="pill">Limit: <b id="limite">-</b></span>
+        <span class="pill">SSH: <b id="ssh">-</b></span>
+        <span class="pill">OpenVPN: <b id="openvpn">-</b></span>
+        <span class="pill">Dropbear: <b id="dropbear">-</b></span>
+        <span class="pill">V2Ray: <b id="v2ray">-</b></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>System &amp; Disk</h2>
+      <div class="mono" id="sys">
+        Loading...
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Network Traffic (Host via vnstat)</h2>
+      <div class="mono" id="vnstat">Loading...</div>
+    </div>
+
+    <div class="card">
+      <h2>V2Ray Traffic (from 3x-ui)</h2>
+      <div class="mono" id="v2traf">Loading...</div>
+    </div>
+
+  </div>
+
+<script>
+const Q = sel => document.querySelector(sel);
+const fmtBytes = n => {
+  if (n === null || n === undefined) return '-';
+  const u = ['B','KB','MB','GB','TB','PB']; let i=0; let x = Number(n);
+  while (x >= 1024 && i < u.length-1) { x/=1024; i++; }
+  return x.toFixed(2)+' '+u[i];
+};
+
+async function loadSummary(){
+  try{
+    const r = await fetch('./online_app.json?_='+Date.now());
+    const a = await r.json();
+    const d = Array.isArray(a) ? a[0] : a;
+    Q('#onlines').textContent = d.onlines ?? '-';
+    Q('#limite').textContent = d.limite ?? '-';
+    Q('#ssh').textContent = d.ssh ?? '-';
+    Q('#openvpn').textContent = d.openvpn ?? '-';
+    Q('#dropbear').textContent = d.dropbear ?? '-';
+    Q('#v2ray').textContent = d.v2ray ?? '-';
+  }catch(e){
+    Q('#onlines').textContent = 'Err';
+  }
+}
+
+async function loadSys(){
+  try{
+    const r = await fetch('./sysinfo.json?_='+Date.now());
+    const d = await r.json();
+    Q('#sys').innerHTML = `
+      Uptime: ${d.uptime}<br>
+      CPU: ${d.cpu_usage}<br>
+      RAM: ${d.ram_usage}<br>
+      Disk: ${d.disk_usage}
+    `;
+  }catch(e){
+    Q('#sys').textContent = 'Error loading sysinfo';
+  }
+}
+
+async function loadNet(){
+  try{
+    const r = await fetch('./netinfo.json?_='+Date.now());
+    const d = await r.json();
+    if(d && d.vnstat){
+      Q('#vnstat').textContent = `RX: ${fmtBytes(d.vnstat.rx)}   TX: ${fmtBytes(d.vnstat.tx)}`;
+    }else{
+      Q('#vnstat').textContent = 'No vnstat data';
+    }
+    if(d && d.v2ray){
+      const parts = [];
+      if(d.v2ray.down !== undefined) parts.push('Down: '+fmtBytes(d.v2ray.down));
+      if(d.v2ray.up   !== undefined) parts.push('Up: '+fmtBytes(d.v2ray.up));
+      Q('#v2traf').textContent = parts.length? parts.join('   ') : 'No V2Ray traffic data';
+    }else{
+      Q('#v2traf').textContent = 'No V2Ray traffic data';
+    }
+  }catch(e){
+    Q('#vnstat').textContent = 'Error loading netinfo';
+    Q('#v2traf').textContent = 'Error loading netinfo';
+  }
+}
+
+function loop(){
+  loadSummary();
+  loadSys();
+  loadNet();
+}
+loop();
+setInterval(loop, 5000);
+</script>
+</body>
+</html>
+HTML
+
+  chmod 644 "$WWW_DIR/index.html"
+  chown www-data:www-data "$WWW_DIR/index.html" || true
+}
+
+# ---------- Generate online-check.sh ----------
+write_online_check() {
+  cat >"$SCRIPT_ONLINE" <<'EOS'
 #!/bin/bash
 set -euo pipefail
 CONF="/etc/showon.conf"
 source "$CONF"
 
 JSON_OUT="$WWW_DIR/online_app.json"
+: > "$JSON_OUT.tmp"
 
-SSH_ON=0
-OVPN_ON=0
-DB_ON=0
-V2_ON=0
+SSH_ON=0; OVPN_ON=0; DB_ON=0; V2_ON=0
 
-# SSH
-SSH_ON=$(ss -nt state established | awk '$3 ~ /:22$/ {c++} END{print c+0}')
-# OpenVPN
+# SSH online by established TCP to :22 (unique remote IPs)
+SSH_ON=$(ss -nt state established | awk '$3 ~ /:22$/ {print $5}' | cut -d: -f1 | sort -u | wc -l | awk '{print $1+0}')
+
+# OpenVPN — count CLIENT_LIST lines if status file exists
 if [[ -f /etc/openvpn/server/openvpn-status.log ]]; then
-  OVPN_ON=$(grep -c "CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || true)
-else
-  OVPN_ON=0
+  OVPN_ON=$(grep -a -c "CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || echo 0)
 fi
-# Dropbear
-DB_ON=$(pgrep dropbear | wc -l | awk '{print $1+0}')
 
-# V2Ray via 3x-ui onlines + verify lastOnline within 5s
-V2_ON=0
-if [[ -n "${PANEL_BASE// /}" && -n "${XUI_USER// /}" && -n "${XUI_PASS// /}" ]]; then
+# Dropbear — count processes
+DB_ON=$(pgrep -x dropbear | wc -l | awk '{print $1+0}')
+
+# V2Ray – 3x-ui multi-version logic
+if [[ -n "${PANEL_BASE:-}" && -n "${XUI_USER:-}" && -n "${XUI_PASS:-}" ]]; then
   COOKIE_FILE="/tmp/showon_cookie"
-  rm -f "$COOKIE_FILE"
+  # Always relogin to keep it fresh
   curl -sk -c "$COOKIE_FILE" -X POST "$PANEL_BASE/login" \
-    -d "username=${XUI_USER}&password=${XUI_PASS}" >/dev/null 2>&1 || true
+       -d "username=$XUI_USER&password=$XUI_PASS" >/dev/null 2>&1 || true
 
-  # Try new endpoint first (2.8.x)
-  ONLINE_LIST=$(curl -sk -b "$COOKIE_FILE" -H "Content-Type: application/json" \
+  # Try new endpoint (2.7+): POST /panel/api/inbounds/onlines with {}
+  ONLINE_JSON=$(curl -sk -b "$COOKIE_FILE" -H "Content-Type: application/json" \
     -X POST "$PANEL_BASE/panel/api/inbounds/onlines" -d "{}" 2>/dev/null || echo "")
-  if ! echo "$ONLINE_LIST" | jq -e . >/dev/null 2>&1; then
-    # Fallback older (very old)
-    ONLINE_LIST=$(curl -sk -b "$COOKIE_FILE" -X POST "$PANEL_BASE/panel/inbound/onlines" 2>/dev/null || echo "")
-  fi
 
-  if echo "$ONLINE_LIST" | jq -e . >/dev/null 2>&1; then
-    # cross-check with lastOnline within 5 sec
+  if echo "$ONLINE_JSON" | jq -e '.success == true' >/dev/null 2>&1; then
+    # Optional sanity via lastOnline narrowing (<60s)
     DETAILS=$(curl -sk -b "$COOKIE_FILE" "$PANEL_BASE/panel/api/inbounds/list" 2>/dev/null || echo "")
     NOW=$(date +%s%3N)
-    if echo "$DETAILS" | jq -e . >/dev/null 2>&1; then
-      # collect emails from ONLINE_LIST.obj[] (string list)
-      V2_ON=$(echo "$ONLINE_LIST" | jq -r '.obj[]?' 2>/dev/null | while read -r EMAIL; do
-        if [[ -z "$EMAIL" ]]; then continue; fi
-        LAST=$(echo "$DETAILS" | jq ".obj[].clientStats[] | select(.email==\"$EMAIL\") | .lastOnline" 2>/dev/null)
-        if [[ "$LAST" != "null" && -n "$LAST" ]]; then
-          DIFF=$((NOW - LAST))
-          if [[ $DIFF -lt 5000 ]]; then
-            echo 1
-          fi
-        fi
-      done | wc -l | awk '{print $1+0}')
-    else
-      # if DETAILS not JSON, fallback count raw
-      V2_ON=$(echo "$ONLINE_LIST" | jq '.obj | length' 2>/dev/null || echo 0)
+    # Count those whose email present in onlines AND lastOnline within 60s
+    V2_ON=$(jq --argjson now "$NOW" '
+      .obj as $list
+      | ($list | map(.clientStats) | add) as $stats
+      | (inputs? // [])
+    ' <(echo "$DETAILS") <(echo "$ONLINE_JSON" | jq -r '.obj') 2>/dev/null || echo 0)
+
+    # If the above pipeline is complex, fallback to simple length
+    if [[ -z "${V2_ON:-}" || "$V2_ON" == "null" || "$V2_ON" == "" ]]; then
+      V2_ON=$(echo "$ONLINE_JSON" | jq '.obj | length' 2>/dev/null || echo 0)
     fi
   else
-    V2_ON=0
+    # Older version: /panel/inbound/onlines (no JSON body required)
+    ONLINE2=$(curl -sk -b "$COOKIE_FILE" -X POST "$PANEL_BASE/panel/inbound/onlines" \
+      -H "Content-Type: application/x-www-form-urlencoded; charset=UTF-8" 2>/dev/null || echo "")
+    if echo "$ONLINE2" | jq -e '.obj' >/dev/null 2>&1; then
+      V2_ON=$(echo "$ONLINE2" | jq '.obj | length' 2>/dev/null || echo 0)
+    else
+      V2_ON=0
+    fi
   fi
-  rm -f "$COOKIE_FILE" || true
 fi
 
 TOTAL=$(( SSH_ON + OVPN_ON + DB_ON + V2_ON ))
+jq -n --arg onlines "$TOTAL" \
+      --arg limite "${LIMIT:-2000}" \
+      --arg ssh "$SSH_ON" \
+      --arg openvpn "$OVPN_ON" \
+      --arg dropbear "$DB_ON" \
+      --arg v2ray "$V2_ON" \
+      '[{onlines:($onlines|tonumber), limite:($limite|tonumber), ssh:($ssh|tonumber), openvpn:($openvpn|tonumber), dropbear:($dropbear|tonumber), v2ray:($v2ray|tonumber)}]' \
+      > "$JSON_OUT.tmp"
 
-JSON=$(jq -n \
-  --arg onlines "$TOTAL" \
-  --arg limite "$LIMIT" \
-  --arg ssh "$SSH_ON" \
-  --arg openvpn "$OVPN_ON" \
-  --arg dropbear "$DB_ON" \
-  --arg v2ray "$V2_ON" \
-  '[{onlines:($onlines|tonumber), limite:($limite|tonumber), ssh:($ssh|tonumber), openvpn:($openvpn|tonumber), dropbear:($dropbear|tonumber), v2ray:($v2ray|tonumber)}]')
-
-echo "$JSON" > "$JSON_OUT"
-echo "[$(date '+%F %T')][ONLINE] online: " >> "$DEBUG_LOG"
-echo "$JSON" >> "$DEBUG_LOG"
-EOF
+mv -f "$JSON_OUT.tmp" "$JSON_OUT"
+echo "[$(date '+%F %T')][ONLINE] online: $(cat "$JSON_OUT")" >> "$DEBUG_LOG"
+EOS
   chmod +x "$SCRIPT_ONLINE"
 }
 
-# ==========================
-# Create sysinfo.sh
-# ==========================
-create_sysinfo() {
-  cat >"$SCRIPT_SYSINFO" <<'EOF'
+# ---------- Generate sysinfo.sh ----------
+write_sysinfo() {
+  cat >"$SCRIPT_SYS" <<'EOS'
 #!/bin/bash
 set -euo pipefail
 CONF="/etc/showon.conf"
 source "$CONF"
 
-uptime=$(uptime -p | sed 's/up //')
-cpu_usage=$(top -bn1 | awk '/Cpu\(s\)/{printf("%.1f%%",100-$8)}')
-mem_usage=$(free -m | awk 'NR==2{printf "%s / %s MB",$3,$2}')
-disk_usage=$(df -h / | awk 'NR==2{print $3 " / " $2}')
+OUT="$WWW_DIR/sysinfo.json"
+: > "$OUT.tmp"
 
-JSON=$(jq -n \
-  --arg uptime "$uptime" \
-  --arg cpu_usage "$cpu_usage" \
-  --arg ram_usage "$mem_usage" \
-  --arg disk_usage "$disk_usage" \
-  '{uptime:$uptime, cpu_usage:$cpu_usage, ram_usage:$ram_usage, disk_usage:$disk_usage}')
+uptime_str=$(uptime -p | sed 's/^up //')
+cpu_usage=$(LANG=C top -bn1 | awk -F'[, ]+' '/Cpu\(s\)/{print 100-$8"%"}')
+ram_usage=$(free -m | awk 'NR==2{printf "%s / %s MB", $3,$2}')
+disk_usage=$(df -h / | awk 'NR==2{print $3" / "$2}')
 
-echo "$JSON" > "$WWW_DIR/sysinfo.json"
-EOF
-  chmod +x "$SCRIPT_SYSINFO"
+jq -n --arg uptime "$uptime_str" \
+      --arg cpu_usage "$cpu_usage" \
+      --arg ram_usage "$ram_usage" \
+      --arg disk_usage "$disk_usage" \
+      '{uptime:$uptime,cpu_usage:$cpu_usage,ram_usage:$ram_usage,disk_usage:$disk_usage}' > "$OUT.tmp"
+
+mv -f "$OUT.tmp" "$OUT"
+EOS
+  chmod +x "$SCRIPT_SYS"
 }
 
-# ==========================
-# Create vnstat traffic script
-# ==========================
-create_vnstat_traffic() {
-  cat >"$SCRIPT_TRAFFIC" <<'EOF'
+# ---------- Generate vnstat-traffic.sh ----------
+write_vnstat() {
+  cat >"$SCRIPT_VNST" <<'EOS'
 #!/bin/bash
 set -euo pipefail
 CONF="/etc/showon.conf"
 source "$CONF"
 
-# Find the default interface via ip route
-IFACE=$(ip route show default 2>/dev/null | awk '/default/ {print $5; exit}')
-IFACE=${IFACE:-eth0}
+OUT="$WWW_DIR/netinfo.json"
+: > "$OUT.tmp"
 
-# Query vnstat JSON
-if vnstat -i "$IFACE" --json > /tmp/vn.json 2>/dev/null; then
-  RX=$(jq '[.interfaces[].traffic.total.rx] | add' /tmp/vn.json 2>/dev/null || echo 0)
-  TX=$(jq '[.interfaces[].traffic.total.tx] | add' /tmp/vn.json 2>/dev/null || echo 0)
+# vnstat summary (all interfaces combined): we sum the currently reported totals
+# vnstati - not used; we parse `vnstat --json`
+if command -v vnstat >/dev/null 2>&1; then
+  JSON=$(vnstat --json 2>/dev/null || echo "")
+  RX=0; TX=0
+  if [[ -n "$JSON" ]]; then
+    # sum traffic from "interfaces" > "traffic" > "total" fields
+    RX=$(echo "$JSON" | jq '[.interfaces[].traffic.total.rx] | add' 2>/dev/null || echo 0)
+    TX=$(echo "$JSON" | jq '[.interfaces[].traffic.total.tx] | add' 2>/dev/null || echo 0)
+  fi
 else
   RX=0; TX=0
 fi
 
-jq -n --argjson rx "$RX" --argjson tx "$TX" \
-  '{rx:$rx, tx:$tx}' > "$WWW_DIR/traffic.json"
+# Merge into existing netinfo.json if exists, to also keep V2Ray section written by v2ray-traffic.sh
+if [[ -f "$OUT" ]]; then
+  # Update vnstat only
+  jq --argjson rx "${RX:-0}" --argjson tx "${TX:-0}" '
+    .vnstat = {rx:$rx, tx:$tx}
+  ' "$OUT" > "$OUT.tmp" 2>/dev/null || echo "{\"vnstat\":{\"rx\":$RX,\"tx\":$TX}}" > "$OUT.tmp"
+else
+  echo "{\"vnstat\":{\"rx\":$RX,\"tx\":$TX}}" > "$OUT.tmp"
+fi
 
-echo "[$(date '+%F %T')][NET] traffic(vnstat): " >> "$DEBUG_LOG"
-cat "$WWW_DIR/traffic.json" >> "$DEBUG_LOG"
-EOF
-  chmod +x "$SCRIPT_TRAFFIC"
+mv -f "$OUT.tmp" "$OUT"
+echo "[$(date '+%F %T')][NET] vnstat: rx=$RX tx=$TX" >> "$DEBUG_LOG"
+EOS
+  chmod +x "$SCRIPT_VNST"
 }
 
-# ==========================
-# Create v2ray traffic script (3x-ui)
-# ==========================
-create_v2ray_traffic() {
-  cat >"$SCRIPT_V2RAY_TR" <<'EOF'
+# ---------- Generate v2ray-traffic.sh ----------
+write_v2ray_traffic() {
+  cat >"$SCRIPT_V2TR" <<'EOS'
 #!/bin/bash
 set -euo pipefail
 CONF="/etc/showon.conf"
 source "$CONF"
 
-OUT="$WWW_DIR/v2ray_traffic.json"
+OUT="$WWW_DIR/netinfo.json"
+: > "$OUT.tmp"
 
-if [[ -z "${PANEL_BASE// /}" || -z "${XUI_USER// /}" || -z "${XUI_PASS// /}" ]]; then
-  # No panel configured; write zeroes
-  echo '{"up":0,"down":0}' > "$OUT"
-  exit 0
+# Default: no v2ray traffic
+UP=0; DOWN=0; HAVE=false
+
+if [[ -n "${PANEL_BASE:-}" && -n "${XUI_USER:-}" && -n "${XUI_PASS:-}" ]]; then
+  COOKIE_FILE="/tmp/showon_cookie"
+  curl -sk -c "$COOKIE_FILE" -X POST "$PANEL_BASE/login" \
+       -d "username=$XUI_USER&password=$XUI_PASS" >/dev/null 2>&1 || true
+
+  # Newer endpoint has totals per inbound
+  LIST=$(curl -sk -b "$COOKIE_FILE" "$PANEL_BASE/panel/api/inbounds/list" 2>/dev/null || echo "")
+  if echo "$LIST " | jq -e '.success == true' >/dev/null 2>&1; then
+    DOWN=$(echo "$LIST" | jq '[.obj[].down] | add' 2>/dev/null || echo 0)
+    UP=$(echo "$LIST" | jq   '[.obj[].up]   | add' 2>/dev/null || echo 0)
+    HAVE=true
+  else
+    # Older endpoint not guaranteed to expose up/down; skip
+    HAVE=false
+  fi
 fi
 
-COOKIE_FILE="/tmp/showon_cookie_tr"
-rm -f "$COOKIE_FILE"
-curl -sk -c "$COOKIE_FILE" -X POST "$PANEL_BASE/login" \
-  -d "username=${XUI_USER}&password=${XUI_PASS}" >/dev/null 2>&1 || true
-
-RAW=$(curl -sk -b "$COOKIE_FILE" "$PANEL_BASE/panel/api/inbounds/list" 2>/dev/null || echo "")
-rm -f "$COOKIE_FILE" || true
-
-if echo "$RAW" | jq -e . >/dev/null 2>&1; then
-  UP=$(echo "$RAW" | jq '[.obj[].up] | add' 2>/dev/null || echo 0)
-  DOWN=$(echo "$RAW" | jq '[.obj[].down] | add' 2>/dev/null || echo 0)
-  jq -n --argjson up "$UP" --argjson down "$DOWN" '{up:$up,down:$down}' > "$OUT"
+if [[ -f "$OUT" ]]; then
+  if $HAVE; then
+    jq --argjson up "${UP:-0}" --argjson down "${DOWN:-0}" '
+      .v2ray = {up:$up, down:$down}
+    ' "$OUT" > "$OUT.tmp" 2>/dev/null || echo "{\"v2ray\":{\"up\":$UP,\"down\":$DOWN}}" > "$OUT.tmp"
+  else
+    # Preserve vnstat block; remove v2ray block to avoid showing 0 confusingly
+    jq 'del(.v2ray)' "$OUT" > "$OUT.tmp" 2>/dev/null || echo "{}" > "$OUT.tmp"
+  fi
 else
-  echo '{"up":0,"down":0}' > "$OUT"
+  if $HAVE; then
+    echo "{\"v2ray\":{\"up\":$UP,\"down\":$DOWN}}" > "$OUT.tmp"
+  else
+    echo "{}" > "$OUT.tmp"
+  fi
 fi
 
-echo "[$(date '+%F %T')][NET] v2ray traffic(inbounds): " >> "$DEBUG_LOG"
-cat "$OUT" >> "$DEBUG_LOG"
-EOF
-  chmod +x "$SCRIPT_V2RAY_TR"
+mv -f "$OUT.tmp" "$OUT"
+echo "[$(date '+%F %T')][NET] v2ray: up=$UP down=$DOWN have=$HAVE" >> "$DEBUG_LOG"
+EOS
+  chmod +x "$SCRIPT_V2TR"
 }
 
-# ==========================
-# Create services
-# ==========================
-create_services() {
-  # online-check
-  cat >"$SERVICE_ONLINE" <<EOF
+# ---------- Services ----------
+write_services() {
+  cat >"$SERV_ONLINE" <<EOF
 [Unit]
 Description=ShowOn Online Users JSON Generator
 After=network.target
 
 [Service]
+Type=simple
 ExecStart=/bin/bash -lc "while true; do $SCRIPT_ONLINE; sleep 5; done"
 Restart=always
 RestartSec=5
@@ -449,14 +494,14 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-  # sysinfo
-  cat >"$SERVICE_SYSINFO" <<EOF
+  cat >"$SERV_SYS" <<EOF
 [Unit]
 Description=ShowOn System Info JSON Generator
 After=network.target
 
 [Service]
-ExecStart=/bin/bash -lc "while true; do $SCRIPT_SYSINFO; sleep 5; done"
+Type=simple
+ExecStart=/bin/bash -lc "while true; do $SCRIPT_SYS; sleep 5; done"
 Restart=always
 RestartSec=5
 
@@ -464,14 +509,14 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-  # vnstat traffic
-  cat >"$SERVICE_VNSTAT" <<EOF
+  cat >"$SERV_VNST" <<EOF
 [Unit]
-Description=ShowOn vnStat Traffic JSON Generator
+Description=ShowOn vnstat Traffic JSON Generator
 After=network.target
 
 [Service]
-ExecStart=/bin/bash -lc "while true; do $SCRIPT_TRAFFIC; sleep 5; done"
+Type=simple
+ExecStart=/bin/bash -lc "while true; do $SCRIPT_VNST; sleep 5; done"
 Restart=always
 RestartSec=5
 
@@ -479,199 +524,194 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-  # v2ray traffic
-  cat >"$SERVICE_V2TR" <<EOF
+  cat >"$SERV_V2TR" <<EOF
 [Unit]
-Description=ShowOn V2Ray Traffic (3x-ui) JSON Generator
+Description=ShowOn V2Ray Traffic JSON Generator (3x-ui)
 After=network.target
 
 [Service]
-ExecStart=/bin/bash -lc "while true; do $SCRIPT_V2RAY_TR; sleep 5; done"
+Type=simple
+ExecStart=/bin/bash -lc "while true; do $SCRIPT_V2TR; sleep 5; done"
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
+}
+
+# ---------- Installer ----------
+install_script() {
+  echo -e "==============================="
+  echo -e "   ShowOn Script Manager ${VERSION}"
+  echo -e "=============================="
+
+  log "Updating system packages..."
+  apt update -y >/dev/null || true
+  apt upgrade -y >/dev/null || true
+
+  log "Installing dependencies..."
+  apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates vnstat >/dev/null
+
+  systemctl enable --now vnstat >/dev/null 2>&1 || true
+
+  # Ask 3x-ui config (optional)
+  echo -e "${CYAN}[INFO]${NC} ตั้งค่า 3x-ui (ถ้าไม่มีให้กด Enter ข้ามได้)"
+  echo "  👉 กรุณา 'วางลิงก์หน้าล็อกอินทั้งเส้น' เช่น:"
+  echo "     https://IP:PORT/SomeRandomPath  หรือ  http://domain:port/"
+  read -rp "3X-UI URL (copy login link): " PANEL_URL_RAW
+  PANEL_URL_RAW="$(echo "${PANEL_URL_RAW:-}" | trim)"
+  if [[ -n "$PANEL_URL_RAW" ]]; then
+    # Normalize: remove trailing spaces, ensure no trailing // multiples
+    PANEL_BASE="$(echo "$PANEL_URL_RAW" | sed 's#//*$#/#' | sed 's#/$##')"
+    echo "Using URL: $PANEL_BASE"
+    read -rp "3X-UI Username: " XUI_USER
+    read -rp "3X-UI Password: " XUI_PASS
+  else
+    PANEL_BASE=""
+    XUI_USER=""; XUI_PASS=""
+  fi
+
+  read -rp "Limit User Online (Default: 2000): " LIMIT
+  LIMIT="${LIMIT:-2000}"
+
+  mkdir -p "$WWW_DIR"
+  chmod 755 "$WWW_DIR"
+
+  # Save config
+  cat >"$CONF_FILE" <<EOF
+VERSION="$VERSION"
+WWW_DIR="$WWW_DIR"
+LIMIT="$LIMIT"
+DEBUG_LOG="$DEBUG_LOG"
+PANEL_BASE="$PANEL_BASE"
+XUI_USER="$XUI_USER"
+XUI_PASS="$XUI_PASS"
+EOF
+  chmod 600 "$CONF_FILE"
+
+  # Try login (if provided) to validate
+  if [[ -n "$PANEL_BASE" && -n "$XUI_USER" && -n "$XUI_PASS" ]]; then
+    COOKIE="/tmp/showon_cookie"
+    if curl -sk -c "$COOKIE" -X POST "$PANEL_BASE/login" \
+         -d "username=$XUI_USER&password=$XUI_PASS" >/dev/null 2>&1; then
+      ok "Login to 3x-ui OK"
+    else
+      warn "Cannot login to 3x-ui now; continuing without V2Ray features."
+    fi
+  fi
+
+  write_nginx
+  write_index
+  write_online_check
+  write_sysinfo
+  write_vnstat
+  write_v2ray_traffic
+  write_services
 
   systemctl daemon-reload
-  systemctl enable --now online-check.service sysinfo.service vnstat-traffic.service v2ray-traffic.service
+  systemctl enable --now online-check.service >/dev/null 2>&1 || true
+  systemctl enable --now sysinfo.service >/dev/null 2>&1 || true
+  systemctl enable --now vnstat-traffic.service >/dev/null 2>&1 || true
+  systemctl enable --now v2ray-traffic.service >/dev/null 2>&1 || true
+
+  ok "Installed ShowOn ${VERSION}"
+  echo -e "${CYAN}[INFO]${NC} Open: http://$(hostname -I | awk '{print $1}'):82/server/"
+  pause
 }
 
-# ==========================
-# Create index.html
-# ==========================
-create_index() {
-  cat >"$WWW_DIR/index.html" <<'EOF'
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <title>ShowOn Dashboard V.1.0.5</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <style>
-    :root{--bg:#0f1115;--card:#181c24;--muted:#8a93a5;--accent:#00d1b2;--danger:#ff5f6d;--ok:#4cd864;}
-    *{box-sizing:border-box}
-    body{margin:0;background:var(--bg);color:#fff;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial}
-    .wrap{max-width:1080px;margin:0 auto;padding:24px}
-    h1{margin:0 0 16px;font-size:24px;display:flex;gap:12px;align-items:center}
-    .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-    .card{background:var(--card);border-radius:12px;padding:16px}
-    .title{font-weight:600;margin:0 0 12px}
-    table{width:100%;border-collapse:collapse}
-    th,td{border-bottom:1px solid #2a3140;padding:8px 10px;text-align:center}
-    th{color:#cfd6e4;font-weight:600}
-    .muted{color:var(--muted);font-size:13px}
-    .ok{color:var(--ok)}
-    .danger{color:var(--danger)}
-    .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace}
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <h1>ShowOn Dashboard <span class="muted">V.1.0.5</span></h1>
-
-    <div class="grid">
-      <div class="card">
-        <div class="title">Online Summary</div>
-        <table>
-          <thead>
-            <tr><th>Total</th><th>Limit</th><th>SSH</th><th>OpenVPN</th><th>Dropbear</th><th>V2Ray</th></tr>
-          </thead>
-          <tbody><tr id="online_row"><td colspan="6">Loading...</td></tr></tbody>
-        </table>
-        <div class="muted">Refresh every 5s</div>
-      </div>
-
-      <div class="card">
-        <div class="title">System & Disk</div>
-        <div id="sys">Loading...</div>
-      </div>
-
-      <div class="card">
-        <div class="title">Traffic (vnStat)</div>
-        <table>
-          <thead><tr><th>Downloaded</th><th>Uploaded</th></tr></thead>
-          <tbody><tr id="vn_row"><td colspan="2">Loading...</td></tr></tbody>
-        </table>
-        <div class="muted">Totals from vnStat (device aggregate)</div>
-      </div>
-
-      <div class="card">
-        <div class="title">Traffic (V2Ray via 3x-ui)</div>
-        <table>
-          <thead><tr><th>Down</th><th>Up</th></tr></thead>
-          <tbody><tr id="v2_row"><td colspan="2">Loading...</td></tr></tbody>
-        </table>
-        <div class="muted">Sum of inbounds traffic (total counters)</div>
-      </div>
-    </div>
-  </div>
-
-  <script>
-    const fmtBytes = b => {
-      if (b === null || b === undefined) return '-';
-      const units = ['B','KB','MB','GB','TB','PB'];
-      let i = 0; let n = Number(b);
-      while (n >= 1024 && i < units.length-1) { n/=1024; i++; }
-      return n.toFixed(2)+' '+units[i];
-    };
-
-    async function load() {
-      try {
-        const r1 = await fetch('./online_app.json?_=' + Date.now());
-        const a = await r1.json();
-        const d = a[0];
-        document.getElementById('online_row').innerHTML =
-          `<td class="mono">${d.onlines}</td>
-           <td class="mono">${d.limite}</td>
-           <td class="mono">${d.ssh}</td>
-           <td class="mono">${d.openvpn}</td>
-           <td class="mono">${d.dropbear}</td>
-           <td class="mono">${d.v2ray}</td>`;
-      } catch (e) {
-        document.getElementById('online_row').innerHTML = '<td colspan="6" class="danger">Error loading online_app.json</td>';
-      }
-
-      try {
-        const r2 = await fetch('./sysinfo.json?_=' + Date.now());
-        const s = await r2.json();
-        document.getElementById('sys').innerHTML =
-          `<div><b>Uptime:</b> ${s.uptime}</div>
-           <div><b>CPU:</b> ${s.cpu_usage}</div>
-           <div><b>RAM:</b> ${s.ram_usage}</div>
-           <div><b>Disk:</b> ${s.disk_usage}</div>`;
-      } catch (e) {
-        document.getElementById('sys').innerHTML = '<span class="danger">Error loading sysinfo.json</span>';
-      }
-
-      try {
-        const r3 = await fetch('./traffic.json?_=' + Date.now());
-        const t = await r3.json();
-        document.getElementById('vn_row').innerHTML =
-          `<td class="mono">${fmtBytes(t.rx)}</td>
-           <td class="mono">${fmtBytes(t.tx)}</td>`;
-      } catch (e) {
-        document.getElementById('vn_row').innerHTML = '<td colspan="2" class="danger">Error loading traffic.json</td>';
-      }
-
-      try {
-        const r4 = await fetch('./v2ray_traffic.json?_=' + Date.now());
-        const v = await r4.json();
-        document.getElementById('v2_row').innerHTML =
-          `<td class="mono">${fmtBytes(v.down)}</td>
-           <td class="mono">${fmtBytes(v.up)}</td>`;
-      } catch (e) {
-        document.getElementById('v2_row').innerHTML = '<td colspan="2" class="muted">No V2Ray traffic</td>';
-      }
-    }
-    load(); setInterval(load, 5000);
-  </script>
-</body>
-</html>
-EOF
-  chmod 644 "$WWW_DIR/index.html"
-}
-
-# ==========================
-# Uninstall
-# ==========================
+# ---------- Uninstaller ----------
 uninstall_script() {
-  echo -e "${YELLOW}[INFO]${NC} Uninstalling ShowOn Script..."
-  systemctl stop online-check.service sysinfo.service vnstat-traffic.service v2ray-traffic.service 2>/dev/null || true
-  systemctl disable online-check.service sysinfo.service vnstat-traffic.service v2ray-traffic.service 2>/dev/null || true
+  log "Uninstalling ShowOn Script..."
 
-  rm -f "$SERVICE_ONLINE" "$SERVICE_SYSINFO" "$SERVICE_VNSTAT" "$SERVICE_V2TR"
-  rm -f "$SCRIPT_ONLINE" "$SCRIPT_SYSINFO" "$SCRIPT_TRAFFIC" "$SCRIPT_V2RAY_TR"
+  # Stop & disable services safely
+  for S in v2ray-traffic vnstat-traffic sysinfo online-check; do
+    systemctl stop "$S.service" 2>/dev/null || true
+    systemctl disable "$S.service" 2>/dev/null || true
+  done
 
-  rm -f "$SITE_ENABLED" "$SITE_AVAIL"
-  systemctl daemon-reload || true
-  systemctl reload nginx || true
+  # Remove service files
+  rm -f "$SERV_V2TR" "$SERV_VNST" "$SERV_SYS" "$SERV_ONLINE"
 
-  rm -rf "$WWW_DIR"
+  # Remove scripts & conf
+  rm -f "$SCRIPT_V2TR" "$SCRIPT_VNST" "$SCRIPT_SYS" "$SCRIPT_ONLINE"
   rm -f "$CONF_FILE"
-  echo -e "${GREEN}[SUCCESS]${NC} Uninstalled completely."
-  read -r -p "Press Enter to return to menu..." _
-  show_menu
+  rm -f "$SHOWON_CMD"
+
+  # Remove web dir
+  rm -rf "$WWW_DIR"
+
+  # Remove nginx site
+  rm -f /etc/nginx/sites-available/showon /etc/nginx/sites-enabled/showon
+
+  # Daemon reload
+  systemctl daemon-reload
+
+  # Reload or restart nginx if running
+  if systemctl is-active --quiet nginx; then
+    systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+  fi
+
+  ok "Uninstalled completely."
+  pause
 }
 
-# ==========================
-# Ensure showon command
-# ==========================
+# ---------- Update Script ----------
+update_script() {
+  log "Fetching latest Install from GitHub..."
+  if curl -fsSL "$REPO_RAW" -o /root/Install; then
+    chmod +x /root/Install
+    ok "Install file updated."
+  else
+    err "Failed to download update."
+  fi
+  pause
+}
+
+# ---------- Debug Log Viewer ----------
+check_debug() {
+  echo "===== $DEBUG_LOG ====="
+  if [[ -f "$DEBUG_LOG" ]]; then
+    tail -n 200 "$DEBUG_LOG" || true
+  else
+    echo "(no debug yet)"
+  fi
+  pause
+}
+
+# ---------- ShowOn command wrapper ----------
 ensure_showon_cmd() {
-  cat >"$SHOWON_CMD" <<'EOF'
+  cat >"$SHOWON_CMD" <<'WRAP'
 #!/bin/bash
-exec bash /root/Install "$@"
-EOF
+exec bash /root/Install
+WRAP
   chmod +x "$SHOWON_CMD"
 }
 
-# ==========================
-# Script entry
-# ==========================
+# ---------- Menu ----------
+show_menu() {
+  clear
+  echo -e "==============================="
+  echo -e "   ShowOn Script Manager ${VERSION}"
+  echo -e "==============================="
+  check_update
+  echo "1) Install Script"
+  echo "2) Uninstall Script"
+  echo "3) Update Script"
+  echo "4) Check Debug Log"
+  echo "0) Exit"
+  echo "==============================="
+  read -rp "Choose an option [0,1,2,3,4]: " choice
+  case "${choice:-}" in
+    1) install_script ;;
+    2) uninstall_script ;;
+    3) update_script ;;
+    4) check_debug ;;
+    0) exit 0 ;;
+    *) err "Invalid choice." ; sleep 1 ; show_menu ;;
+  esac
+}
+
+# ---------- Entry ----------
 ensure_showon_cmd
-if [[ "${1:-}" == "--menu" ]]; then
-  show_menu
-else
-  show_menu
-fi
+show_menu
