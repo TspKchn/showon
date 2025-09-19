@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Installer V.1.0.4 (Full, long-form)
+# ShowOn Script Installer V.1.0.4 (Full Long Form)
 # Author: TspKchn
 # =====================================================
 
@@ -17,7 +17,7 @@ CYAN="\e[36m"
 NC="\e[0m"
 
 # ==========================
-# Paths
+# Paths / Files
 # ==========================
 SHOWON_CMD="/usr/local/bin/showon"
 WWW_DIR="/var/www/html/server"
@@ -38,17 +38,6 @@ NGINX_SITE_ENABL="/etc/nginx/sites-enabled/server_checker"
 # ==========================
 # Helpers
 # ==========================
-log() {
-  # $1 level, $2 msg
-  local ts="$(date '+%Y-%m-%d %H:%M:%S')"
-  echo "[$ts][$1] $2" >> "$DEBUG_LOG"
-  # auto-trim log to last ~5 min (by lines)
-  local LINES=$(wc -l < "$DEBUG_LOG" 2>/dev/null || echo 0)
-  if [ "$LINES" -gt 5000 ]; then
-    tail -n 2000 "$DEBUG_LOG" > "${DEBUG_LOG}.tmp" 2>/dev/null && mv -f "${DEBUG_LOG}.tmp" "$DEBUG_LOG"
-  fi
-}
-
 ensure_root() {
   if [ "$EUID" -ne 0 ]; then
     echo -e "${RED}[ERROR]${NC} Please run as root."
@@ -56,26 +45,31 @@ ensure_root() {
   fi
 }
 
+log() {
+  # $1 LEVEL, $2... message
+  local ts; ts="$(date '+%Y-%m-%d %H:%M:%S')"
+  echo "[$ts][$1] ${*:2}" >> "$DEBUG_LOG"
+  # keep log reasonable (~5k lines)
+  local L=0
+  if [ -f "$DEBUG_LOG" ]; then
+    L=$(wc -l < "$DEBUG_LOG" 2>/dev/null || echo 0)
+  fi
+  if [ "$L" -gt 5000 ]; then
+    tail -n 2000 "$DEBUG_LOG" > "${DEBUG_LOG}.tmp" 2>/dev/null && mv -f "${DEBUG_LOG}.tmp" "$DEBUG_LOG"
+  fi
+}
+
 normalize_url() {
-  # in: $1 raw url (may end with /)
+  # trim spaces + trailing slash
   local u="$1"
-  u="${u%% *}"           # trim after space
-  u="${u%%/}"            # strip trailing slash
+  u="${u%% *}"
+  u="${u%/}"
   echo "$u"
 }
 
-strip_protocol() {
-  local u="$1"
-  u="${u#http://}"
-  u="${u#https://}"
-  echo "$u"
-}
-
-# ==========================
-# Update check (optional)
-# ==========================
 check_update() {
-  local latest=$(curl -fsS "$REPO_URL" 2>/dev/null | grep -m1 '^VERSION=' | cut -d'"' -f2)
+  local latest
+  latest=$(curl -fsS "$REPO_URL" 2>/dev/null | grep -m1 '^VERSION=' | cut -d'"' -f2)
   if [[ -n "$latest" && "$latest" != "$VERSION" ]]; then
     echo -e "${YELLOW}[UPDATE AVAILABLE]${NC} Latest: ${latest} (Current: ${VERSION})"
     read -p "Press Enter to update now, or Ctrl+C to cancel..." _
@@ -127,6 +121,7 @@ install_script() {
 
   echo -e "${CYAN}[INFO]${NC} Installing dependencies..."
   apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates procps coreutils >>"$DEBUG_LOG" 2>&1
+
   # vnstat if missing
   if ! command -v vnstat >/dev/null 2>&1; then
     apt install -y vnstat >>"$DEBUG_LOG" 2>&1 || true
@@ -144,7 +139,6 @@ install_script() {
   echo -e "  👉 กรุณา 'วางลิงก์หน้าล็อกอินทั้งเส้น' เช่น:"
   echo -e "     https://IP:PORT/SomeRandomPath  หรือ  http://domain:port/"
   read -p "3X-UI URL (copy login link): " PANEL_FULL
-
   PANEL_FULL="$(echo -n "$PANEL_FULL" | tr -d ' ' )"
   PANEL_FULL="${PANEL_FULL%/}"
 
@@ -154,7 +148,7 @@ install_script() {
   read -p "Limit User Online (Default: 2000): " LIMIT
   LIMIT=${LIMIT:-2000}
 
-  # Prepare conf
+  # base conf
   cat >"$CONF_FILE" <<EOF
 VERSION="$VERSION"
 WWW_DIR="$WWW_DIR"
@@ -162,19 +156,17 @@ LIMIT="$LIMIT"
 DEBUG_LOG="$DEBUG_LOG"
 EOF
 
-  # Validate X-UI if provided
+  # Try login if provided
   if [[ -n "$PANEL_FULL" && -n "$XUI_USER" && -n "$XUI_PASS" ]]; then
-    # Normalize protocol/base
-    BASE_NO_SLASH="$(normalize_url "$PANEL_FULL")"
-    # Login probe: try /login then /panel/login
-    log INFO "Try login base=$BASE_NO_SLASH user=$XUI_USER"
-    COOKIE=$(curl -sk -c - -X POST "$BASE_NO_SLASH/login" \
+    local_base="$(normalize_url "$PANEL_FULL")"
+    log INFO "Try login PANEL_BASE=$local_base user=$XUI_USER"
+    COOKIE=$(curl -sk -c - -X POST "$local_base/login" \
       -H "Content-Type: application/json" \
       -d "{\"username\":\"$XUI_USER\",\"password\":\"$XUI_PASS\"}" \
       2>>"$DEBUG_LOG" | awk '/3x-ui/ {print $7}' )
 
     if [[ -z "$COOKIE" ]]; then
-      COOKIE=$(curl -sk -c - -X POST "$BASE_NO_SLASH/panel/login" \
+      COOKIE=$(curl -sk -c - -X POST "$local_base/panel/login" \
         -H "Content-Type: application/json" \
         -d "{\"username\":\"$XUI_USER\",\"password\":\"$XUI_PASS\"}" \
         2>>"$DEBUG_LOG" | awk '/3x-ui/ {print $7}' )
@@ -184,7 +176,7 @@ EOF
       echo -e "${GREEN}[OK]${NC} Login success. Cookie acquired."
       log INFO "Login success; cookie captured."
       cat >>"$CONF_FILE" <<EOF
-PANEL_BASE="$BASE_NO_SLASH"
+PANEL_BASE="$local_base"
 XUI_USER="$XUI_USER"
 XUI_PASS="$XUI_PASS"
 EOF
@@ -204,34 +196,40 @@ EOF
   # -----------------------------
   cat >"$SCRIPT_ONLINE" <<'EOF'
 #!/bin/bash
-set -euo pipefail
+# Generate /var/www/html/server/online_app.json every 5s
+# Robust to API errors, always writes JSON (prevents 404)
+set -u
+set -o pipefail
 
 CONF="/etc/showon.conf"
-source "$CONF"
+source "$CONF" 2>/dev/null || true
 
-log() { echo "[$(date '+%F %T')][ONLINE] $*" >> "$DEBUG_LOG"; }
+JSON_OUT="${WWW_DIR:-/var/www/html/server}/online_app.json"
+LOGF="${DEBUG_LOG:-/var/log/showon-debug.log}"
 
-JSON_OUT="$WWW_DIR/online_app.json"
-SSH_ON=0
-OVPN_ON=0
-DB_ON=0
-V2_ON=0
+log() { echo "[$(date '+%F %T')][ONLINE] $*" >> "$LOGF"; }
+
+mkdir -p "${WWW_DIR:-/var/www/html/server}" 2>/dev/null || true
+
+# Defaults
+SSH_ON=0; OVPN_ON=0; DB_ON=0; V2_ON=0
 
 # SSH
 SSH_ON=$(ss -nt state established 2>/dev/null | awk '$3 ~ /:22$/ {c++} END{print c+0}')
 
 # OpenVPN
 if [ -f /etc/openvpn/server/openvpn-status.log ]; then
-  OVPN_ON=$(grep -c "CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || echo 0)
+  OVPN_ON=$(grep -c "CLIENT_LIST" /etc/openvpn/server/openvpn-status.log 2>/dev/null || echo 0)
 fi
 
 # Dropbear
-DB_ON=$(pgrep dropbear 2>/dev/null | wc -l)
+DB_ON=$(pgrep dropbear 2>/dev/null | wc -l | awk '{print $1}')
 
-# V2Ray via 3x-ui if configured
-if grep -q '^PANEL_BASE=' "$CONF"; then
-  source "$CONF"
-  # re-login each run (reliable)
+# V2Ray via 3x-ui (if configured)
+if grep -q '^PANEL_BASE=' "$CONF" 2>/dev/null; then
+  source "$CONF" 2>/dev/null || true
+
+  # login for fresh cookie
   COOKIE=$(curl -sk -c - -X POST "$PANEL_BASE/login" \
       -H "Content-Type: application/json" \
       -d "{\"username\":\"$XUI_USER\",\"password\":\"$XUI_PASS\"}" 2>/dev/null | awk '/3x-ui/ {print $7}')
@@ -242,24 +240,34 @@ if grep -q '^PANEL_BASE=' "$CONF"; then
   fi
 
   if [ -n "$COOKIE" ]; then
-    # try new API first
-    RES=$(curl -sk -b "3x-ui=$COOKIE" -X POST "$PANEL_BASE/panel/api/inbounds/onlines" \
-           -H "Content-Type: application/x-www-form-urlencoded; charset=UTF-8" 2>/dev/null)
-    LEN=$(echo "$RES" | jq -r '.obj | length' 2>/dev/null || echo "")
-    if [[ "$LEN" =~ ^[0-9]+$ ]]; then
-      V2_ON="$LEN"
-    else
-      # fallback old
-      RES=$(curl -sk -b "3x-ui=$COOKIE" -X POST "$PANEL_BASE/panel/inbounds/onlines" \
-             -H "Content-Type: application/x-www-form-urlencoded; charset=UTF-8" 2>/dev/null)
-      LEN=$(echo "$RES" | jq -r '.obj | length' 2>/dev/null || echo "")
-      [[ "$LEN" =~ ^[0-9]+$ ]] && V2_ON="$LEN" || V2_ON=0
+    # new endpoint first (>=2.7.0)
+    RESP=$(curl -sk --connect-timeout 5 -b "3x-ui=$COOKIE" \
+      "$PANEL_BASE/panel/api/inbounds/onlines" 2>/dev/null || true)
+    CNT=$(echo "$RESP" | jq -r '.obj | length' 2>/dev/null || echo "")
+
+    if ! [[ "$CNT" =~ ^[0-9]+$ ]]; then
+      # fallback old endpoint
+      RESP=$(curl -sk --connect-timeout 5 -b "3x-ui=$COOKIE" \
+        "$PANEL_BASE/panel/inbound/onlines" 2>/dev/null || true)
+      CNT=$(echo "$RESP" | jq -r '.obj | length' 2>/dev/null || echo "")
     fi
+
+    if [[ "$CNT" =~ ^[0-9]+$ ]]; then
+      V2_ON="$CNT"
+    else
+      log "x-ui onlines parse fail; set V2_ON=0"
+      V2_ON=0
+    fi
+  else
+    log "x-ui login failed (cookie empty); set V2_ON=0"
+    V2_ON=0
   fi
 fi
 
 TOTAL=$(( SSH_ON + OVPN_ON + DB_ON + V2_ON ))
-printf -v JSON '%s' "$(jq -n \
+
+# Write JSON (array of one object) — always
+printf '%s\n' "$(jq -n \
   --argjson onlines "$TOTAL" \
   --argjson limite "${LIMIT:-2000}" \
   --argjson ssh "$SSH_ON" \
@@ -267,10 +275,11 @@ printf -v JSON '%s' "$(jq -n \
   --argjson dropbear "$DB_ON" \
   --argjson v2ray "$V2_ON" \
   '[{onlines:$onlines, limite:$limite, ssh:$ssh, openvpn:$openvpn, dropbear:$dropbear, v2ray:$v2ray}]'
-)"
+)" > "$JSON_OUT" 2>/dev/null || {
+  echo '[{"onlines":0,"limite":2000,"ssh":0,"openvpn":0,"dropbear":0,"v2ray":0}]' > "$JSON_OUT"
+}
 
-echo "$JSON" > "$JSON_OUT"
-log "online saved: $JSON"
+log "online saved: $(cat "$JSON_OUT" 2>/dev/null)"
 EOF
   chmod +x "$SCRIPT_ONLINE"
 
@@ -279,21 +288,24 @@ EOF
   # -----------------------------
   cat >"$SCRIPT_SYSINFO" <<'EOF'
 #!/bin/bash
-set -euo pipefail
-source /etc/showon.conf
-JSON_OUT="$WWW_DIR/sysinfo.json"
+set -u
+set -o pipefail
+source /etc/showon.conf 2>/dev/null || true
 
-uptime=$(uptime -p | sed 's/^up //')
-cpu_usage=$(top -bn1 | awk -F'[, ]+' '/Cpu\(s\)/ {printf "%.1f%%", 100-$8}')
-ram_usage=$(free -m | awk 'NR==2{printf "%s / %s MB",$3,$2}')
-disk_usage=$(df -h / | awk 'NR==2{printf "%s / %s",$3,$2}')
+JSON_OUT="${WWW_DIR:-/var/www/html/server}/sysinfo.json"
+mkdir -p "${WWW_DIR:-/var/www/html/server}" 2>/dev/null || true
 
-jq -n --arg uptime "$uptime" \
-      --arg cpu_usage "$cpu_usage" \
-      --arg ram_usage "$ram_usage" \
-      --arg disk_usage "$disk_usage" \
+uptime=$(uptime -p 2>/dev/null | sed 's/^up //')
+cpu_usage=$(top -bn1 2>/dev/null | awk -F'[, ]+' '/Cpu\(s\)/ {printf "%.1f%%", 100-$8}')
+ram_usage=$(free -m 2>/dev/null | awk 'NR==2{printf "%s / %s MB",$3,$2}')
+disk_usage=$(df -h / 2>/dev/null | awk 'NR==2{printf "%s / %s",$3,$2}')
+
+jq -n --arg uptime "${uptime:-N/A}" \
+      --arg cpu_usage "${cpu_usage:-N/A}" \
+      --arg ram_usage "${ram_usage:-N/A}" \
+      --arg disk_usage "${disk_usage:-N/A}" \
       '{uptime:$uptime, cpu_usage:$cpu_usage, ram_usage:$ram_usage, disk_usage:$disk_usage}' \
-  > "$JSON_OUT"
+  > "$JSON_OUT" 2>/dev/null || echo '{"uptime":"N/A","cpu_usage":"N/A","ram_usage":"N/A","disk_usage":"N/A"}' > "$JSON_OUT"
 EOF
   chmod +x "$SCRIPT_SYSINFO"
 
@@ -302,25 +314,30 @@ EOF
   # -----------------------------
   cat >"$SCRIPT_NETINFO" <<'EOF'
 #!/bin/bash
-set -euo pipefail
+set -u
+set -o pipefail
 
 CONF="/etc/showon.conf"
-source "$CONF"
-log() { echo "[$(date '+%F %T')][NET] $*" >> "$DEBUG_LOG"; }
+source "$CONF" 2>/dev/null || true
+LOGF="${DEBUG_LOG:-/var/log/showon-debug.log}"
+JSON_OUT="${WWW_DIR:-/var/www/html/server}/netinfo.json"
 
-JSON_OUT="$WWW_DIR/netinfo.json"
+log() { echo "[$(date '+%F %T')][NET] $*" >> "$LOGF"; }
+
+mkdir -p "${WWW_DIR:-/var/www/html/server}" 2>/dev/null || true
+
 IFACE=$(ip route 2>/dev/null | awk '/default/ {print $5; exit}')
 [ -z "$IFACE" ] && IFACE="eth0"
 
-# VNStat hourly diff (simple current snapshot)
 RX=$(vnstat --json 2>/dev/null | jq -r ".interfaces[]|select(.name==\"$IFACE\")|.traffic.total.rx" 2>/dev/null || echo 0)
 TX=$(vnstat --json 2>/dev/null | jq -r ".interfaces[]|select(.name==\"$IFACE\")|.traffic.total.tx" 2>/dev/null || echo 0)
 
 V_JSON=$(jq -n --argjson rx "${RX:-0}" --argjson tx "${TX:-0}" '{vnstat:{rx:$rx,tx:$tx}}')
 
-# Try V2Ray Traffic (sum of inbounds up/down) if X-UI configured
-if grep -q '^PANEL_BASE=' "$CONF"; then
-  source "$CONF"
+# Try V2Ray Traffic (sum up/down) if X-UI configured
+if grep -q '^PANEL_BASE=' "$CONF" 2>/dev/null; then
+  source "$CONF" 2>/dev/null || true
+
   COOKIE=$(curl -sk -c - -X POST "$PANEL_BASE/login" \
       -H "Content-Type: application/json" \
       -d "{\"username\":\"$XUI_USER\",\"password\":\"$XUI_PASS\"}" 2>/dev/null | awk '/3x-ui/ {print $7}')
@@ -331,15 +348,14 @@ if grep -q '^PANEL_BASE=' "$CONF"; then
   fi
 
   if [ -n "$COOKIE" ]; then
-    # new list
-    LIST=$(curl -sk -b "3x-ui=$COOKIE" "$PANEL_BASE/panel/api/inbounds/list" 2>/dev/null)
+    # new path first
+    LIST=$(curl -sk -b "3x-ui=$COOKIE" "$PANEL_BASE/panel/api/inbounds/list" 2>/dev/null || true)
     SUMU=$(echo "$LIST" | jq '[.obj[].up] | add' 2>/dev/null || echo "")
     SUMD=$(echo "$LIST" | jq '[.obj[].down] | add' 2>/dev/null || echo "")
     if [[ "$SUMU" =~ ^[0-9]+$ && "$SUMD" =~ ^[0-9]+$ ]]; then
       V_JSON=$(echo "$V_JSON" | jq --argjson up "$SUMU" --argjson down "$SUMD" '. + {v2ray:{up:$up,down:$down}}')
     else
-      # fallback old path
-      LIST=$(curl -sk -b "3x-ui=$COOKIE" "$PANEL_BASE/panel/inbounds/list" 2>/dev/null)
+      LIST=$(curl -sk -b "3x-ui=$COOKIE" "$PANEL_BASE/panel/inbounds/list" 2>/dev/null || true)
       SUMU=$(echo "$LIST" | jq '[.obj[].up] | add' 2>/dev/null || echo "")
       SUMD=$(echo "$LIST" | jq '[.obj[].down] | add' 2>/dev/null || echo "")
       if [[ "$SUMU" =~ ^[0-9]+$ && "$SUMD" =~ ^[0-9]+$ ]]; then
@@ -349,7 +365,7 @@ if grep -q '^PANEL_BASE=' "$CONF"; then
   fi
 fi
 
-echo "$V_JSON" > "$JSON_OUT"
+echo "$V_JSON" > "$JSON_OUT" 2>/dev/null || echo '{"vnstat":{"rx":0,"tx":0}}' > "$JSON_OUT"
 log "netinfo saved: $(cat "$JSON_OUT" 2>/dev/null)"
 EOF
   chmod +x "$SCRIPT_NETINFO"
@@ -414,12 +430,10 @@ server {
     listen 82 default_server;
     server_name _;
 
-    # redirect root to /server/
     location = / {
         return 302 /server/;
     }
 
-    # serve /server/
     location /server/ {
         alias /var/www/html/server/;
         autoindex off;
@@ -439,7 +453,7 @@ EOF
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>ShowOn Dashboard</title>
+  <title>ShowOn Dashboard V.1.0.4</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root{--bg:#101010;--card:#1b1b1b;--fg:#ddd;--muted:#9aa;--accent:#00e676;--cyan:#13d3ff;}
@@ -491,9 +505,9 @@ async function once() {
   try{
     const a = await fetch('./online_app.json?c='+Date.now());
     const d = await a.json();
-    const o = d[0];
+    const o = Array.isArray(d) ? d[0] : d;
     document.getElementById('sum').innerHTML =
-      `<td>${o.onlines}</td><td>${o.limite}</td><td>${o.ssh}</td><td>${o.openvpn}</td><td>${o.dropbear}</td><td>${o.v2ray}</td>`;
+      `<td>${o.onlines ?? '0'}</td><td>${o.limite ?? '0'}</td><td>${o.ssh ?? '0'}</td><td>${o.openvpn ?? '0'}</td><td>${o.dropbear ?? '0'}</td><td>${o.v2ray ?? '0'}</td>`;
   }catch(e){ document.getElementById('sum').innerHTML = `<td colspan="6">Error</td>`; }
 
   // sysinfo
@@ -512,8 +526,8 @@ async function once() {
     const c = await fetch('./netinfo.json?c='+Date.now());
     const n = await c.json();
     let html = '';
-    if(n.vnstat){ html += `<div><span class="k">VNStat RX/TX:</span> ${n.vnstat.rx.toLocaleString()} / ${n.vnstat.tx.toLocaleString()} bytes</div>`; }
-    if(n.v2ray){ html += `<div><span class="k">V2Ray Up/Down:</span> ${n.v2ray.up.toLocaleString()} / ${n.v2ray.down.toLocaleString()} bytes</div>`; }
+    if(n.vnstat){ html += `<div><span class="k">VNStat RX/TX:</span> ${Number(n.vnstat.rx||0).toLocaleString()} / ${Number(n.vnstat.tx||0).toLocaleString()} bytes</div>`; }
+    if(n.v2ray){ html += `<div><span class="k">V2Ray Up/Down:</span> ${Number(n.v2ray.up||0).toLocaleString()} / ${Number(n.v2ray.down||0).toLocaleString()} bytes</div>`; }
     if(!html) html = 'No traffic data';
     document.getElementById('traf').innerHTML = html;
   }catch(e){ document.getElementById('traf').innerText = 'Error'; }
@@ -529,7 +543,7 @@ EOF
   # -----------------------------
   # Replace showon command (force newest)
   # -----------------------------
-  rm -f /usr/bin/showon /bin/showon || true
+  rm -f /usr/bin/showon /bin/showon 2>/dev/null || true
   cat >"$SHOWON_CMD" <<'EOF'
 #!/bin/bash
 exec /bin/bash /root/Install
@@ -539,6 +553,7 @@ EOF
   # -----------------------------
   # Final messages
   # -----------------------------
+  nginx -t && systemctl reload nginx
   echo -e "${GREEN}[SUCCESS]${NC} Installed ShowOn ${VERSION}"
   echo -e "${CYAN}[INFO]${NC} Open: http://$(hostname -I | awk '{print $1}'):82/server/"
   log INFO "=== INSTALL DONE v${VERSION} ==="
