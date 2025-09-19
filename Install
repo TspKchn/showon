@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.6 (Split-Files + SSL Edition)
+# ShowOn Script Manager V.1.0.6 (Split-Files + SSL Edition + AutoUpdate)
 # Author: TspKchn
 # =====================================================
 
@@ -54,7 +54,7 @@ header() {
   echo "==============================="
 }
 
-press() { read -rp "Press Enter to return to menu..." _; }
+press() { read -rp "Press Enter to continue..." _; }
 
 # เดา interface หลักแบบปลอดภัย
 get_nic() {
@@ -83,6 +83,10 @@ check_update() {
     echo -e "${GREEN}[OK]${NC} You are using the latest version."
   else
     echo -e "${CYAN}[UPDATE]${NC} มีเวอร์ชันใหม่: $remote (ปัจจุบัน: $VERSION)"
+    read -rp "กด Enter เพื่อตกลงอัปเดต หรือ Ctrl+C เพื่อยกเลิก..." _
+    update_script
+    echo -e "${GREEN}[OK]${NC} Updated to $remote. กรุณารันใหม่อีกครั้ง."
+    exit 0
   fi
 }
 
@@ -227,7 +231,12 @@ EOF
   echo -e "${CYAN}[INFO]${NC} Setting up SSL..."
   download_or_die "$SRC_SSL" "$SCRIPT_SSL"
   chmod +x "$SCRIPT_SSL"
-  $SCRIPT_SSL || echo -e "${YELLOW}[WARN]${NC} SSL setup failed → HTTP only"
+
+  if [[ -f "/etc/letsencrypt/live/$HOSTNAME/fullchain.pem" && -f "/etc/letsencrypt/live/$HOSTNAME/privkey.pem" ]]; then
+    echo -e "${GREEN}[OK]${NC} ตรวจพบไฟล์ SSL เดิม → ใช้งานไฟล์นี้ทันที"
+  else
+    $SCRIPT_SSL || echo -e "${YELLOW}[WARN]${NC} SSL setup failed → HTTP only"
+  fi
 
   # ==== systemd services ====
   cat >"$SERVICE_ONLINE" <<'EOF'
