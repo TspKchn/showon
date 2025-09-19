@@ -1,6 +1,6 @@
-# <p align="center">
+<h1 align="center">
   <img src="ShowOn.png" alt="ShowOn Logo" width="300"/>
-</p>
+</h1>
 
 # 🚀 ShowOn Dashboard V.1.0.5
 
