@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================
-# ShowOn SSL Setup Helper
+# ShowOn SSL Setup Helper (Fixed: No duplicate listen)
 # Author: TspKchn
 # =====================================================
 set -euo pipefail
@@ -54,23 +54,9 @@ else
     -out "$CERT_FILE" >/dev/null 2>&1
 fi
 
-# === เขียน nginx conf ===
-cat >"$NGINX_CONF" <<EOF
-# HTTP
-server {
-    listen 82 default_server;
-    server_name _;
-
-    location = / {
-        return 302 /server/;
-    }
-    location /server/ {
-        alias $WWW_DIR/;
-        index index.html;
-        autoindex off;
-        add_header Cache-Control "no-store";
-    }
-}
+# === เขียน HTTPS block (ไม่ยุ่ง HTTP เดิม) ===
+if ! grep -q "listen 82 ssl" "$NGINX_CONF"; then
+cat >>"$NGINX_CONF" <<EOF
 
 # HTTPS
 server {
@@ -91,6 +77,7 @@ server {
     }
 }
 EOF
+fi
 
 ln -sf "$NGINX_CONF" "$NGINX_LINK"
 
