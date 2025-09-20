@@ -1,10 +1,10 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.5 (Extended Edition)
+# ShowOn Script Manager V.1.0.6 (Extended Edition)
 # Author: TspKchn + ChatGPT
 # =====================================================
 
-VERSION="V.1.0.5"
+VERSION="V.1.0.6"
 
 # ===== GitHub Repo Path =====
 REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main"
@@ -397,6 +397,44 @@ change_limit() {
   press
 }
 
+# ===== Setup Swap =====
+setup_swap() {
+  echo -e "${CYAN}[INFO]${NC} Setup Auto Swap..."
+
+  RAM_MB=$(free -m | awk '/Mem:/ {print $2}')
+  if (( RAM_MB <= 512 )); then
+    SWAP_MB=1024
+  elif (( RAM_MB <= 1024 )); then
+    SWAP_MB=2048
+  elif (( RAM_MB <= 2048 )); then
+    SWAP_MB=3072
+  elif (( RAM_MB <= 4096 )); then
+    SWAP_MB=4096
+  else
+    SWAP_MB=2048
+  fi
+
+  if swapon --show | grep -q '/swapfile'; then
+    echo -e "${YELLOW}[WARN]${NC} Swapfile already exists. Recreating..."
+    swapoff /swapfile
+    rm -f /swapfile
+  fi
+
+  fallocate -l ${SWAP_MB}M /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=$SWAP_MB
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+
+  if ! grep -q '/swapfile' /etc/fstab; then
+    echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  fi
+
+  echo -e "${GREEN}[OK]${NC} Swap setup completed → ${SWAP_MB} MB"
+  echo -e "${CYAN}[INFO]${NC} Restarting services..."
+  systemctl restart online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service
+  press
+}
+
 # ===== Menu =====
 show_menu() {
   header
@@ -406,15 +444,17 @@ show_menu() {
   echo "3) Update Script"
   echo "4) Check Debug Log"
   echo "5) Change Limit User Online"
+  echo "6) Setup Swap"
   echo "0) Exit"
   echo "==============================="
-  read -rp "Choose an option [0-5]: " choice
+  read -rp "Choose an option [0-6]: " choice
   case "$choice" in
     1) install_script ;;
     2) uninstall_script ;;
     3) update_script ;;
     4) check_debug ;;
     5) change_limit ;;
+    6) setup_swap ;;
     0) exit 0 ;;
     *) echo -e "${RED}[ERROR]${NC} Invalid choice"; sleep 1 ;;
   esac
