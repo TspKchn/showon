@@ -19,6 +19,17 @@ OVPN_ON=0
 DB_ON=0
 V2_ON=0
 
+# ==== Log Rotate (1MB) ====
+rotate_log() {
+  local max=1000000
+  if [[ -f "$DEBUG_LOG" && $(stat -c%s "$DEBUG_LOG") -gt $max ]]; then
+    mv "$DEBUG_LOG" "$DEBUG_LOG.1"
+    : > "$DEBUG_LOG"
+  fi
+}
+
+rotate_log
+
 # ==== SSH ====
 SSH_ON=$(ss -nt state established | awk '$3 ~ /:22$/ {c++} END {print c+0}')
 
@@ -67,6 +78,14 @@ if [[ -n "${PANEL_URL:-}" ]]; then
         fi
       fi
     fi
+
+    # ==== Debug log ====
+    {
+      echo "[$(date '+%F %T')] 3x-ui API response"
+      echo "$RESP" | jq '.' 2>/dev/null || echo "$RESP"
+      echo "→ Counted clients: $V2_ON"
+      echo
+    } >> "$DEBUG_LOG"
   fi
 
 else
@@ -74,13 +93,29 @@ else
   if [[ -f /usr/local/etc/xray/config.json ]]; then
     # ---- YoLoNET style ----
     if [[ -d /var/log/xray ]]; then
-      V2_ON=$(grep -h 'accepted' /var/log/xray/*.log 2>/dev/null \
-              | awk '{print $1,$3}' | sort -u | wc -l)
+      RAW_CONN=$(ss -ntp state established 2>/dev/null | grep 'xray' || true)
+      V2_ON=$(echo "$RAW_CONN" | awk '{print $5}' | cut -d: -f1 | sort -u | wc -l)
+
+      {
+        echo "[$(date '+%F %T')] XRAY-CORE (YoLoNET) snapshot"
+        echo "$RAW_CONN"
+        echo "→ Counted unique IPs: $V2_ON"
+        echo
+      } >> "$DEBUG_LOG"
     fi
+
   elif [[ -f /etc/xray/config.json ]]; then
     # ---- Givpn style ----
     if [[ -f /var/log/xray/access.log ]]; then
-      V2_ON=$(awk '{print $1}' /var/log/xray/access.log | sort -u | wc -l)
+      RAW_CONN=$(awk '{print $1}' /var/log/xray/access.log | sort -u)
+      V2_ON=$(echo "$RAW_CONN" | wc -l)
+
+      {
+        echo "[$(date '+%F %T')] XRAY-CORE (Givpn) snapshot"
+        echo "$RAW_CONN"
+        echo "→ Counted unique IPs: $V2_ON"
+        echo
+      } >> "$DEBUG_LOG"
     fi
   fi
 fi
