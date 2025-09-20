@@ -1,15 +1,13 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Uninstaller (Full Clean)
-# Version: 1.0.6
+# ShowOn Uninstall Script V.1.0.6
 # Author: TspKchn + ChatGPT
 # =====================================================
 
+# ===== Paths =====
+BIN_DIR="/usr/local/bin"
 CONF_FILE="/etc/showon.conf"
 DEBUG_LOG="/var/log/showon-debug.log"
-
-BIN_DIR="/usr/local/bin"
-WWW_DIR="/var/www/html/server"
 
 SCRIPT_ONLINE="$BIN_DIR/online-check.sh"
 SCRIPT_VNSTAT="$BIN_DIR/vnstat-traffic.sh"
@@ -24,7 +22,10 @@ SERVICE_SYSINFO="/etc/systemd/system/sysinfo.service"
 SITE_AV="/etc/nginx/sites-available/showon"
 SITE_EN="/etc/nginx/sites-enabled/showon"
 
-GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; NC="\e[0m"
+WWW_DIR="/var/www/html/server"
+
+# ===== Colors =====
+GREEN="\e[32m"; RED="\e[31m"; CYAN="\e[36m"; NC="\e[0m"
 
 require_root() {
   if [[ $EUID -ne 0 ]]; then
@@ -34,36 +35,31 @@ require_root() {
 }
 
 uninstall_script() {
-  echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script (Full Clean)..."
+  echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script..."
 
-  # ===== Stop & disable systemd services =====
+  # ===== Stop & Disable services =====
   systemctl stop online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
   systemctl disable online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
 
+  # ===== Remove service files =====
   rm -f "$SERVICE_ONLINE" "$SERVICE_VNSTAT" "$SERVICE_V2RAY" "$SERVICE_SYSINFO"
   systemctl daemon-reload
 
   # ===== Remove scripts =====
   rm -f "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
-
-  # ===== Remove config & debug log =====
-  rm -f "$CONF_FILE" "$DEBUG_LOG" "$DEBUG_LOG.1"
+  rm -f "$CONF_FILE" "$DEBUG_LOG"
 
   # ===== Remove web files =====
-  if [[ -d "$WWW_DIR" ]]; then
-    rm -rf "$WWW_DIR"
-    echo -e "${GREEN}[OK]${NC} Removed web directory: $WWW_DIR"
-  fi
-
-  # ===== Remove nginx site =====
   rm -f "$SITE_AV" "$SITE_EN"
+  rm -rf "$WWW_DIR"
+
   if nginx -t 2>/dev/null; then
     systemctl reload nginx 2>/dev/null || true
   else
     systemctl restart nginx 2>/dev/null || true
   fi
 
-  echo -e "${GREEN}[SUCCESS]${NC} ShowOn Script ถูกลบออกจากระบบพร้อมไฟล์ทั้งหมดเรียบร้อยแล้ว."
+  echo -e "${GREEN}[SUCCESS]${NC} Uninstalled completely."
 }
 
 require_root
