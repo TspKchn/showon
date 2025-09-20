@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.6 (Installer)
+# ShowOn Script Manager V.1.0.6 (Extended Edition)
 # Author: TspKchn + ChatGPT
 # =====================================================
 
@@ -15,7 +15,8 @@ SRC_VNSTAT="$REPO_RAW/scripts/vnstat-traffic.sh"
 SRC_V2RAY="$REPO_RAW/scripts/v2ray-traffic.sh"
 SRC_SYSINFO="$REPO_RAW/scripts/sysinfo.sh"
 SRC_INDEX="$REPO_RAW/web/index.html"
-SRC_MENU="$REPO_RAW/scripts/menu.sh"
+SRC_MENU="$REPO_RAW/menu.sh"
+SRC_UNINSTALL="$REPO_RAW/uninstall.sh"
 
 # ===== Install Paths =====
 WWW_DIR="/var/www/html/server"
@@ -27,12 +28,8 @@ SCRIPT_ONLINE="$BIN_DIR/online-check.sh"
 SCRIPT_VNSTAT="$BIN_DIR/vnstat-traffic.sh"
 SCRIPT_V2RAY="$BIN_DIR/v2ray-traffic.sh"
 SCRIPT_SYSINFO="$BIN_DIR/sysinfo.sh"
-MENU_SCRIPT="$BIN_DIR/showon"
-
-SERVICE_ONLINE="/etc/systemd/system/online-check.service"
-SERVICE_VNSTAT="/etc/systemd/system/vnstat-traffic.service"
-SERVICE_V2RAY="/etc/systemd/system/v2ray-traffic.service"
-SERVICE_SYSINFO="/etc/systemd/system/sysinfo.service"
+SCRIPT_MENU="$BIN_DIR/menu.sh"
+SCRIPT_UNINSTALL="$BIN_DIR/uninstall.sh"
 
 SITE_AV="/etc/nginx/sites-available/showon"
 SITE_EN="/etc/nginx/sites-enabled/showon"
@@ -47,56 +44,6 @@ require_root() {
   fi
 }
 
-# ===== Detect NIC =====
-get_nic() {
-  ip -o -4 route get 8.8.8.8 2>/dev/null \
-    | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' \
-    | head -n1
-}
-
-# ===== Log Rotate (1MB) =====
-rotate_log() {
-  local max=1000000
-  if [[ -f "$DEBUG_LOG" && $(stat -c%s "$DEBUG_LOG") -gt $max ]]; then
-    mv "$DEBUG_LOG" "$DEBUG_LOG.1"
-    : > "$DEBUG_LOG"
-  fi
-}
-
-# ===== Write Nginx Config =====
-write_nginx() {
-  mkdir -p "$WWW_DIR"
-  mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
-
-  cat >"$SITE_AV" <<EOF
-server {
-    listen 82 default_server;
-    server_name _;
-
-    location = / {
-        return 302 /server/;
-    }
-    location /server/ {
-        alias $WWW_DIR/;
-        index index.html;
-        autoindex off;
-        add_header Cache-Control "no-store";
-    }
-}
-EOF
-
-  ln -sf "$SITE_AV" "$SITE_EN"
-
-  if nginx -t; then
-    systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
-  else
-    echo -e "${YELLOW}[WARN]${NC} nginx config test failed → will try to start nginx..."
-    systemctl start nginx 2>/dev/null || true
-  fi
-
-  echo -e "${GREEN}[OK]${NC} Nginx ready at :82 (/server/)"
-}
-
 # ===== Download Function =====
 download_or_die() {
   local url="$1" dst="$2"
@@ -106,162 +53,44 @@ download_or_die() {
   fi
 }
 
-# ===== Install Script =====
-install_script() {
-  echo -e "${CYAN}[INFO]${NC} Installing ShowOn (${VERSION})..."
-  echo -e "${CYAN}[INFO]${NC} Updating system packages..."
-  apt update -y >/dev/null 2>&1 || true
+# ===== Main Install =====
+main_install() {
+  echo -e "${CYAN}[INFO]${NC} Installing ShowOn (${VERSION}) base files..."
 
-  echo -e "${CYAN}[INFO]${NC} Installing dependencies..."
+  apt update -y >/dev/null 2>&1 || true
   apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates >/dev/null 2>&1 || true
 
-  # Ubuntu 18.04 → install vnstat from PPA
-  UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null || echo "0")
-  if [[ "$UBUNTU_VERSION" == "18.04" ]]; then
-    echo -e "${YELLOW}[WARN]${NC} Ubuntu 18.04 detected, installing vnstat from PPA..."
-    apt install -y software-properties-common gnupg2 >/dev/null 2>&1 || true
-    add-apt-repository -y ppa:unit193/vnstat >/dev/null 2>&1 || true
-    apt update -y >/dev/null 2>&1 || true
-    apt install -y vnstat >/dev/null 2>&1 || true
-  else
-    apt install -y vnstat >/dev/null 2>&1 || true
-  fi
-
-  systemctl enable vnstat >/dev/null 2>&1 || true
-  systemctl start vnstat >/dev/null 2>&1 || true
-
   mkdir -p "$WWW_DIR" "$BIN_DIR" "$(dirname "$DEBUG_LOG")"
-  rotate_log
 
-  # ==== ตรวจสอบว่าใช้ 3x-ui หรือ Xray-Core ====
-  if [[ -d /etc/x-ui ]]; then
-    echo -e "${CYAN}[INFO]${NC} ตรวจพบ 3x-ui → ตั้งค่าการเชื่อมต่อ API"
-    echo "  👉 กรุณา 'วางลิงก์หน้าล็อกอินทั้งเส้น' เช่น:"
-    echo "     https://IP:PORT/RandomPath"
-    read -rp "3X-UI URL (copy login link): " PANEL_URL
-    PANEL_URL="$(echo "$PANEL_URL" | sed 's:/*$::')"
-
-    read -rp "3X-UI Username: " XUI_USER
-    read -rp "3X-UI Password: " XUI_PASS
-  else
-    echo -e "${CYAN}[INFO]${NC} ตรวจพบ Xray-Core → ข้ามการตั้งค่า 3x-ui"
-    PANEL_URL=""
-    XUI_USER=""
-    XUI_PASS=""
-  fi
-
-  # ==== Limit User Online ====
-  read -rp "Limit User Online (Default: 2000): " LIMIT
-  LIMIT=${LIMIT:-2000}
-
-  # ==== เขียน config ====
-  NIC=$(get_nic)
-  [[ -z "$NIC" ]] && NIC=$(ip -o -4 addr show up scope global | awk '{print $2}' | head -n1)
-  [[ -z "$NIC" ]] && NIC="eth0"
-
-  cat >"$CONF_FILE" <<EOF
-VERSION="${VERSION}"
-WWW_DIR="$WWW_DIR"
-LIMIT=${LIMIT}
-DEBUG_LOG="$DEBUG_LOG"
-
-PANEL_URL="$PANEL_URL"
-XUI_USER="$XUI_USER"
-XUI_PASS="$XUI_PASS"
-
-NET_IFACE="$NIC"
-EOF
-  chmod 600 "$CONF_FILE"
-
-  # ==== ดาวน์โหลดสคริปต์จาก repo ====
+  # ==== ดาวน์โหลดสคริปต์หลัก ====
   download_or_die "$SRC_ONLINE" "$SCRIPT_ONLINE"
   download_or_die "$SRC_VNSTAT" "$SCRIPT_VNSTAT"
   download_or_die "$SRC_V2RAY" "$SCRIPT_V2RAY"
   download_or_die "$SRC_SYSINFO" "$SCRIPT_SYSINFO"
-  chmod +x "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
+  download_or_die "$SRC_MENU" "$SCRIPT_MENU"
+  download_or_die "$SRC_UNINSTALL" "$SCRIPT_UNINSTALL"
 
-  mkdir -p "$WWW_DIR"
+  chmod +x "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO" "$SCRIPT_MENU" "$SCRIPT_UNINSTALL"
+
+  # ==== หน้าเว็บ ====
   download_or_die "$SRC_INDEX" "$WWW_DIR/index.html"
   chmod 644 "$WWW_DIR/index.html"
 
-  # ==== ดาวน์โหลดเมนูใหม่ ====
-  download_or_die "$SRC_MENU" "$MENU_SCRIPT"
-  chmod +x "$MENU_SCRIPT"
+  # ==== Alias showon ====
+  ln -sf "$SCRIPT_MENU" /usr/local/bin/showon
 
-  # ==== nginx site ====
-  write_nginx
+  echo -e "${GREEN}[OK]${NC} Base Install Completed."
+  echo -e "${CYAN}[INFO]${NC} Run: showon"
+}
 
-  # ==== systemd services ====
-  cat >"$SERVICE_ONLINE" <<'EOF'
-[Unit]
-Description=ShowOn Online Users JSON Generator
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/bin/bash -c 'while true; do /usr/local/bin/online-check.sh; sleep 5; done'
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  cat >"$SERVICE_VNSTAT" <<'EOF'
-[Unit]
-Description=ShowOn vnStat + V2Ray Traffic JSON Generator
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/bin/bash -c 'while true; do /usr/local/bin/vnstat-traffic.sh; sleep 5; done'
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  cat >"$SERVICE_V2RAY" <<'EOF'
-[Unit]
-Description=ShowOn V2Ray-Only Traffic JSON Generator
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/bin/bash -c 'while true; do /usr/local/bin/v2ray-traffic.sh; sleep 5; done'
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  cat >"$SERVICE_SYSINFO" <<'EOF'
-[Unit]
-Description=ShowOn System Info JSON Generator
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/bin/bash -c 'while true; do /usr/local/bin/sysinfo.sh; sleep 5; done'
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  systemctl daemon-reload
-  systemctl enable --now online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service
-
-  echo -e "${GREEN}[OK]${NC} Installed ShowOn ${VERSION}"
-  echo -e "${CYAN}[INFO]${NC} Run: ${GREEN}showon${NC}"
+# ===== Run Menu Immediately =====
+finish_and_launch() {
+  echo
+  echo -e "${GREEN}[OK]${NC} Installation Finished. Launching menu..."
+  sleep 2
+  /usr/local/bin/menu.sh
 }
 
 require_root
-install_script
+main_install
+finish_and_launch
