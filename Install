@@ -2,22 +2,22 @@
 # =====================================================
 # ShowOn Script Manager V.1.0.6 (Extended Edition)
 # Author : TspKchn + ChatGPT
-# Single-file edition: menu + install + update + swap
 # =====================================================
 
+# ----------------- เวอร์ชัน -----------------
 VERSION="V.1.0.6"
 
-# ===== GitHub Repo Path =====
+# ----------------- พาธรีโป ------------------
 REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main"
 
-# ===== Sources =====
+# ----------------- ซอร์สไฟล์ ----------------
 SRC_ONLINE="$REPO_RAW/scripts/online-check.sh"
 SRC_VNSTAT="$REPO_RAW/scripts/vnstat-traffic.sh"
 SRC_V2RAY="$REPO_RAW/scripts/v2ray-traffic.sh"
 SRC_SYSINFO="$REPO_RAW/scripts/sysinfo.sh"
 SRC_INDEX="$REPO_RAW/web/index.html"
 
-# ===== Install Paths =====
+# ----------------- ตำแหน่งติดตั้ง ----------
 WWW_DIR="/var/www/html/server"
 BIN_DIR="/usr/local/bin"
 CONF_FILE="/etc/showon.conf"
@@ -36,49 +36,37 @@ SERVICE_SYSINFO="/etc/systemd/system/sysinfo.service"
 SITE_AV="/etc/nginx/sites-available/showon"
 SITE_EN="/etc/nginx/sites-enabled/showon"
 
-# ===== Colors =====
-GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; BOLD="\e[1m"; NC="\e[0m"
+# ----------------- สี ------------------------
+GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; B="\e[1m"; NC="\e[0m"
 
-# ===== Safeguards =====
+# =====================================================
+# ฟังก์ชันพื้นฐาน
+# =====================================================
+
 require_root() {
   if [[ $EUID -ne 0 ]]; then
     echo -e "${RED}[ERROR]${NC} Please run as root."
     exit 1
   fi
 }
-require_root
 
-# ===== Small helpers =====
-press(){ read -rp "Press Enter to continue... " _; }
-pad() { # pad "label" 14
-  printf "%-*s" "$2" "$1"
-}
-exists() { command -v "$1" >/dev/null 2>&1; }
-svc_onoff(){ # svc_onoff service-name
-  local s="$1"
-  if systemctl is-active --quiet "$s" 2>/dev/null; then
-    echo -e "[${GREEN}ON${NC}]"
-  else
-    echo -e "[${RED}OFF${NC}]"
-  fi
-}
-file_onoff(){ # file_onoff file-or-dir
-  local f="$1"
-  if [[ -e "$f" ]]; then
-    echo -e "[${GREEN}OK${NC}]"
-  else
-    echo -e "[${RED}MISS${NC}]"
-  fi
+press() { read -rp "Press Enter to continue..." _; }
+
+header() {
+  clear
+  echo "==============================="
+  echo "   ShowOn Script Manager ${VERSION}"
+  echo "==============================="
 }
 
-# ===== Detect NIC =====
+# ตรวจจับ NIC
 get_nic() {
   ip -o -4 route get 8.8.8.8 2>/dev/null \
     | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' \
     | head -n1
 }
 
-# ===== Log Rotate (1MB) =====
+# หมุน log (1MB)
 rotate_log() {
   local max=1000000
   if [[ -f "$DEBUG_LOG" && $(stat -c%s "$DEBUG_LOG") -gt $max ]]; then
@@ -87,7 +75,16 @@ rotate_log() {
   fi
 }
 
-# ===== Nginx writer =====
+# ดึงไฟล์แบบ fail-fast
+download_or_die() {
+  local url="$1" dst="$2"
+  if ! curl -fsSL "$url" -o "$dst"; then
+    echo -e "${RED}[ERROR]${NC} Download failed: $url"
+    exit 1
+  fi
+}
+
+# เขียน Nginx site
 write_nginx() {
   mkdir -p "$WWW_DIR"
   mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
@@ -121,97 +118,76 @@ EOF
   echo -e "${GREEN}[OK]${NC} Nginx ready at :82 (/server/)"
 }
 
-# ===== Downloader =====
-download_or_die() {
-  local url="$1" dst="$2"
-  if ! curl -fsSL "$url" -o "$dst"; then
-    echo -e "${RED}[ERROR]${NC} Download failed: $url"
-    exit 1
-  fi
-}
-
-# ===== Check Installation Status =====
-is_installed() {
-  # ถือว่าติดตั้งถ้ามีไฟล์ config และอย่างน้อย index.html กับสคริปต์หลัก ๆ อยู่
-  [[ -f "$CONF_FILE" && -f "$WWW_DIR/index.html" && -f "$SCRIPT_ONLINE" && -f "$SERVICE_ONLINE" ]]
-}
-
-# ===== Status box (pretty) =====
-status_box() {
-  clear
-  echo -e "${BOLD}==============================="
-  echo -e "   ShowOn Script Manager ${VERSION}"
-  echo -e "===============================${NC}"
-
-  # Services
-  local sNginx sOn sVn sV2 sSys
-  sNginx=$(svc_onoff nginx)
-  sOn=$(svc_onoff online-check.service)
-  sVn=$(svc_onoff vnstat-traffic.service)
-  sV2=$(svc_onoff v2ray-traffic.service)
-  sSys=$(svc_onoff sysinfo.service)
-
-  printf "%s : %b  %s : %b\n" "$(pad 'NginX' 12)" "$sNginx" "$(pad 'Online Check' 12)" "$sOn"
-  printf "%s : %b  %s : %b\n" "$(pad 'vnStat' 12)" "$sVn"    "$(pad 'V2Ray Traffic' 12)" "$sV2"
-  printf "%s : %b\n"           "$(pad 'SysInfo' 12)" "$sSys"
-
-  echo "-------------------------------"
-  if is_installed; then
-    echo -e "Status: ${GREEN}Installed${NC}"
-  else
-    echo -e "Status: ${RED}Not Installed${NC}"
-  fi
-  echo -e "==============================="
-}
-
-# ===== Check Update (remote VERSION) =====
+# ตรวจอัปเดตจากรีโมต (อ่าน VERSION จากไฟล์ Install บน GitHub)
 check_update() {
-  # อ่าน Install ต้นฉบับจากรีโปมาดูเวอร์ชัน
-  local install_raw remote
-  install_raw="$(curl -fsSL "$REPO_RAW/Install" 2>/dev/null || true)"
+  local remote install_raw
+  install_raw="$(curl -fsSL "$REPO_RAW/Install" || true)"
+
   if [[ -z "$install_raw" ]]; then
     echo -e "${YELLOW}[WARN]${NC} ไม่สามารถเช็คเวอร์ชันจาก GitHub ได้"
-    return 0
+    return
   fi
+
   remote="$(printf '%s' "$install_raw" | grep -m1 '^VERSION=' | cut -d'"' -f2)"
   if [[ -z "$remote" ]]; then
     echo -e "${YELLOW}[WARN]${NC} พบไฟล์ Install ใน GitHub แต่หา VERSION ไม่เจอ"
-    return 0
+    return
   fi
 
   if [[ "$VERSION" == "$remote" ]]; then
     echo -e "${GREEN}[OK]${NC} You are using the latest version."
   else
     echo -e "${CYAN}[UPDATE]${NC} มีเวอร์ชันใหม่: ${remote} (ปัจจุบัน: ${VERSION})"
-    read -rp "กด Enter เพื่ออัปเดตเป็น ${remote} (หรือพิมพ์ n เพื่อยกเลิก): " ans
-    if [[ -z "$ans" || "$ans" =~ ^[Yy]$ ]]; then
+    echo -en "กด Enter เพื่ออัปเดตทันที หรือพิมพ์ ${B}n${NC} เพื่อข้าม: "
+    read ans
+    if [[ -z "$ans" || "$ans" == "y" || "$ans" == "Y" ]]; then
       update_script
-    else
-      echo "ยกเลิกการอัปเดต"
+      press
     fi
   fi
 }
 
-# ===== Install =====
+# แสดงสถานะ Service + สถานะติดตั้ง
+print_status() {
+  # เช็ค nginx
+  local stat_nginx="OFF" stat_online="OFF" stat_vnstat="OFF" stat_v2="OFF" stat_sys="OFF"
+
+  systemctl is-active --quiet nginx && stat_nginx="ON"
+  [[ -f "$SERVICE_ONLINE" ]] && systemctl is-active --quiet online-check && stat_online="ON"
+  [[ -f "$SERVICE_VNSTAT" ]] && systemctl is-active --quiet vnstat-traffic && stat_vnstat="ON"
+  [[ -f "$SERVICE_V2RAY" ]] && systemctl is-active --quiet v2ray-traffic && stat_v2="ON"
+  [[ -f "$SERVICE_SYSINFO" ]] && systemctl is-active --quiet sysinfo && stat_sys="ON"
+
+  # สี
+  local c_ng=$( [[ "$stat_nginx" == "ON" ]] && echo "$GREEN" || echo "$RED" )
+  local c_on=$( [[ "$stat_online" == "ON" ]] && echo "$GREEN" || echo "$RED" )
+  local c_vn=$( [[ "$stat_vnstat" == "ON" ]] && echo "$GREEN" || echo "$RED" )
+  local c_v2=$( [[ "$stat_v2" == "ON" ]] && echo "$GREEN" || echo "$RED" )
+  local c_sy=$( [[ "$stat_sys" == "ON" ]] && echo "$GREEN" || echo "$RED" )
+
+  # สถานะติดตั้ง
+  local installed="Not Installed"
+  [[ -f "$SCRIPT_ONLINE" || -f "$SCRIPT_VNSTAT" || -f "$SCRIPT_V2RAY" || -f "$SCRIPT_SYSINFO" ]] && installed="Installed"
+
+  echo -e "$(printf 'NginX        : [%b%s%b]  Online Check : [%b%s%b]\n' "$c_ng" "$stat_nginx" "$NC" "$c_on" "$stat_online" "$NC")"
+  echo -e "$(printf 'vnStat       : [%b%s%b]  V2Ray Traffic : [%b%s%b]\n' "$c_vn" "$stat_vnstat" "$NC" "$c_v2" "$stat_v2" "$NC")"
+  echo -e "$(printf 'SysInfo      : [%b%s%b]\n' "$c_sy" "$stat_sys" "$NC")"
+  echo "-------------------------------"
+  echo "Status: $installed"
+  echo "==============================="
+}
+
+# =====================================================
+# ติดตั้ง
+# =====================================================
+
 install_script() {
   echo -e "${CYAN}[INFO]${NC} Installing ShowOn (${VERSION})..."
   echo -e "${CYAN}[INFO]${NC} Updating system packages..."
   apt update -y >/dev/null 2>&1 || true
 
   echo -e "${CYAN}[INFO]${NC} Installing dependencies..."
-  apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates >/dev/null 2>&1 || true
-
-  # Ubuntu 18.04 → install vnstat from PPA
-  UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null || echo "0")
-  if [[ "$UBUNTU_VERSION" == "18.04" ]]; then
-    echo -e "${YELLOW}[WARN]${NC} Ubuntu 18.04 detected, installing vnstat from PPA..."
-    apt install -y software-properties-common gnupg2 >/dev/null 2>&1 || true
-    add-apt-repository -y ppa:unit193/vnstat >/dev/null 2>&1 || true
-    apt update -y >/dev/null 2>&1 || true
-    apt install -y vnstat >/dev/null 2>&1 || true
-  else
-    apt install -y vnstat >/dev/null 2>&1 || true
-  fi
+  apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates vnstat >/dev/null 2>&1 || true
 
   systemctl enable vnstat >/dev/null 2>&1 || true
   systemctl start vnstat >/dev/null 2>&1 || true
@@ -219,7 +195,7 @@ install_script() {
   mkdir -p "$WWW_DIR" "$BIN_DIR" "$(dirname "$DEBUG_LOG")"
   rotate_log
 
-  # ==== ตรวจสอบว่าใช้ 3x-ui หรือ Xray-Core ====
+  # ตรวจว่าเป็น 3x-ui หรือ Xray-Core
   local PANEL_URL XUI_USER XUI_PASS
   if [[ -d /etc/x-ui ]]; then
     echo -e "${CYAN}[INFO]${NC} ตรวจพบ 3x-ui → ตั้งค่าการเชื่อมต่อ API"
@@ -237,13 +213,11 @@ install_script() {
     XUI_PASS=""
   fi
 
-  # ==== Limit User Online ====
-  local LIMIT
+  # Limit
   read -rp "Limit User Online (Default: 2000): " LIMIT
   LIMIT=${LIMIT:-2000}
 
-  # ==== เขียน config ====
-  local NIC
+  # เขียน config
   NIC=$(get_nic)
   [[ -z "$NIC" ]] && NIC=$(ip -o -4 addr show up scope global | awk '{print $2}' | head -n1)
   [[ -z "$NIC" ]] && NIC="eth0"
@@ -262,7 +236,7 @@ NET_IFACE="$NIC"
 EOF
   chmod 600 "$CONF_FILE"
 
-  # ==== ดาวน์โหลดสคริปต์จาก repo ====
+  # ดาวน์โหลดสคริปต์จาก repo
   download_or_die "$SRC_ONLINE" "$SCRIPT_ONLINE"
   download_or_die "$SRC_VNSTAT" "$SCRIPT_VNSTAT"
   download_or_die "$SRC_V2RAY" "$SCRIPT_V2RAY"
@@ -273,10 +247,10 @@ EOF
   download_or_die "$SRC_INDEX" "$WWW_DIR/index.html"
   chmod 644 "$WWW_DIR/index.html"
 
-  # ==== nginx site ====
+  # Nginx
   write_nginx
 
-  # ==== systemd services ====
+  # systemd services
   cat >"$SERVICE_ONLINE" <<'EOF'
 [Unit]
 Description=ShowOn Online Users JSON Generator
@@ -325,6 +299,7 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF
 
+  # (แก้แล้ว) sysinfo.service — ไม่มีค่าผิดพลาด
   cat >"$SERVICE_SYSINFO" <<'EOF'
 [Unit]
 Description=ShowOn System Info JSON Generator
@@ -333,8 +308,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/bin/bash -c 'while true; do /usr/local/bin/sysinfo.sh; sleep 5; do
-ne'
+ExecStart=/bin/bash -c 'while true; do /usr/local/bin/sysinfo.sh; sleep 5; done'
 Restart=always
 RestartSec=2
 
@@ -342,7 +316,7 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF
 
-  # ==== Start and Enable Services ====
+  # เริ่มใช้งาน
   systemctl daemon-reload
   systemctl enable --now online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service
 
@@ -351,7 +325,10 @@ EOF
   press
 }
 
-# ===== Uninstall =====
+# =====================================================
+# ถอนการติดตั้ง
+# =====================================================
+
 uninstall_script() {
   echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script..."
 
@@ -371,14 +348,14 @@ uninstall_script() {
     systemctl restart nginx 2>/dev/null || true
   fi
 
-  # เก็บโฟลเดอร์เว็บไว้ให้ก่อน (เผื่อมีของผู้ใช้) — ถ้าจะลบทิ้งก็เพิ่มบรรทัดด้านล่างได้
-  # rm -rf "$WWW_DIR"
-
   echo -e "${GREEN}[SUCCESS]${NC} Uninstalled completely."
   press
 }
 
-# ===== Update =====
+# =====================================================
+# อัปเดต
+# =====================================================
+
 update_script() {
   echo -e "${CYAN}[INFO]${NC} Updating all ShowOn components..."
   rotate_log
@@ -401,14 +378,14 @@ update_script() {
     echo -e "${RED}[ERROR]${NC} Failed to update Install script."
   fi
 
-  systemctl daemon-reload
-  systemctl restart online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
-
   echo -e "${GREEN}[OK]${NC} Update completed."
   press
 }
 
-# ===== Debug Log =====
+# =====================================================
+# Debug Log / Change Limit
+# =====================================================
+
 check_debug() {
   rotate_log
   if [[ -f "$DEBUG_LOG" ]]; then
@@ -419,12 +396,13 @@ check_debug() {
   press
 }
 
-# ===== Change Limit =====
 change_limit() {
   if [[ ! -f "$CONF_FILE" ]]; then
     echo -e "${RED}[ERROR]${NC} Config file not found!"
     press; return
   fi
+
+  # shellcheck disable=SC1090
   source "$CONF_FILE"
   echo -e "${CYAN}[INFO]${NC} Current Limit User Online: ${LIMIT:-2000}"
   read -rp "Enter new Limit User Online: " NEW_LIMIT
@@ -432,72 +410,81 @@ change_limit() {
     echo -e "${YELLOW}[WARN]${NC} ไม่ได้เปลี่ยนค่า"
     press; return
   fi
+
   sed -i "s/^LIMIT=.*/LIMIT=${NEW_LIMIT}/" "$CONF_FILE"
   echo -e "${GREEN}[OK]${NC} คุณได้เปลี่ยน Limit User Online แล้วเป็น ${NEW_LIMIT} คน"
   press
 }
 
-# ===== Swap (Auto) =====
-calc_swap_size_gb() {
-  # รับค่า RAM (kB) → คืนค่า SWAP (GiB) ตาม rule: <2GB→2GB, 2-4→2GB, 4-8→4GB, 8-16→4-8, 16-64→8-16, >64→16
-  local mem_kb="$1"
-  local mem_gb=$(( (mem_kb + 1048575) / 1048576 )) # round up KB→GB
-  local swap_gb=2
-  if   (( mem_gb < 2 ));        then swap_gb=2
-  elif (( mem_gb <= 4 ));       then swap_gb=2
-  elif (( mem_gb <= 8 ));       then swap_gb=4
-  elif (( mem_gb <= 16 ));      then swap_gb=6
-  elif (( mem_gb <= 64 ));      then swap_gb=8
-  else                               swap_gb=16
-  fi
-  echo "$swap_gb"
-}
+# =====================================================
+# Setup Swap (อัตโนมัติ + รีสตาร์ต service)
+# =====================================================
 
-setup_swap_auto() {
-  echo -e "${CYAN}[INFO]${NC} Auto-setup swap..."
-  local mem_kb total_swap_kb
-  mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
-  total_swap_kb=$(awk '/SwapTotal/ {print $2}' /proc/meminfo)
+setup_swap() {
+  echo -e "${CYAN}[INFO]${NC} Auto Swap Wizard"
 
-  if (( total_swap_kb > 0 )); then
-    echo -e "${YELLOW}[WARN]${NC} Swap already exists ($(awk '/SwapTotal/ {printf \"%.2f GiB\", $2/1048576}' /proc/meminfo))."
-    read -rp "Create new swap anyway? (this keeps the old one) [y/N]: " yn
-    [[ ! "$yn" =~ ^[Yy]$ ]] && { echo "Canceled."; press; return; }
+  # ขนาด RAM (MiB)
+  local ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+  local ram_mb=$(( ram_kb / 1024 ))
+
+  # กำหนดสัดส่วน swap ตามช่วง RAM (ยืดหยุ่นได้ทุกสเปค)
+  local swap_mb
+  if   (( ram_mb <= 512 )); then       swap_mb=$(( ram_mb * 2 ))       # <=512MB → x2
+  elif (( ram_mb <= 1024 )); then      swap_mb=$(( ram_mb * 2 ))       # 1GB     → x2
+  elif (( ram_mb <= 2048 )); then      swap_mb=$(( ram_mb * 1 ))       # 2GB     → x1
+  elif (( ram_mb <= 4096 )); then      swap_mb=$(( ram_mb * 1 ))       # 4GB     → x1
+  elif (( ram_mb <= 8192 )); then      swap_mb=4096                    # 8GB     → 4GB
+  elif (( ram_mb <= 16384 )); then     swap_mb=4096                    # 16GB    → 4GB
+  elif (( ram_mb <= 32768 )); then     swap_mb=8192                    # 32GB    → 8GB
+  elif (( ram_mb <= 65536 )); then     swap_mb=8192                    # 64GB    → 8GB
+  else                                  swap_mb=8192                    # >64GB   → 8GB cap
   fi
 
-  local swap_gb swap_file="/swapfile"
-  swap_gb="$(calc_swap_size_gb "$mem_kb")"
-  local swap_mb=$(( swap_gb * 1024 ))
-
-  echo -e "${CYAN}[INFO]${NC} Creating ${swap_gb}G swap at ${swap_file} ..."
-  swapoff -a 2>/dev/null || true
-  fallocate -l "${swap_mb}M" "$swap_file" 2>/dev/null || dd if=/dev/zero of="$swap_file" bs=1M count="$swap_mb"
-  chmod 600 "$swap_file"
-  mkswap "$swap_file"
-  swapon "$swap_file"
-
-  if ! grep -q "^$swap_file" /etc/fstab; then
-    echo "$swap_file none swap sw 0 0" >> /etc/fstab
+  # มี swap แล้วหรือยัง?
+  if swapon --show | awk 'NR>1{print $1}' | grep -q .; then
+    echo -e "${YELLOW}[WARN]${NC} พบ Swap เดิมอยู่แล้ว"
+    read -rp "ต้องการสร้างใหม่ทับเดิมหรือไม่? (Y/n): " ans
+    if [[ -z "$ans" || "$ans" =~ ^[Yy]$ ]]; then
+      swapoff -a || true
+      sed -i '/swapfile showon/d' /etc/fstab || true
+    else
+      echo -e "${GREEN}[OK]${NC} ข้ามการสร้าง Swap ใหม่"
+      press; return
+    fi
   fi
 
-  sysctl vm.swappiness=10 >/dev/null
-  sysctl vm.vfs_cache_pressure=50 >/dev/null
-  sed -i '/^vm\.swappiness=/d' /etc/sysctl.conf
-  sed -i '/^vm\.vfs_cache_pressure=/d' /etc/sysctl.conf
-  {
-    echo "vm.swappiness=10"
-    echo "vm.vfs_cache_pressure=50"
-  } >> /etc/sysctl.conf
+  echo -e "${CYAN}[INFO]${NC} Creating swapfile size ${swap_mb} MiB ..."
+  fallocate -l "${swap_mb}M" /swapfile || dd if=/dev/zero of=/swapfile bs=1M count="${swap_mb}"
+  chmod 600 /swapfile
+  mkswap /swapfile >/dev/null
+  swapon /swapfile
 
-  echo -e "${GREEN}[OK]${NC} Swap ready: ${swap_gb}G"
-  # รีสตาร์ต service หลักให้หน่อย (เผื่อก่อนหน้าล้มเพราะแรม)
+  if ! grep -q "swapfile showon" /etc/fstab; then
+    echo "/swapfile none swap sw 0 0 # swapfile showon" >> /etc/fstab
+  fi
+
+  # ปรับ vm.swappiness & vfs_cache_pressure แบบย่อมเยา
+  sysctl -w vm.swappiness=10 >/dev/null
+  sysctl -w vm.vfs_cache_pressure=100 >/dev/null
+  if ! grep -q '^vm.swappiness' /etc/sysctl.conf; then echo "vm.swappiness=10" >> /etc/sysctl.conf; fi
+  if ! grep -q '^vm.vfs_cache_pressure' /etc/sysctl.conf; then echo "vm.vfs_cache_pressure=100" >> /etc/sysctl.conf; fi
+
+  echo -e "${GREEN}[OK]${NC} Swap พร้อมใช้งาน:"
+  free -h
+
+  # รีสตาร์ต service หลักให้
   systemctl restart online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
+  echo -e "${GREEN}[OK]${NC} Restarted ShowOn services."
   press
 }
 
-# ===== Menu =====
+# =====================================================
+# เมนู
+# =====================================================
+
 show_menu() {
-  status_box
+  header
+  print_status
   check_update
   echo "1) Install Script"
   echo "2) Uninstall Script"
@@ -514,12 +501,16 @@ show_menu() {
     3) update_script ;;
     4) check_debug ;;
     5) change_limit ;;
-    6) setup_swap_auto ;;
+    6) setup_swap ;;
     0) exit 0 ;;
     *) echo -e "${RED}[ERROR]${NC} Invalid choice"; sleep 1 ;;
   esac
   show_menu
 }
 
-# ===== Entry =====
+# =====================================================
+# Main
+# =====================================================
+
+require_root
 show_menu
