@@ -166,14 +166,16 @@ print_status() {
   local c_sy=$( [[ "$stat_sys" == "ON" ]] && echo "$GREEN" || echo "$RED" )
 
   # สถานะติดตั้ง
-  local installed="Not Installed"
-  [[ -f "$SCRIPT_ONLINE" || -f "$SCRIPT_VNSTAT" || -f "$SCRIPT_V2RAY" || -f "$SCRIPT_SYSINFO" ]] && installed="Installed"
+  local installed="${RED}Not Installed${NC}"
+  if [[ -f "$SCRIPT_ONLINE" || -f "$SCRIPT_VNSTAT" || -f "$SCRIPT_V2RAY" || -f "$SCRIPT_SYSINFO" ]]; then
+    installed="${GREEN}Installed${NC}"
+  fi
 
   echo -e "$(printf 'NginX        : [%b%s%b]  Online Check : [%b%s%b]\n' "$c_ng" "$stat_nginx" "$NC" "$c_on" "$stat_online" "$NC")"
   echo -e "$(printf 'vnStat       : [%b%s%b]  V2Ray Traffic : [%b%s%b]\n' "$c_vn" "$stat_vnstat" "$NC" "$c_v2" "$stat_v2" "$NC")"
   echo -e "$(printf 'SysInfo      : [%b%s%b]\n' "$c_sy" "$stat_sys" "$NC")"
   echo "-------------------------------"
-  echo "Status: $installed"
+  echo -e "Status: $installed"
   echo "==============================="
 }
 
