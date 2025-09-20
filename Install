@@ -153,8 +153,9 @@ install_script() {
 
   mkdir -p "$WWW_DIR" "$BIN_DIR" "$(dirname "$DEBUG_LOG")"
 
-  # ==== ถามค่าตั้งต้น 3x-ui ====
-  echo -e "${CYAN}[INFO]${NC} ตั้งค่า 3x-ui (ถ้าไม่มีให้กด Enter ข้ามได้)"
+# ==== ตรวจสอบว่าใช้ 3x-ui หรือ Xray-Core ====
+if [[ -d /etc/x-ui ]]; then
+  echo -e "${CYAN}[INFO]${NC} ตรวจพบ 3x-ui → ตั้งค่าการเชื่อมต่อ API"
   echo "  👉 กรุณา 'วางลิงก์หน้าล็อกอินทั้งเส้น' เช่น:"
   echo "     https://IP:PORT/RandomPath"
   read -rp "3X-UI URL (copy login link): " PANEL_URL
@@ -162,8 +163,16 @@ install_script() {
 
   read -rp "3X-UI Username: " XUI_USER
   read -rp "3X-UI Password: " XUI_PASS
-  read -rp "Limit User Online (Default: 2000): " LIMIT
-  LIMIT=${LIMIT:-2000}
+else
+  echo -e "${CYAN}[INFO]${NC} ตรวจพบ Xray-Core → ข้ามการตั้งค่า 3x-ui"
+  PANEL_URL=""
+  XUI_USER=""
+  XUI_PASS=""
+fi
+
+# ==== Limit User Online (ถามทั้งสองแบบ) ====
+read -rp "Limit User Online (Default: 2000): " LIMIT
+LIMIT=${LIMIT:-2000}
 
   # ==== ตรวจสอบล็อกอิน (ถ้าใส่ URL) ====
   if [[ -n "$PANEL_URL" ]]; then
