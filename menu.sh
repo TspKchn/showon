@@ -1,16 +1,13 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager Menu (Separated)
-# Version: 1.0.6
+# ShowOn Menu Script V.1.0.6
 # Author: TspKchn + ChatGPT
 # =====================================================
 
 VERSION="V.1.0.6"
 CONF_FILE="/etc/showon.conf"
 DEBUG_LOG="/var/log/showon-debug.log"
-WWW_DIR="/var/www/html/server"
-SITE_AV="/etc/nginx/sites-available/showon"
-SITE_EN="/etc/nginx/sites-enabled/showon"
+REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main"
 
 # ===== Colors =====
 GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; NC="\e[0m"
@@ -22,16 +19,7 @@ require_root() {
   fi
 }
 
-header() {
-  clear
-  echo "==============================="
-  echo "   ShowOn Script Manager ${VERSION}"
-  echo "==============================="
-}
-
-press() { read -rp "Press Enter to return to menu..." _; }
-
-# ===== Log Rotate (1MB) =====
+# ===== Rotate Debug Log =====
 rotate_log() {
   local max=1000000
   if [[ -f "$DEBUG_LOG" && $(stat -c%s "$DEBUG_LOG") -gt $max ]]; then
@@ -42,10 +30,10 @@ rotate_log() {
 
 # ===== Check Update =====
 check_update() {
-  local remote install_raw
-  REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main"
-  install_raw="$(curl -fsSL "$REPO_RAW/Install" || true)"
+  local remote
+  local install_raw
 
+  install_raw="$(curl -fsSL "$REPO_RAW/Install" || true)"
   if [[ -z "$install_raw" ]]; then
     echo -e "${YELLOW}[WARN]${NC} ไม่สามารถเช็คเวอร์ชันจาก GitHub ได้"
     return
@@ -53,19 +41,56 @@ check_update() {
 
   remote="$(printf '%s' "$install_raw" | grep -m1 '^VERSION=' | cut -d'"' -f2)"
   if [[ -z "$remote" ]]; then
-    echo -e "${YELLOW}[WARN]${NC} พบไฟล์ Install ใน GitHub แต่หา VERSION ไม่เจอ"
+    echo -e "${YELLOW}[WARN]${NC} พบไฟล์ Install แต่ไม่มีค่า VERSION"
     return
   fi
 
   if [[ "$VERSION" == "$remote" ]]; then
     echo -e "${GREEN}[OK]${NC} You are using the latest version."
   else
-    echo -e "${CYAN}[UPDATE]${NC} มีเวอร์ชันใหม่: $remote (ปัจจุบัน: $VERSION)"
-    read -rp "กด Enter เพื่ออัพเดทเป็น $remote หรือ Ctrl+C เพื่อยกเลิก..." _
-    bash /root/Install
+    echo -e "${CYAN}[UPDATE]${NC} พบเวอร์ชันใหม่: $remote (ปัจจุบัน: $VERSION)"
+    echo -e "${CYAN}[INFO]${NC} กด Enter เพื่ออัปเดตเป็น $remote หรือ Ctrl+C เพื่อยกเลิก"
+    read
+    /usr/local/bin/uninstall.sh >/dev/null 2>&1 || true
+    bash -c "$(curl -fsSL "$REPO_RAW/Install")"
     exit 0
   fi
 }
+
+# ===== Show Service Status =====
+service_status() {
+  local name="$1"
+  local svc="$2"
+  if systemctl is-active --quiet "$svc"; then
+    echo -e "$name : [${GREEN}ON${NC}]"
+  else
+    echo -e "$name : [${RED}OFF${NC}]"
+  fi
+}
+
+# ===== Header =====
+header() {
+  clear
+  echo "==============================="
+  echo "   ShowOn Script Manager ${VERSION}"
+  echo "==============================="
+  check_update
+  echo
+  service_status "NginX" "nginx"
+  service_status "Online Check" "online-check.service"
+  service_status "vnStat" "vnstat-traffic.service"
+  service_status "V2Ray Traffic" "v2ray-traffic.service"
+  service_status "SysInfo" "sysinfo.service"
+  echo
+  if [[ -f "$CONF_FILE" ]]; then
+    echo -e "Status: ${GREEN}Installed${NC}"
+  else
+    echo -e "Status: ${RED}Not Installed${NC}"
+  fi
+  echo "==============================="
+}
+
+press() { read -rp "Press Enter to return to menu..." _; }
 
 # ===== Debug Log =====
 check_debug() {
@@ -84,7 +109,6 @@ change_limit() {
     echo -e "${RED}[ERROR]${NC} Config file not found!"
     press; return
   fi
-
   source "$CONF_FILE"
   echo -e "${CYAN}[INFO]${NC} Current Limit User Online: ${LIMIT:-2000}"
   read -rp "Enter new Limit User Online: " NEW_LIMIT
@@ -92,72 +116,49 @@ change_limit() {
     echo -e "${YELLOW}[WARN]${NC} ไม่ได้เปลี่ยนค่า"
     press; return
   fi
-
   sed -i "s/^LIMIT=.*/LIMIT=${NEW_LIMIT}/" "$CONF_FILE"
-  echo -e "${GREEN}[OK]${NC} คุณได้เปลี่ยน Limit User Online แล้วเป็น ${NEW_LIMIT} คน"
+  echo -e "${GREEN}[OK]${NC} เปลี่ยน Limit User Online เป็น ${NEW_LIMIT} คน"
   press
 }
 
 # ===== Setup Swap =====
 setup_swap() {
-  echo -e "${CYAN}[INFO]${NC} Checking RAM and setting up swap..."
+  local mem_total swap_size
+  mem_total=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
 
-  MEM_MB=$(free -m | awk '/^Mem:/{print $2}')
-  SWAP_MB=0
-
-  if (( MEM_MB <= 512 )); then
-    SWAP_MB=1024
-  elif (( MEM_MB <= 1024 )); then
-    SWAP_MB=2048
-  elif (( MEM_MB <= 2048 )); then
-    SWAP_MB=4096
-  elif (( MEM_MB <= 4096 )); then
-    SWAP_MB=8192
+  if (( mem_total <= 512 )); then
+    swap_size=1024
+  elif (( mem_total <= 1024 )); then
+    swap_size=2048
+  elif (( mem_total <= 2048 )); then
+    swap_size=3072
+  elif (( mem_total <= 4096 )); then
+    swap_size=4096
+  elif (( mem_total <= 8192 )); then
+    swap_size=8192
   else
-    SWAP_MB=2048
+    swap_size=16384
   fi
 
-  SWAP_FILE="/swapfile"
+  echo -e "${CYAN}[INFO]${NC} RAM: ${mem_total} MB → สร้าง Swap ${swap_size} MB"
 
-  if [[ -f "$SWAP_FILE" ]]; then
-    echo -e "${YELLOW}[WARN]${NC} Swap file already exists → recreating..."
-    swapoff "$SWAP_FILE"
-    rm -f "$SWAP_FILE"
+  fallocate -l ${swap_size}M /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=${swap_size}
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+
+  if ! grep -q "/swapfile" /etc/fstab; then
+    echo "/swapfile none swap sw 0 0" >> /etc/fstab
   fi
 
-  fallocate -l ${SWAP_MB}M "$SWAP_FILE" || dd if=/dev/zero of="$SWAP_FILE" bs=1M count=$SWAP_MB
-  chmod 600 "$SWAP_FILE"
-  mkswap "$SWAP_FILE"
-  swapon "$SWAP_FILE"
-
-  if ! grep -q "$SWAP_FILE" /etc/fstab; then
-    echo "$SWAP_FILE none swap sw 0 0" >> /etc/fstab
-  fi
-
-  echo -e "${GREEN}[OK]${NC} Swap setup completed (${SWAP_MB} MB)"
+  echo -e "${GREEN}[OK]${NC} Swap setup completed."
   free -h
   press
-}
-
-# ===== Service Status =====
-check_services() {
-  local services=("nginx" "online-check" "vnstat-traffic" "v2ray-traffic" "sysinfo")
-  echo "-------------------------------"
-  for s in "${services[@]}"; do
-    if systemctl is-active --quiet "$s"; then
-      echo -e "$s : [${GREEN}ON${NC}]"
-    else
-      echo -e "$s : [${RED}OFF${NC}]"
-    fi
-  done
-  echo "-------------------------------"
 }
 
 # ===== Menu =====
 show_menu() {
   header
-  check_update
-  check_services
   echo "1) Install Script"
   echo "2) Uninstall Script"
   echo "3) Update Script"
@@ -168,9 +169,9 @@ show_menu() {
   echo "==============================="
   read -rp "Choose an option [0-6]: " choice
   case "$choice" in
-    1) bash /root/Install ;;
-    2) bash /root/uninstall.sh ;;   # ✅ เรียกไฟล์ uninstall.sh ตรงๆ
-    3) bash /root/Install ;;
+    1) bash -c "$(curl -fsSL $REPO_RAW/Install)" ;;
+    2) /usr/local/bin/uninstall.sh ;;
+    3) bash -c "$(curl -fsSL $REPO_RAW/Install)" ;;
     4) check_debug ;;
     5) change_limit ;;
     6) setup_swap ;;
