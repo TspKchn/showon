@@ -1,22 +1,22 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.5 (Split-Files Edition + Xray-Core Detect)
-# Author: TspKchn
+# ShowOn Script Manager V.1.0.5 (Extended Edition)
+# Author: TspKchn + ChatGPT
 # =====================================================
 
 VERSION="V.1.0.5"
 
-# ===== ปรับลิงก์นี้ให้ชี้ไปยัง repo ของคุณ =====
+# ===== GitHub Repo Path =====
 REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main"
 
-# โครงสร้างไฟล์บน repo (ต้องมีตามนี้)
+# ===== Sources =====
 SRC_ONLINE="$REPO_RAW/scripts/online-check.sh"
 SRC_VNSTAT="$REPO_RAW/scripts/vnstat-traffic.sh"
 SRC_V2RAY="$REPO_RAW/scripts/v2ray-traffic.sh"
 SRC_SYSINFO="$REPO_RAW/scripts/sysinfo.sh"
 SRC_INDEX="$REPO_RAW/web/index.html"
 
-# ตำแหน่งติดตั้งปลายทาง
+# ===== Install Paths =====
 WWW_DIR="/var/www/html/server"
 BIN_DIR="/usr/local/bin"
 CONF_FILE="/etc/showon.conf"
@@ -38,7 +38,6 @@ SITE_EN="/etc/nginx/sites-enabled/showon"
 # ===== Colors =====
 GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; NC="\e[0m"
 
-# ==================== ฟังก์ชันหลัก ====================
 require_root() {
   if [[ $EUID -ne 0 ]]; then
     echo -e "${RED}[ERROR]${NC} Please run as root."
@@ -55,14 +54,14 @@ header() {
 
 press() { read -rp "Press Enter to return to menu..." _; }
 
-# เดา interface หลักแบบปลอดภัย
+# ===== Detect NIC =====
 get_nic() {
   ip -o -4 route get 8.8.8.8 2>/dev/null \
     | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' \
     | head -n1
 }
 
-# ===== เช็คเวอร์ชันบน GitHub =====
+# ===== Check Update =====
 check_update() {
   local remote install_raw
   install_raw="$(curl -fsSL "$REPO_RAW/Install" || true)"
@@ -85,7 +84,7 @@ check_update() {
   fi
 }
 
-# ===== เขียน nginx config =====
+# ===== Write Nginx Config =====
 write_nginx() {
   mkdir -p "$WWW_DIR"
   mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
@@ -119,6 +118,7 @@ EOF
   echo -e "${GREEN}[OK]${NC} Nginx ready at :82 (/server/)"
 }
 
+# ===== Download Function =====
 download_or_die() {
   local url="$1" dst="$2"
   if ! curl -fsSL "$url" -o "$dst"; then
@@ -127,7 +127,7 @@ download_or_die() {
   fi
 }
 
-# ==================== INSTALL ====================
+# ===== Install Script =====
 install_script() {
   echo -e "${CYAN}[INFO]${NC} Installing ShowOn (${VERSION})..."
   echo -e "${CYAN}[INFO]${NC} Updating system packages..."
@@ -136,7 +136,7 @@ install_script() {
   echo -e "${CYAN}[INFO]${NC} Installing dependencies..."
   apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates >/dev/null 2>&1 || true
 
-  # ==== ตรวจสอบเวอร์ชัน Ubuntu ====
+  # Ubuntu 18.04 → install vnstat from PPA
   UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null || echo "0")
   if [[ "$UBUNTU_VERSION" == "18.04" ]]; then
     echo -e "${YELLOW}[WARN]${NC} Ubuntu 18.04 detected, installing vnstat from PPA..."
@@ -153,56 +153,41 @@ install_script() {
 
   mkdir -p "$WWW_DIR" "$BIN_DIR" "$(dirname "$DEBUG_LOG")"
 
-  # ==== ตรวจสอบว่าเป็น 3x-ui หรือ Xray-Core ====
-  IS_XUI=false
-  if [[ -d "/etc/x-ui" || -f "/usr/bin/x-ui" || $(pgrep -x x-ui 2>/dev/null) ]]; then
-    IS_XUI=true
-  fi
+  # ==== ถามค่าตั้งต้น 3x-ui ====
+  echo -e "${CYAN}[INFO]${NC} ตั้งค่า 3x-ui (ถ้าไม่มีให้กด Enter ข้ามได้)"
+  echo "  👉 กรุณา 'วางลิงก์หน้าล็อกอินทั้งเส้น' เช่น:"
+  echo "     https://IP:PORT/RandomPath"
+  read -rp "3X-UI URL (copy login link): " PANEL_URL
+  PANEL_URL="$(echo "$PANEL_URL" | sed 's:/*$::')"
 
-  PANEL_URL=""
-  XUI_USER=""
-  XUI_PASS=""
-  LIMIT=2000
+  read -rp "3X-UI Username: " XUI_USER
+  read -rp "3X-UI Password: " XUI_PASS
+  read -rp "Limit User Online (Default: 2000): " LIMIT
+  LIMIT=${LIMIT:-2000}
 
-  if $IS_XUI; then
-    echo -e "${CYAN}[INFO]${NC} ตรวจพบการติดตั้ง 3x-ui → ต้องการข้อมูลเข้าสู่ระบบ"
-    echo "  👉 กรุณา 'วางลิงก์หน้าล็อกอินทั้งเส้น' เช่น:"
-    echo "     https://IP:PORT/RandomPath"
-    read -rp "3X-UI URL (copy login link): " PANEL_URL
-    PANEL_URL="$(echo "$PANEL_URL" | sed 's:/*$::')"
-
-    read -rp "3X-UI Username: " XUI_USER
-    read -rp "3X-UI Password: " XUI_PASS
-    read -rp "Limit User Online (Default: 2000): " LIMIT
-    LIMIT=${LIMIT:-2000}
-
-    # ==== ตรวจสอบล็อกอิน ====
-    if [[ -n "$PANEL_URL" ]]; then
-      COOKIE_FILE=$(mktemp)
-      LOGIN_OK=false
-
+  # ==== ตรวจสอบล็อกอิน (ถ้าใส่ URL) ====
+  if [[ -n "$PANEL_URL" ]]; then
+    COOKIE_FILE=$(mktemp)
+    LOGIN_OK=false
+    if curl -sk -c "$COOKIE_FILE" -X POST "$PANEL_URL/login" \
+         -H "Content-Type: application/x-www-form-urlencoded" \
+         --data "username=$XUI_USER&password=$XUI_PASS" | grep -q '"success":true'; then
+      LOGIN_OK=true
+    else
       if curl -sk -c "$COOKIE_FILE" -X POST "$PANEL_URL/login" \
-           -H "Content-Type: application/x-www-form-urlencoded" \
-           --data "username=$XUI_USER&password=$XUI_PASS" | grep -q '"success":true'; then
+           -H "Content-Type: application/json" \
+           -d "{\"username\":\"$XUI_USER\",\"password\":\"$XUI_PASS\"}" | grep -q '"success":true'; then
         LOGIN_OK=true
-      else
-        if curl -sk -c "$COOKIE_FILE" -X POST "$PANEL_URL/login" \
-             -H "Content-Type: application/json" \
-             -d "{\"username\":\"$XUI_USER\",\"password\":\"$XUI_PASS\"}" | grep -q '"success":true'; then
-          LOGIN_OK=true
-        fi
       fi
-
-      if $LOGIN_OK; then
-        echo -e "${GREEN}[OK]${NC} Login to 3x-ui OK"
-      else
-        echo -e "${YELLOW}[WARN]${NC} Login to 3x-ui failed → continue without 3x-ui"
-        PANEL_URL=""
-      fi
-      rm -f "$COOKIE_FILE"
     fi
-  else
-    echo -e "${CYAN}[INFO]${NC} ตรวจพบ Xray-Core (ไม่มี 3x-ui) → ข้ามการตั้งค่า Panel"
+
+    if $LOGIN_OK; then
+      echo -e "${GREEN}[OK]${NC} Login to 3x-ui OK"
+    else
+      echo -e "${YELLOW}[WARN]${NC} Login to 3x-ui failed → continue without 3x-ui"
+      PANEL_URL=""
+    fi
+    rm -f "$COOKIE_FILE"
   fi
 
   # ==== เขียน config ====
@@ -311,7 +296,7 @@ EOF
   press
 }
 
-# ==================== UNINSTALL ====================
+# ===== Uninstall Script =====
 uninstall_script() {
   echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script..."
 
@@ -335,7 +320,7 @@ uninstall_script() {
   press
 }
 
-# ==================== UPDATE ====================
+# ===== Update Script =====
 update_script() {
   echo -e "${CYAN}[INFO]${NC} Updating all ShowOn components..."
 
@@ -361,7 +346,7 @@ update_script() {
   press
 }
 
-# ==================== DEBUG ====================
+# ===== Debug Log =====
 check_debug() {
   if [[ -f "$DEBUG_LOG" ]]; then
     tail -n 100 "$DEBUG_LOG"
@@ -371,7 +356,27 @@ check_debug() {
   press
 }
 
-# ==================== MENU ====================
+# ===== Change Limit =====
+change_limit() {
+  if [[ ! -f "$CONF_FILE" ]]; then
+    echo -e "${RED}[ERROR]${NC} Config file not found!"
+    press; return
+  fi
+
+  source "$CONF_FILE"
+  echo -e "${CYAN}[INFO]${NC} Current Limit User Online: ${LIMIT:-2000}"
+  read -rp "Enter new Limit User Online: " NEW_LIMIT
+  if [[ -z "$NEW_LIMIT" ]]; then
+    echo -e "${YELLOW}[WARN]${NC} ไม่ได้เปลี่ยนค่า"
+    press; return
+  fi
+
+  sed -i "s/^LIMIT=.*/LIMIT=${NEW_LIMIT}/" "$CONF_FILE"
+  echo -e "${GREEN}[OK]${NC} คุณได้เปลี่ยน Limit User Online แล้วเป็น ${NEW_LIMIT} คน"
+  press
+}
+
+# ===== Menu =====
 show_menu() {
   header
   check_update
@@ -379,20 +384,21 @@ show_menu() {
   echo "2) Uninstall Script"
   echo "3) Update Script"
   echo "4) Check Debug Log"
+  echo "5) Change Limit User Online"
   echo "0) Exit"
   echo "==============================="
-  read -rp "Choose an option [0,1,2,3,4]: " choice
+  read -rp "Choose an option [0-5]: " choice
   case "$choice" in
     1) install_script ;;
     2) uninstall_script ;;
     3) update_script ;;
     4) check_debug ;;
+    5) change_limit ;;
     0) exit 0 ;;
     *) echo -e "${RED}[ERROR]${NC} Invalid choice"; sleep 1 ;;
   esac
   show_menu
 }
 
-# ==================== MAIN ====================
 require_root
 show_menu
