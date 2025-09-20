@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.5 (Split-Files Edition)
+# ShowOn Script Manager V.1.0.5 (Split-Files Edition + Xray-Core Detect)
 # Author: TspKchn
 # =====================================================
 
@@ -38,6 +38,7 @@ SITE_EN="/etc/nginx/sites-enabled/showon"
 # ===== Colors =====
 GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; NC="\e[0m"
 
+# ==================== ฟังก์ชันหลัก ====================
 require_root() {
   if [[ $EUID -ne 0 ]]; then
     echo -e "${RED}[ERROR]${NC} Please run as root."
@@ -84,6 +85,7 @@ check_update() {
   fi
 }
 
+# ===== เขียน nginx config =====
 write_nginx() {
   mkdir -p "$WWW_DIR"
   mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
@@ -125,6 +127,7 @@ download_or_die() {
   fi
 }
 
+# ==================== INSTALL ====================
 install_script() {
   echo -e "${CYAN}[INFO]${NC} Installing ShowOn (${VERSION})..."
   echo -e "${CYAN}[INFO]${NC} Updating system packages..."
@@ -150,42 +153,56 @@ install_script() {
 
   mkdir -p "$WWW_DIR" "$BIN_DIR" "$(dirname "$DEBUG_LOG")"
 
-  # ==== ถามค่าตั้งต้น 3x-ui ====
-  echo -e "${CYAN}[INFO]${NC} ตั้งค่า 3x-ui (ถ้าไม่มีให้กด Enter ข้ามได้)"
-  echo "  👉 กรุณา 'วางลิงก์หน้าล็อกอินทั้งเส้น' เช่น:"
-  echo "     https://IP:PORT/RandomPath"
-  read -rp "3X-UI URL (copy login link): " PANEL_URL
-  PANEL_URL="$(echo "$PANEL_URL" | sed 's:/*$::')"
+  # ==== ตรวจสอบว่าเป็น 3x-ui หรือ Xray-Core ====
+  IS_XUI=false
+  if [[ -d "/etc/x-ui" || -f "/usr/bin/x-ui" || $(pgrep -x x-ui 2>/dev/null) ]]; then
+    IS_XUI=true
+  fi
 
-  read -rp "3X-UI Username: " XUI_USER
-  read -rp "3X-UI Password: " XUI_PASS
-  read -rp "Limit User Online (Default: 2000): " LIMIT
-  LIMIT=${LIMIT:-2000}
+  PANEL_URL=""
+  XUI_USER=""
+  XUI_PASS=""
+  LIMIT=2000
 
-  # ==== ตรวจสอบล็อกอิน (ถ้าใส่ URL) ====
-  if [[ -n "$PANEL_URL" ]]; then
-    COOKIE_FILE=$(mktemp)
-    LOGIN_OK=false
+  if $IS_XUI; then
+    echo -e "${CYAN}[INFO]${NC} ตรวจพบการติดตั้ง 3x-ui → ต้องการข้อมูลเข้าสู่ระบบ"
+    echo "  👉 กรุณา 'วางลิงก์หน้าล็อกอินทั้งเส้น' เช่น:"
+    echo "     https://IP:PORT/RandomPath"
+    read -rp "3X-UI URL (copy login link): " PANEL_URL
+    PANEL_URL="$(echo "$PANEL_URL" | sed 's:/*$::')"
 
-    if curl -sk -c "$COOKIE_FILE" -X POST "$PANEL_URL/login" \
-         -H "Content-Type: application/x-www-form-urlencoded" \
-         --data "username=$XUI_USER&password=$XUI_PASS" | grep -q '"success":true'; then
-      LOGIN_OK=true
-    else
+    read -rp "3X-UI Username: " XUI_USER
+    read -rp "3X-UI Password: " XUI_PASS
+    read -rp "Limit User Online (Default: 2000): " LIMIT
+    LIMIT=${LIMIT:-2000}
+
+    # ==== ตรวจสอบล็อกอิน ====
+    if [[ -n "$PANEL_URL" ]]; then
+      COOKIE_FILE=$(mktemp)
+      LOGIN_OK=false
+
       if curl -sk -c "$COOKIE_FILE" -X POST "$PANEL_URL/login" \
-           -H "Content-Type: application/json" \
-           -d "{\"username\":\"$XUI_USER\",\"password\":\"$XUI_PASS\"}" | grep -q '"success":true'; then
+           -H "Content-Type: application/x-www-form-urlencoded" \
+           --data "username=$XUI_USER&password=$XUI_PASS" | grep -q '"success":true'; then
         LOGIN_OK=true
+      else
+        if curl -sk -c "$COOKIE_FILE" -X POST "$PANEL_URL/login" \
+             -H "Content-Type: application/json" \
+             -d "{\"username\":\"$XUI_USER\",\"password\":\"$XUI_PASS\"}" | grep -q '"success":true'; then
+          LOGIN_OK=true
+        fi
       fi
-    fi
 
-    if $LOGIN_OK; then
-      echo -e "${GREEN}[OK]${NC} Login to 3x-ui OK"
-    else
-      echo -e "${YELLOW}[WARN]${NC} Login to 3x-ui failed → continue without 3x-ui"
-      PANEL_URL=""
+      if $LOGIN_OK; then
+        echo -e "${GREEN}[OK]${NC} Login to 3x-ui OK"
+      else
+        echo -e "${YELLOW}[WARN]${NC} Login to 3x-ui failed → continue without 3x-ui"
+        PANEL_URL=""
+      fi
+      rm -f "$COOKIE_FILE"
     fi
-    rm -f "$COOKIE_FILE"
+  else
+    echo -e "${CYAN}[INFO]${NC} ตรวจพบ Xray-Core (ไม่มี 3x-ui) → ข้ามการตั้งค่า Panel"
   fi
 
   # ==== เขียน config ====
@@ -294,6 +311,7 @@ EOF
   press
 }
 
+# ==================== UNINSTALL ====================
 uninstall_script() {
   echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script..."
 
@@ -317,6 +335,7 @@ uninstall_script() {
   press
 }
 
+# ==================== UPDATE ====================
 update_script() {
   echo -e "${CYAN}[INFO]${NC} Updating all ShowOn components..."
 
@@ -342,6 +361,7 @@ update_script() {
   press
 }
 
+# ==================== DEBUG ====================
 check_debug() {
   if [[ -f "$DEBUG_LOG" ]]; then
     tail -n 100 "$DEBUG_LOG"
@@ -351,6 +371,7 @@ check_debug() {
   press
 }
 
+# ==================== MENU ====================
 show_menu() {
   header
   check_update
@@ -372,5 +393,6 @@ show_menu() {
   show_menu
 }
 
+# ==================== MAIN ====================
 require_root
 show_menu
