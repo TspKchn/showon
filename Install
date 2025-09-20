@@ -61,6 +61,15 @@ get_nic() {
     | head -n1
 }
 
+# ===== Log Rotate (1MB) =====
+rotate_log() {
+  local max=1000000
+  if [[ -f "$DEBUG_LOG" && $(stat -c%s "$DEBUG_LOG") -gt $max ]]; then
+    mv "$DEBUG_LOG" "$DEBUG_LOG.1"
+    : > "$DEBUG_LOG"
+  fi
+}
+
 # ===== Check Update =====
 check_update() {
   local remote install_raw
@@ -152,6 +161,7 @@ install_script() {
   systemctl start vnstat >/dev/null 2>&1 || true
 
   mkdir -p "$WWW_DIR" "$BIN_DIR" "$(dirname "$DEBUG_LOG")"
+  rotate_log
 
 # ==== ตรวจสอบว่าใช้ 3x-ui หรือ Xray-Core ====
 if [[ -d /etc/x-ui ]]; then
@@ -332,6 +342,7 @@ uninstall_script() {
 # ===== Update Script =====
 update_script() {
   echo -e "${CYAN}[INFO]${NC} Updating all ShowOn components..."
+  rotate_log
 
   download_or_die "$SRC_ONLINE" "$SCRIPT_ONLINE"
   download_or_die "$SRC_VNSTAT" "$SCRIPT_VNSTAT"
@@ -357,6 +368,7 @@ update_script() {
 
 # ===== Debug Log =====
 check_debug() {
+  rotate_log
   if [[ -f "$DEBUG_LOG" ]]; then
     tail -n 100 "$DEBUG_LOG"
   else
