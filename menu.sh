@@ -1,55 +1,85 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager Menu (v1.0.6)
+# ShowOn Script Manager V.1.0.6 - Menu
 # Author: TspKchn + ChatGPT
 # =====================================================
 
+VERSION="V.1.0.6"
+REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main"
+
+# ===== Install Paths =====
+WWW_DIR="/var/www/html/server"
+BIN_DIR="/usr/local/bin"
 CONF_FILE="/etc/showon.conf"
 DEBUG_LOG="/var/log/showon-debug.log"
-VERSION="V.1.0.6"
+
+SCRIPT_ONLINE="$BIN_DIR/online-check.sh"
+SCRIPT_VNSTAT="$BIN_DIR/vnstat-traffic.sh"
+SCRIPT_V2RAY="$BIN_DIR/v2ray-traffic.sh"
+SCRIPT_SYSINFO="$BIN_DIR/sysinfo.sh"
+
+SERVICE_ONLINE="online-check.service"
+SERVICE_VNSTAT="vnstat-traffic.service"
+SERVICE_V2RAY="v2ray-traffic.service"
+SERVICE_SYSINFO="sysinfo.service"
+
+SITE_AV="/etc/nginx/sites-available/showon"
+SITE_EN="/etc/nginx/sites-enabled/showon"
 
 # ===== Colors =====
 GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; NC="\e[0m"
 
-# ===== Function: Service Status =====
-service_status() {
-  local svc="$1"
-  if systemctl is-active --quiet "$svc"; then
-    echo -e "${GREEN}ON${NC}"
-  else
-    echo -e "${RED}OFF${NC}"
+require_root() {
+  if [[ $EUID -ne 0 ]]; then
+    echo -e "${RED}[ERROR]${NC} Please run as root."
+    exit 1
   fi
 }
 
-# ===== Header =====
 header() {
   clear
   echo "==============================="
   echo "   ShowOn Script Manager ${VERSION}"
   echo "==============================="
-
-  echo -e "NginX        : [$(service_status nginx)]"
-  echo -e "Online Check : [$(service_status online-check.service)]"
-  echo -e "vnStat       : [$(service_status vnstat-traffic.service)]"
-  echo -e "V2Ray Traffic: [$(service_status v2ray-traffic.service)]"
-  echo -e "SysInfo      : [$(service_status sysinfo.service)]"
-  echo "-------------------------------"
-
-  if [[ -f "$CONF_FILE" ]]; then
-    echo -e "Status: ${GREEN}Installed${NC}"
-  else
-    echo -e "Status: ${RED}Not Installed${NC}"
-  fi
-  echo "==============================="
 }
 
 press() { read -rp "Press Enter to return to menu..." _; }
 
+# ===== Service Status =====
+service_status() {
+  local svc="$1"
+  if systemctl is-active --quiet "$svc"; then
+    echo -e "[${GREEN}ON${NC}]"
+  else
+    echo -e "[${RED}OFF${NC}]"
+  fi
+}
+
+show_status() {
+  echo -n "NginX        : "
+  if systemctl is-active --quiet nginx; then
+    echo -e "[${GREEN}ON${NC}]"
+  else
+    echo -e "[${RED}OFF${NC}]"
+  fi
+
+  echo -n "Online Check : "; service_status "$SERVICE_ONLINE"
+  echo -n "vnStat       : "; service_status "$SERVICE_VNSTAT"
+  echo -n "V2Ray Traffic: "; service_status "$SERVICE_V2RAY"
+  echo -n "SysInfo      : "; service_status "$SERVICE_SYSINFO"
+  echo "-------------------------------"
+
+  if [[ -f "$CONF_FILE" ]]; then
+    echo "Status: Installed"
+  else
+    echo "Status: Not Installed"
+  fi
+}
+
 # ===== Check Update =====
 check_update() {
   local remote install_raw
-  install_raw="$(curl -fsSL https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install || true)"
-
+  install_raw="$(curl -fsSL "$REPO_RAW/Install" || true)"
   if [[ -z "$install_raw" ]]; then
     echo -e "${YELLOW}[WARN]${NC} ไม่สามารถเช็คเวอร์ชันจาก GitHub ได้"
     return
@@ -60,8 +90,8 @@ check_update() {
     echo -e "${GREEN}[OK]${NC} You are using the latest version."
   else
     echo -e "${CYAN}[UPDATE]${NC} มีเวอร์ชันใหม่: $remote (ปัจจุบัน: $VERSION)"
-    read -rp "กด Enter เพื่ออัพเดทเป็นเวอร์ชัน $remote หรือ Ctrl+C เพื่อยกเลิก..."
-    bash -c "$(curl -fsSL https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install)"
+    read -rp "กด Enter เพื่ออัพเดททันที หรือ Ctrl+C เพื่อยกเลิก..."
+    bash -c "$(curl -fsSL $REPO_RAW/Install)"
     exit 0
   fi
 }
@@ -98,37 +128,24 @@ change_limit() {
 
 # ===== Setup Swap =====
 setup_swap() {
-  RAM_MB=$(free -m | awk '/^Mem:/ {print $2}')
-  if (( RAM_MB <= 512 )); then
-    SWAP_MB=1024
-  elif (( RAM_MB <= 2048 )); then
-    SWAP_MB=2048
-  elif (( RAM_MB <= 4096 )); then
-    SWAP_MB=4096
-  elif (( RAM_MB <= 8192 )); then
-    SWAP_MB=8192
-  else
-    SWAP_MB=16384
-  fi
+  MEM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
+  SWAP_SIZE=$(( MEM_TOTAL * 2 ))
 
-  echo -e "${CYAN}[INFO]${NC} RAM Detected: ${RAM_MB} MB → Swap ${SWAP_MB} MB"
-
-  fallocate -l ${SWAP_MB}M /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=$SWAP_MB
+  echo -e "${CYAN}[INFO]${NC} RAM = ${MEM_TOTAL}MB → สร้าง Swap ${SWAP_SIZE}MB"
+  fallocate -l ${SWAP_SIZE}M /swapfile
   chmod 600 /swapfile
   mkswap /swapfile
   swapon /swapfile
-
-  if ! grep -q "/swapfile" /etc/fstab; then
-    echo "/swapfile none swap sw 0 0" >> /etc/fstab
-  fi
-
-  echo -e "${GREEN}[OK]${NC} Swap ${SWAP_MB} MB created and enabled."
+  echo '/swapfile none swap sw 0 0' | tee -a /etc/fstab >/dev/null
+  echo -e "${GREEN}[OK]${NC} Swap พร้อมใช้งานแล้ว"
   press
 }
 
 # ===== Menu =====
 show_menu() {
   header
+  show_status
+  echo "==============================="
   check_update
   echo "1) Install Script"
   echo "2) Uninstall Script"
@@ -140,9 +157,9 @@ show_menu() {
   echo "==============================="
   read -rp "Choose an option [0-6]: " choice
   case "$choice" in
-    1) bash -c "$(curl -fsSL https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install)" ;;
-    2) /usr/local/bin/uninstall.sh ;;
-    3) bash -c "$(curl -fsSL https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install)" ;;
+    1) bash -c "$(curl -fsSL $REPO_RAW/Install)" ;;
+    2) bash -c "$(curl -fsSL $REPO_RAW/uninstall.sh)" ;;
+    3) bash -c "$(curl -fsSL $REPO_RAW/Install)" ;;
     4) check_debug ;;
     5) change_limit ;;
     6) setup_swap ;;
@@ -152,4 +169,5 @@ show_menu() {
   show_menu
 }
 
+require_root
 show_menu
