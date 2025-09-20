@@ -90,29 +90,26 @@ if [[ -n "${PANEL_URL:-}" ]]; then
 
 else
   # ===== MODE: Xray-Core =====
-  if [[ -f /usr/local/etc/xray/config.json ]]; then
+  if [[ -f /usr/local/etc/xray/config.json || -f /etc/xray/config.json ]]; then
+    
     # ---- YoLoNET style ----
-    if [[ -d /var/log/xray ]]; then
-      RAW_CONN=$(ss -ntp state established 2>/dev/null | grep 'xray' || true)
-      V2_ON=$(echo "$RAW_CONN" | awk '{print $5}' | cut -d: -f1 | sort -u | wc -l)
+    if [[ -f /var/log/xray/vless_ntls.log ]]; then
+      V2_ON=$(grep 'accepted' /var/log/xray/vless_ntls.log | grep 'email:' \
+                | awk '{print $3}' | cut -d: -f1 | sort -u | wc -l)
 
       {
         echo "[$(date '+%F %T')] XRAY-CORE (YoLoNET) snapshot"
-        echo "$RAW_CONN"
         echo "→ Counted unique IPs: $V2_ON"
         echo
       } >> "$DEBUG_LOG"
-    fi
 
-  elif [[ -f /etc/xray/config.json ]]; then
     # ---- Givpn style ----
-    if [[ -f /var/log/xray/access.log ]]; then
-      RAW_CONN=$(awk '{print $1}' /var/log/xray/access.log | sort -u)
-      V2_ON=$(echo "$RAW_CONN" | wc -l)
+    elif [[ -f /var/log/xray/access.log ]]; then
+      V2_ON=$(grep 'accepted' /var/log/xray/access.log | grep 'email:' \
+                | awk '{print $3}' | cut -d: -f1 | sort -u | wc -l)
 
       {
         echo "[$(date '+%F %T')] XRAY-CORE (Givpn) snapshot"
-        echo "$RAW_CONN"
         echo "→ Counted unique IPs: $V2_ON"
         echo
       } >> "$DEBUG_LOG"
