@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.6 (Extended Edition)
+# ShowOn Script Installer V.1.0.6
 # Author: TspKchn + ChatGPT
 # =====================================================
 
@@ -9,27 +9,23 @@ VERSION="V.1.0.6"
 # ===== GitHub Repo Path =====
 REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main"
 
-# ===== Sources =====
-SRC_ONLINE="$REPO_RAW/scripts/online-check.sh"
-SRC_VNSTAT="$REPO_RAW/scripts/vnstat-traffic.sh"
-SRC_V2RAY="$REPO_RAW/scripts/v2ray-traffic.sh"
-SRC_SYSINFO="$REPO_RAW/scripts/sysinfo.sh"
-SRC_INDEX="$REPO_RAW/web/index.html"
-SRC_MENU="$REPO_RAW/menu.sh"
-SRC_UNINSTALL="$REPO_RAW/uninstall.sh"
-
-# ===== Install Paths =====
-WWW_DIR="/var/www/html/server"
+# ===== Paths =====
 BIN_DIR="/usr/local/bin"
 CONF_FILE="/etc/showon.conf"
 DEBUG_LOG="/var/log/showon-debug.log"
+WWW_DIR="/var/www/html/server"
 
 SCRIPT_ONLINE="$BIN_DIR/online-check.sh"
 SCRIPT_VNSTAT="$BIN_DIR/vnstat-traffic.sh"
 SCRIPT_V2RAY="$BIN_DIR/v2ray-traffic.sh"
 SCRIPT_SYSINFO="$BIN_DIR/sysinfo.sh"
-SCRIPT_MENU="$BIN_DIR/menu.sh"
-SCRIPT_UNINSTALL="$BIN_DIR/uninstall.sh"
+MENU_SCRIPT="$BIN_DIR/menu.sh"
+UNINSTALL_SCRIPT="$BIN_DIR/uninstall.sh"
+
+SERVICE_ONLINE="/etc/systemd/system/online-check.service"
+SERVICE_VNSTAT="/etc/systemd/system/vnstat-traffic.service"
+SERVICE_V2RAY="/etc/systemd/system/v2ray-traffic.service"
+SERVICE_SYSINFO="/etc/systemd/system/sysinfo.service"
 
 SITE_AV="/etc/nginx/sites-available/showon"
 SITE_EN="/etc/nginx/sites-enabled/showon"
@@ -44,53 +40,67 @@ require_root() {
   fi
 }
 
-# ===== Download Function =====
+header() {
+  clear
+  echo "==============================="
+  echo "   ShowOn Script Installer ${VERSION}"
+  echo "==============================="
+}
+
 download_or_die() {
   local url="$1" dst="$2"
   if ! curl -fsSL "$url" -o "$dst"; then
     echo -e "${RED}[ERROR]${NC} Download failed: $url"
     exit 1
   fi
+  chmod +x "$dst"
 }
 
-# ===== Main Install =====
-main_install() {
-  echo -e "${CYAN}[INFO]${NC} Installing ShowOn (${VERSION}) base files..."
-
+install_script() {
+  echo -e "${CYAN}[INFO]${NC} Installing ShowOn (${VERSION})..."
   apt update -y >/dev/null 2>&1 || true
   apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates >/dev/null 2>&1 || true
 
-  mkdir -p "$WWW_DIR" "$BIN_DIR" "$(dirname "$DEBUG_LOG")"
+  mkdir -p "$BIN_DIR" "$WWW_DIR" "$(dirname "$DEBUG_LOG")"
 
-  # ==== ดาวน์โหลดสคริปต์หลัก ====
-  download_or_die "$SRC_ONLINE" "$SCRIPT_ONLINE"
-  download_or_die "$SRC_VNSTAT" "$SCRIPT_VNSTAT"
-  download_or_die "$SRC_V2RAY" "$SCRIPT_V2RAY"
-  download_or_die "$SRC_SYSINFO" "$SCRIPT_SYSINFO"
-  download_or_die "$SRC_MENU" "$SCRIPT_MENU"
-  download_or_die "$SRC_UNINSTALL" "$SCRIPT_UNINSTALL"
+  # ==== ดาวน์โหลดสคริปต์ทั้งหมด ====
+  download_or_die "$REPO_RAW/scripts/online-check.sh" "$SCRIPT_ONLINE"
+  download_or_die "$REPO_RAW/scripts/vnstat-traffic.sh" "$SCRIPT_VNSTAT"
+  download_or_die "$REPO_RAW/scripts/v2ray-traffic.sh" "$SCRIPT_V2RAY"
+  download_or_die "$REPO_RAW/scripts/sysinfo.sh" "$SCRIPT_SYSINFO"
 
-  chmod +x "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO" "$SCRIPT_MENU" "$SCRIPT_UNINSTALL"
+  # ==== ดาวน์โหลด menu.sh และ uninstall.sh ====
+  download_or_die "$REPO_RAW/menu.sh" "$MENU_SCRIPT"
+  download_or_die "$REPO_RAW/uninstall.sh" "$UNINSTALL_SCRIPT"
 
-  # ==== หน้าเว็บ ====
-  download_or_die "$SRC_INDEX" "$WWW_DIR/index.html"
+  # ==== สร้าง index.html ====
+  download_or_die "$REPO_RAW/web/index.html" "$WWW_DIR/index.html"
   chmod 644 "$WWW_DIR/index.html"
 
-  # ==== Alias showon ====
-  ln -sf "$SCRIPT_MENU" /usr/local/bin/showon
+  # ==== nginx site ====
+  cat >"$SITE_AV" <<EOF
+server {
+    listen 82 default_server;
+    server_name _;
 
-  echo -e "${GREEN}[OK]${NC} Base Install Completed."
-  echo -e "${CYAN}[INFO]${NC} Run: showon"
+    location = / {
+        return 302 /server/;
+    }
+    location /server/ {
+        alias $WWW_DIR/;
+        index index.html;
+        autoindex off;
+        add_header Cache-Control "no-store";
+    }
 }
+EOF
+  ln -sf "$SITE_AV" "$SITE_EN"
+  systemctl restart nginx 2>/dev/null || true
 
-# ===== Run Menu Immediately =====
-finish_and_launch() {
-  echo
-  echo -e "${GREEN}[OK]${NC} Installation Finished. Launching menu..."
-  sleep 2
-  /usr/local/bin/menu.sh
+  echo -e "${GREEN}[OK]${NC} Installed ShowOn ${VERSION}"
+  echo -e "${CYAN}[INFO]${NC} Run with: menu.sh"
 }
 
 require_root
-main_install
-finish_and_launch
+header
+install_script
