@@ -1,14 +1,14 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager - Uninstaller
+# ShowOn Script Manager V.1.0.6 - Uninstaller
 # Author: TspKchn + ChatGPT
 # =====================================================
 
 set -euo pipefail
 
-# ===== Path Definitions =====
-BIN_DIR="/usr/local/bin"
+# ===== Install Paths =====
 WWW_DIR="/var/www/html/server"
+BIN_DIR="/usr/local/bin"
 CONF_FILE="/etc/showon.conf"
 DEBUG_LOG="/var/log/showon-debug.log"
 
@@ -25,34 +25,51 @@ SERVICE_SYSINFO="/etc/systemd/system/sysinfo.service"
 SITE_AV="/etc/nginx/sites-available/showon"
 SITE_EN="/etc/nginx/sites-enabled/showon"
 
-# ===== Colors =====
-GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; NC="\e[0m"
+GREEN="\e[32m"; CYAN="\e[36m"; RED="\e[31m"; NC="\e[0m"
 
-echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script..."
+header() {
+  clear
+  echo "==============================="
+  echo "   ShowOn Script Uninstaller"
+  echo "==============================="
+}
 
-# ---- Stop and disable services ----
-systemctl stop online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
-systemctl disable online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
+press() { read -rp "Press Enter to return..." _; }
 
-# ---- Remove services ----
-rm -f "$SERVICE_ONLINE" "$SERVICE_VNSTAT" "$SERVICE_V2RAY" "$SERVICE_SYSINFO"
-systemctl daemon-reload
+require_root() {
+  if [[ $EUID -ne 0 ]]; then
+    echo -e "${RED}[ERROR]${NC} Please run as root."
+    exit 1
+  fi
+}
 
-# ---- Remove scripts ----
-rm -f "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
+uninstall_script() {
+  echo -e "${CYAN}[INFO]${NC} Stopping and disabling services..."
+  systemctl stop online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
+  systemctl disable online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
 
-# ---- Remove config and logs ----
-rm -f "$CONF_FILE" "$DEBUG_LOG" "$DEBUG_LOG.1"
+  echo -e "${CYAN}[INFO]${NC} Removing systemd service files..."
+  rm -f "$SERVICE_ONLINE" "$SERVICE_VNSTAT" "$SERVICE_V2RAY" "$SERVICE_SYSINFO"
+  systemctl daemon-reload
 
-# ---- Remove nginx site config ----
-rm -f "$SITE_AV" "$SITE_EN"
-if nginx -t 2>/dev/null; then
-  systemctl reload nginx 2>/dev/null || true
-else
-  systemctl restart nginx 2>/dev/null || true
-fi
+  echo -e "${CYAN}[INFO]${NC} Removing scripts..."
+  rm -f "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
 
-# ---- Remove web files ----
-rm -rf "$WWW_DIR"
+  echo -e "${CYAN}[INFO]${NC} Removing config and logs..."
+  rm -f "$CONF_FILE" "$DEBUG_LOG" "$DEBUG_LOG.1"
 
-echo -e "${GREEN}[SUCCESS]${NC} ShowOn Uninstalled completely."
+  echo -e "${CYAN}[INFO]${NC} Removing Nginx site configs..."
+  rm -f "$SITE_AV" "$SITE_EN"
+  if nginx -t 2>/dev/null; then
+    systemctl reload nginx 2>/dev/null || true
+  else
+    systemctl restart nginx 2>/dev/null || true
+  fi
+
+  echo -e "${GREEN}[SUCCESS]${NC} Uninstalled completely."
+  press
+}
+
+require_root
+header
+uninstall_script
