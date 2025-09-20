@@ -241,7 +241,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/bin/bash -lc 'while true; do /usr/local/bin/online-check.sh; sleep 5; done'
+ExecStart=/bin/bash -c 'while true; do /usr/local/bin/online-check.sh; sleep 5; done'
 Restart=always
 RestartSec=2
 
@@ -257,7 +257,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/bin/bash -lc 'while true; do /usr/local/bin/vnstat-traffic.sh; sleep 5; done'
+ExecStart=/bin/bash -c 'while true; do /usr/local/bin/vnstat-traffic.sh; sleep 5; done'
 Restart=always
 RestartSec=2
 
@@ -273,7 +273,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/bin/bash -lc 'while true; do /usr/local/bin/v2ray-traffic.sh; sleep 5; done'
+ExecStart=/bin/bash -c 'while true; do /usr/local/bin/v2ray-traffic.sh; sleep 5; done'
 Restart=always
 RestartSec=2
 
@@ -289,7 +289,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/bin/bash -lc 'while true; do /usr/local/bin/sysinfo.sh; sleep 5; done'
+ExecStart=/bin/bash -c 'while true; do /usr/local/bin/sysinfo.sh; sleep 5; done'
 Restart=always
 RestartSec=2
 
