@@ -99,11 +99,13 @@ if [[ -f /etc/hysteria/config.json ]]; then
       AGNUDP_ON=$(conntrack -L -p udp 2>/dev/null \
         | grep "dport=$AGNUDP_PORT" \
         | grep 'src=' \
+        | grep 'ASSURED' \
         | awk '{for(i=1;i<=NF;i++) if($i ~ /^src=/) print $i}' \
         | cut -d= -f2- \
         | grep -v "^$SERVER_IP" \
         | sort -u \
-        | wc -l)
+        | wc -l \
+        || echo 0)
     else
       AGNUDP_ON=0
     fi
