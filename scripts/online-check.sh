@@ -87,27 +87,31 @@ else
   fi
 fi
 
-# ==== AGN-UDP (Hysteria) ====
+# ==== AGN-UDP ====
 if [[ -f /etc/hysteria/config.json ]]; then
   AGNUDP_PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
     | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//')
 
+  SERVER_IP=$(hostname -I | awk '{print $1}')
+
   if [[ -n "$AGNUDP_PORT" && "$AGNUDP_PORT" =~ ^[0-9]+$ ]]; then
     if command -v conntrack >/dev/null 2>&1; then
-      # ปรับ timeout ลงเหลือ 5s เพื่อให้ค่า agnudp ลดเร็ว
-      sysctl -w net.netfilter.nf_conntrack_udp_timeout=5 >/dev/null 2>&1 || true
-      sysctl -w net.netfilter.nf_conntrack_udp_timeout_stream=5 >/dev/null 2>&1 || true
-
       AGNUDP_ON=$(conntrack -L -p udp 2>/dev/null \
         | grep "dport=$AGNUDP_PORT" \
         | grep 'src=' \
         | awk '{for(i=1;i<=NF;i++) if($i ~ /^src=/) print $i}' \
-        | cut -d= -f2 \
+        | cut -d= -f2- \
         | grep -v "^$SERVER_IP" \
         | sort -u \
-        | grep -c . || echo 0)
+        | wc -l)
+    else
+      AGNUDP_ON=0
     fi
+  else
+    AGNUDP_ON=0
   fi
+else
+  AGNUDP_ON=0
 fi
 
 TOTAL=$((SSH_ON + OVPN_ON + DB_ON + V2_ON + AGNUDP_ON))
