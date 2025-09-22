@@ -202,8 +202,6 @@ install_script() {
 
   mkdir -p "$WWW_DIR" "$BIN_DIR" "$(dirname "$DEBUG_LOG")"
   rotate_log
-  ...
-}
 
   # ======================= ตรวจ AGN-UDP (Hysteria) =======================
   local AGN_PRESENT="0" AGN_PORT=""
