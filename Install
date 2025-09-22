@@ -279,6 +279,7 @@ EOF
 
   # Nginx
   write_nginx
+  systemctl enable --now nginx >/dev/null 2>&1 || true
   # systemd services (ทุก 5 วิ)
   cat >"$SERVICE_ONLINE" <<'EOF'
 [Unit]
@@ -373,11 +374,12 @@ uninstall_script() {
 
   # ลบ nginx site
   rm -f "$SITE_AV" "$SITE_EN"
-  if nginx -t 2>/dev/null; then
+  if systemctl is-active --quiet nginx; then
     systemctl reload nginx 2>/dev/null || true
-  else
-    systemctl restart nginx 2>/dev/null || true
   fi
+
+  # ถ้าอยากถอน nginx ออกด้วย
+  apt purge -y nginx >/dev/null 2>&1 || true
 
   # ลบ conntrack ออกจากระบบ
   apt purge -y conntrack >/dev/null 2>&1 || true
