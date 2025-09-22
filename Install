@@ -182,12 +182,19 @@ print_status() {
 
 install_script() {
   echo -e "${CYAN}[INFO]${NC} Installing ShowOn (${VERSION})..."
+  
+  # 1) Update system
   echo -e "${CYAN}[INFO]${NC} Updating system packages..."
   apt update -y >/dev/null 2>&1 || true
 
+  # 2) Install Nginx first
+  echo -e "${CYAN}[INFO]${NC} Installing and enabling Nginx..."
+  apt install -y nginx >/dev/null 2>&1 || true
+  systemctl enable --now nginx >/dev/null 2>&1 || true
+
+  # 3) Install other dependencies
   echo -e "${CYAN}[INFO]${NC} Installing dependencies..."
-  # เพิ่ม conntrack ให้รองรับ AGN-UDP
-  apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates vnstat conntrack >/dev/null 2>&1 || true
+  apt install -y curl jq net-tools psmisc iproute2 ca-certificates vnstat conntrack >/dev/null 2>&1 || true
 
   systemctl enable vnstat >/dev/null 2>&1 || true
   systemctl start vnstat  >/dev/null 2>&1 || true
