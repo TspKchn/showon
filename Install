@@ -174,9 +174,6 @@ print_status() {
     installed="${GREEN}Installed${NC}"
   fi
 
-  echo "==============================="
-  echo "   ShowOn Script Manager ${VERSION}"
-  echo "==============================="
   echo -e "$(printf 'NginX        : [%b%s%b]  Online Check : [%b%s%b]\n' "$c_ng" "$stat_nginx" "$NC" "$c_on" "$stat_online" "$NC")"
   echo -e "$(printf 'vnStat       : [%b%s%b]  V2Ray Traffic: [%b%s%b]\n' "$c_vn" "$stat_vnstat" "$NC" "$c_v2" "$stat_v2" "$NC")"
   echo -e "$(printf 'SysInfo      : [%b%s%b]  Conntrack    : [%b%s%b]\n' "$c_sy" "$stat_sys" "$NC" "$c_ct" "$(conntrack_status)" "$NC")"
