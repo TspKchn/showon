@@ -118,6 +118,28 @@ EOF
   echo -e "${GREEN}[OK]${NC} Nginx ready at :82 (/server/)"
 }
 
+# ======================= ตรวจ AGN-UDP (Hysteria) =======================
+detect_agnudp() {
+  # คืนค่า "present|port" เช่น "1|36712" หรือ "0|"
+  local present=0 port=""
+  if [[ -x /usr/local/bin/hysteria || -x /usr/bin/hysteria || -d /etc/hysteria \
+     || -f /etc/systemd/system/hysteria-server.service || -f /lib/systemd/system/hysteria-server.service ]]; then
+    present=1
+    if [[ -f /etc/hysteria/config.json ]]; then
+      # listen อาจเป็น ":36712" / "0.0.0.0:36712" / "[::]:36712"
+      port="$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
+        | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//')"
+    fi
+    [[ -z "$port" ]] && port="36712"
+  fi
+  echo "${present}|${port}"
+}
+
+# สถานะ conntrack (ไว้โชว์ในเมนู)
+conntrack_status() {
+  if command -v conntrack >/dev/null 2>&1; then echo "ON"; else echo "OFF"; fi
+}
+
 # ตรวจอัปเดตจากรีโมต (อ่าน VERSION จากไฟล์ Install บน GitHub)
 check_update() {
   local remote install_raw
@@ -149,7 +171,6 @@ check_update() {
 
 # แสดงสถานะ Service + สถานะติดตั้ง
 print_status() {
-  # เช็ค nginx
   local stat_nginx="OFF" stat_online="OFF" stat_vnstat="OFF" stat_v2="OFF" stat_sys="OFF"
 
   systemctl is-active --quiet nginx && stat_nginx="ON"
@@ -158,7 +179,6 @@ print_status() {
   [[ -f "$SERVICE_V2RAY" ]] && systemctl is-active --quiet v2ray-traffic && stat_v2="ON"
   [[ -f "$SERVICE_SYSINFO" ]] && systemctl is-active --quiet sysinfo && stat_sys="ON"
 
-  # สี
   local c_ng=$( [[ "$stat_nginx" == "ON" ]] && echo "$GREEN" || echo "$RED" )
   local c_on=$( [[ "$stat_online" == "ON" ]] && echo "$GREEN" || echo "$RED" )
   local c_vn=$( [[ "$stat_vnstat" == "ON" ]] && echo "$GREEN" || echo "$RED" )
@@ -166,15 +186,17 @@ print_status() {
   local c_sy=$( [[ "$stat_sys" == "ON" ]] && echo "$GREEN" || echo "$RED" )
   local c_ct=$( [[ "$(conntrack_status)" == "ON" ]] && echo "$GREEN" || echo "$RED" )
 
-  # สถานะติดตั้ง
   local installed="${RED}Not Installed${NC}"
   if [[ -f "$SCRIPT_ONLINE" || -f "$SCRIPT_VNSTAT" || -f "$SCRIPT_V2RAY" || -f "$SCRIPT_SYSINFO" ]]; then
     installed="${GREEN}Installed${NC}"
   fi
 
+  echo "==============================="
+  echo "   ShowOn Script Manager ${VERSION}"
+  echo "==============================="
   echo -e "$(printf 'NginX        : [%b%s%b]  Online Check : [%b%s%b]\n' "$c_ng" "$stat_nginx" "$NC" "$c_on" "$stat_online" "$NC")"
-  echo -e "$(printf 'vnStat       : [%b%s%b]  V2Ray Traffic : [%b%s%b]\n' "$c_vn" "$stat_vnstat" "$NC" "$c_v2" "$stat_v2" "$NC")"
-  echo -e "$(printf 'SysInfo      : [%b%s%b]  Conntrack     : [%b%s%b]\n' "$c_sy" "$stat_sys" "$NC" "$c_ct" "$(conntrack_status)" "$NC")"
+  echo -e "$(printf 'vnStat       : [%b%s%b]  V2Ray Traffic: [%b%s%b]\n' "$c_vn" "$stat_vnstat" "$NC" "$c_v2" "$stat_v2" "$NC")"
+  echo -e "$(printf 'SysInfo      : [%b%s%b]  Conntrack    : [%b%s%b]\n' "$c_sy" "$stat_sys" "$NC" "$c_ct" "$(conntrack_status)" "$NC")"
   echo "-------------------------------"
   echo -e "Status: $installed"
   echo "==============================="
@@ -190,10 +212,11 @@ install_script() {
   apt update -y >/dev/null 2>&1 || true
 
   echo -e "${CYAN}[INFO]${NC} Installing dependencies..."
+  # เพิ่ม conntrack ให้รองรับ AGN-UDP
   apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates vnstat conntrack >/dev/null 2>&1 || true
 
   systemctl enable vnstat >/dev/null 2>&1 || true
-  systemctl start vnstat >/dev/null 2>&1 || true
+  systemctl start vnstat  >/dev/null 2>&1 || true
 
   mkdir -p "$WWW_DIR" "$BIN_DIR" "$(dirname "$DEBUG_LOG")"
   rotate_log
@@ -216,6 +239,15 @@ install_script() {
     XUI_PASS=""
   fi
 
+  # ตรวจจับ Hysteria/AGN-UDP
+  local AGN_PRESENT="0" AGN_PORT=""
+  IFS='|' read -r AGN_PRESENT AGN_PORT <<<"$(detect_agnudp)"
+  if [[ "$AGN_PRESENT" == "1" ]]; then
+    echo -e "${GREEN}[OK]${NC} พบ AGN-UDP (Hysteria) → listen port: ${B}${AGN_PORT}${NC}"
+  else
+    echo -e "${YELLOW}[WARN]${NC} ไม่พบ AGN-UDP (Hysteria) → จะไม่นับ agnudp"
+  fi
+
   # Limit
   read -rp "Limit User Online (Default: 2000): " LIMIT
   LIMIT=${LIMIT:-2000}
@@ -236,13 +268,17 @@ XUI_USER="$XUI_USER"
 XUI_PASS="$XUI_PASS"
 
 NET_IFACE="$NIC"
+
+# --- AGN-UDP (Hysteria) ---
+AGN_PRESENT=$AGN_PRESENT
+AGN_PORT="$AGN_PORT"
 EOF
   chmod 600 "$CONF_FILE"
 
   # ดาวน์โหลดสคริปต์จาก repo
   download_or_die "$SRC_ONLINE" "$SCRIPT_ONLINE"
   download_or_die "$SRC_VNSTAT" "$SCRIPT_VNSTAT"
-  download_or_die "$SRC_V2RAY" "$SCRIPT_V2RAY"
+  download_or_die "$SRC_V2RAY"  "$SCRIPT_V2RAY"
   download_or_die "$SRC_SYSINFO" "$SCRIPT_SYSINFO"
   chmod +x "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
 
@@ -253,7 +289,7 @@ EOF
   # Nginx
   write_nginx
 
-  # systemd services
+  # systemd services (ทุก 5 วิ)
   cat >"$SERVICE_ONLINE" <<'EOF'
 [Unit]
 Description=ShowOn Online Users JSON Generator
@@ -302,7 +338,6 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF
 
-  # (แก้แล้ว) sysinfo.service — ไม่มีค่าผิดพลาด
   cat >"$SERVICE_SYSINFO" <<'EOF'
 [Unit]
 Description=ShowOn System Info JSON Generator
@@ -365,7 +400,7 @@ update_script() {
 
   download_or_die "$SRC_ONLINE" "$SCRIPT_ONLINE"
   download_or_die "$SRC_VNSTAT" "$SCRIPT_VNSTAT"
-  download_or_die "$SRC_V2RAY" "$SCRIPT_V2RAY"
+  download_or_die "$SRC_V2RAY"  "$SCRIPT_V2RAY"
   download_or_die "$SRC_SYSINFO" "$SCRIPT_SYSINFO"
   chmod +x "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
 
