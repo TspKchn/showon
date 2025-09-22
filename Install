@@ -368,17 +368,21 @@ EOF
 # =====================================================
 
 uninstall_script() {
-  echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script..."
+  echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script (Full Clean)..."
 
+  # หยุดและปิด service ทั้งหมด
   systemctl stop online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
   systemctl disable online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
 
+  # ลบ service file
   rm -f "$SERVICE_ONLINE" "$SERVICE_VNSTAT" "$SERVICE_V2RAY" "$SERVICE_SYSINFO"
   systemctl daemon-reload
 
+  # ลบ script และ config
   rm -f "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
   rm -f "$CONF_FILE" "$DEBUG_LOG"
 
+  # ลบ nginx site
   rm -f "$SITE_AV" "$SITE_EN"
   if nginx -t 2>/dev/null; then
     systemctl reload nginx 2>/dev/null || true
@@ -386,8 +390,11 @@ uninstall_script() {
     systemctl restart nginx 2>/dev/null || true
   fi
 
-  echo -e "${GREEN}[SUCCESS]${NC} Uninstalled completely."
-  press
+  # ลบ conntrack ออกจากระบบ
+  apt purge -y conntrack >/dev/null 2>&1 || true
+  apt autoremove -y >/dev/null 2>&1 || true
+
+  echo -e "${GREEN}[SUCCESS]${NC} Uninstalled completely (ShowOn + conntrack removed)."
 }
 
 # =====================================================
