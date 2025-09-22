@@ -1,22 +1,23 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.5 (Split-Files Edition)
-# Author: TspKchn
+# ShowOn Script Manager V.1.0.6 (Extended Edition)
+# Author : TspKchn + ChatGPT
 # =====================================================
 
-VERSION="V.1.0.5"
+# ----------------- เวอร์ชัน -----------------
+VERSION="V.1.0.6"
 
-# ===== ปรับลิงก์นี้ให้ชี้ไปยัง repo ของคุณ =====
+# ----------------- พาธรีโป ------------------
 REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main"
 
-# โครงสร้างไฟล์บน repo (ต้องมีตามนี้)
+# ----------------- ซอร์สไฟล์ ----------------
 SRC_ONLINE="$REPO_RAW/scripts/online-check.sh"
 SRC_VNSTAT="$REPO_RAW/scripts/vnstat-traffic.sh"
 SRC_V2RAY="$REPO_RAW/scripts/v2ray-traffic.sh"
 SRC_SYSINFO="$REPO_RAW/scripts/sysinfo.sh"
 SRC_INDEX="$REPO_RAW/web/index.html"
 
-# ตำแหน่งติดตั้งปลายทาง
+# ----------------- ตำแหน่งติดตั้ง ----------
 WWW_DIR="/var/www/html/server"
 BIN_DIR="/usr/local/bin"
 CONF_FILE="/etc/showon.conf"
@@ -35,8 +36,12 @@ SERVICE_SYSINFO="/etc/systemd/system/sysinfo.service"
 SITE_AV="/etc/nginx/sites-available/showon"
 SITE_EN="/etc/nginx/sites-enabled/showon"
 
-# ===== Colors =====
-GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; NC="\e[0m"
+# ----------------- สี ------------------------
+GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; B="\e[1m"; NC="\e[0m"
+
+# =====================================================
+# ฟังก์ชันพื้นฐาน
+# =====================================================
 
 require_root() {
   if [[ $EUID -ne 0 ]]; then
@@ -45,6 +50,8 @@ require_root() {
   fi
 }
 
+press() { read -rp "Press Enter to continue..." _; }
+
 header() {
   clear
   echo "==============================="
@@ -52,38 +59,32 @@ header() {
   echo "==============================="
 }
 
-press() { read -rp "Press Enter to return to menu..." _; }
-
-# เดา interface หลักแบบปลอดภัย
+# ตรวจจับ NIC
 get_nic() {
   ip -o -4 route get 8.8.8.8 2>/dev/null \
     | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' \
     | head -n1
 }
 
-# ===== เช็คเวอร์ชันบน GitHub =====
-check_update() {
-  local remote install_raw
-  install_raw="$(curl -fsSL "$REPO_RAW/Install" || true)"
-
-  if [[ -z "$install_raw" ]]; then
-    echo -e "${YELLOW}[WARN]${NC} ไม่สามารถเช็คเวอร์ชันจาก GitHub ได้"
-    return
-  fi
-
-  remote="$(printf '%s' "$install_raw" | grep -m1 '^VERSION=' | cut -d'"' -f2)"
-  if [[ -z "$remote" ]]; then
-    echo -e "${YELLOW}[WARN]${NC} พบไฟล์ Install ใน GitHub แต่หา VERSION ไม่เจอ"
-    return
-  fi
-
-  if [[ "$VERSION" == "$remote" ]]; then
-    echo -e "${GREEN}[OK]${NC} You are using the latest version."
-  else
-    echo -e "${CYAN}[UPDATE]${NC} มีเวอร์ชันใหม่: $remote (ปัจจุบัน: $VERSION)"
+# หมุน log (1MB)
+rotate_log() {
+  local max=1000000
+  if [[ -f "$DEBUG_LOG" && $(stat -c%s "$DEBUG_LOG") -gt $max ]]; then
+    mv "$DEBUG_LOG" "$DEBUG_LOG.1"
+    : > "$DEBUG_LOG"
   fi
 }
 
+# ดึงไฟล์แบบ fail-fast
+download_or_die() {
+  local url="$1" dst="$2"
+  if ! curl -fsSL "$url" -o "$dst"; then
+    echo -e "${RED}[ERROR]${NC} Download failed: $url"
+    exit 1
+  fi
+}
+
+# เขียน Nginx site
 write_nginx() {
   mkdir -p "$WWW_DIR"
   mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
@@ -117,13 +118,70 @@ EOF
   echo -e "${GREEN}[OK]${NC} Nginx ready at :82 (/server/)"
 }
 
-download_or_die() {
-  local url="$1" dst="$2"
-  if ! curl -fsSL "$url" -o "$dst"; then
-    echo -e "${RED}[ERROR]${NC} Download failed: $url"
-    exit 1
+# ตรวจอัปเดตจากรีโมต (อ่าน VERSION จากไฟล์ Install บน GitHub)
+check_update() {
+  local remote install_raw
+  install_raw="$(curl -fsSL "$REPO_RAW/Install" || true)"
+
+  if [[ -z "$install_raw" ]]; then
+    echo -e "${YELLOW}[WARN]${NC} ไม่สามารถเช็คเวอร์ชันจาก GitHub ได้"
+    return
+  fi
+
+  remote="$(printf '%s' "$install_raw" | grep -m1 '^VERSION=' | cut -d'"' -f2)"
+  if [[ -z "$remote" ]]; then
+    echo -e "${YELLOW}[WARN]${NC} พบไฟล์ Install ใน GitHub แต่หา VERSION ไม่เจอ"
+    return
+  fi
+
+  if [[ "$VERSION" == "$remote" ]]; then
+    echo -e "${GREEN}[OK]${NC} You are using the latest version."
+  else
+    echo -e "${CYAN}[UPDATE]${NC} มีเวอร์ชันใหม่: ${remote} (ปัจจุบัน: ${VERSION})"
+    echo -en "กด Enter เพื่ออัปเดตทันที หรือพิมพ์ ${B}n${NC} เพื่อข้าม: "
+    read ans
+    if [[ -z "$ans" || "$ans" == "y" || "$ans" == "Y" ]]; then
+      update_script
+      press
+    fi
   fi
 }
+
+# แสดงสถานะ Service + สถานะติดตั้ง
+print_status() {
+  # เช็ค nginx
+  local stat_nginx="OFF" stat_online="OFF" stat_vnstat="OFF" stat_v2="OFF" stat_sys="OFF"
+
+  systemctl is-active --quiet nginx && stat_nginx="ON"
+  [[ -f "$SERVICE_ONLINE" ]] && systemctl is-active --quiet online-check && stat_online="ON"
+  [[ -f "$SERVICE_VNSTAT" ]] && systemctl is-active --quiet vnstat-traffic && stat_vnstat="ON"
+  [[ -f "$SERVICE_V2RAY" ]] && systemctl is-active --quiet v2ray-traffic && stat_v2="ON"
+  [[ -f "$SERVICE_SYSINFO" ]] && systemctl is-active --quiet sysinfo && stat_sys="ON"
+
+  # สี
+  local c_ng=$( [[ "$stat_nginx" == "ON" ]] && echo "$GREEN" || echo "$RED" )
+  local c_on=$( [[ "$stat_online" == "ON" ]] && echo "$GREEN" || echo "$RED" )
+  local c_vn=$( [[ "$stat_vnstat" == "ON" ]] && echo "$GREEN" || echo "$RED" )
+  local c_v2=$( [[ "$stat_v2" == "ON" ]] && echo "$GREEN" || echo "$RED" )
+  local c_sy=$( [[ "$stat_sys" == "ON" ]] && echo "$GREEN" || echo "$RED" )
+
+  # สถานะติดตั้ง
+  local installed="${RED}Not Installed${NC}"
+  if [[ -f "$SCRIPT_ONLINE" || -f "$SCRIPT_VNSTAT" || -f "$SCRIPT_V2RAY" || -f "$SCRIPT_SYSINFO" ]]; then
+    installed="${GREEN}Installed${NC}"
+  fi
+
+  echo -e "$(printf 'NginX        : [%b%s%b]  Online Check : [%b%s%b]\n' "$c_ng" "$stat_nginx" "$NC" "$c_on" "$stat_online" "$NC")"
+  echo -e "$(printf 'vnStat       : [%b%s%b]  V2Ray Traffic : [%b%s%b]\n' "$c_vn" "$stat_vnstat" "$NC" "$c_v2" "$stat_v2" "$NC")"
+  echo -e "$(printf 'SysInfo      : [%b%s%b]\n' "$c_sy" "$stat_sys" "$NC")"
+  echo "-------------------------------"
+  echo -e "Status: $installed"
+  echo "==============================="
+}
+
+# =====================================================
+# ติดตั้ง
+# =====================================================
 
 install_script() {
   echo -e "${CYAN}[INFO]${NC} Installing ShowOn (${VERSION})..."
@@ -131,64 +189,37 @@ install_script() {
   apt update -y >/dev/null 2>&1 || true
 
   echo -e "${CYAN}[INFO]${NC} Installing dependencies..."
-  apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates >/dev/null 2>&1 || true
-
-  # ==== ตรวจสอบเวอร์ชัน Ubuntu ====
-  UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null || echo "0")
-  if [[ "$UBUNTU_VERSION" == "18.04" ]]; then
-    echo -e "${YELLOW}[WARN]${NC} Ubuntu 18.04 detected, installing vnstat from PPA..."
-    apt install -y software-properties-common gnupg2 >/dev/null 2>&1 || true
-    add-apt-repository -y ppa:unit193/vnstat >/dev/null 2>&1 || true
-    apt update -y >/dev/null 2>&1 || true
-    apt install -y vnstat >/dev/null 2>&1 || true
-  else
-    apt install -y vnstat >/dev/null 2>&1 || true
-  fi
+  apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates vnstat >/dev/null 2>&1 || true
 
   systemctl enable vnstat >/dev/null 2>&1 || true
   systemctl start vnstat >/dev/null 2>&1 || true
 
   mkdir -p "$WWW_DIR" "$BIN_DIR" "$(dirname "$DEBUG_LOG")"
+  rotate_log
 
-  # ==== ถามค่าตั้งต้น 3x-ui ====
-  echo -e "${CYAN}[INFO]${NC} ตั้งค่า 3x-ui (ถ้าไม่มีให้กด Enter ข้ามได้)"
-  echo "  👉 กรุณา 'วางลิงก์หน้าล็อกอินทั้งเส้น' เช่น:"
-  echo "     https://IP:PORT/RandomPath"
-  read -rp "3X-UI URL (copy login link): " PANEL_URL
-  PANEL_URL="$(echo "$PANEL_URL" | sed 's:/*$::')"
+  # ตรวจว่าเป็น 3x-ui หรือ Xray-Core
+  local PANEL_URL XUI_USER XUI_PASS
+  if [[ -d /etc/x-ui ]]; then
+    echo -e "${CYAN}[INFO]${NC} ตรวจพบ 3x-ui → ตั้งค่าการเชื่อมต่อ API"
+    echo "  👉 กรุณา 'วางลิงก์หน้าล็อกอินทั้งเส้น' เช่น:"
+    echo "     https://IP:PORT/RandomPath"
+    read -rp "3X-UI URL (copy login link): " PANEL_URL
+    PANEL_URL="$(echo "$PANEL_URL" | sed 's:/*$::')"
 
-  read -rp "3X-UI Username: " XUI_USER
-  read -rp "3X-UI Password: " XUI_PASS
+    read -rp "3X-UI Username: " XUI_USER
+    read -rp "3X-UI Password: " XUI_PASS
+  else
+    echo -e "${CYAN}[INFO]${NC} ตรวจพบ Xray-Core → ข้ามการตั้งค่า 3x-ui"
+    PANEL_URL=""
+    XUI_USER=""
+    XUI_PASS=""
+  fi
+
+  # Limit
   read -rp "Limit User Online (Default: 2000): " LIMIT
   LIMIT=${LIMIT:-2000}
 
-  # ==== ตรวจสอบล็อกอิน (ถ้าใส่ URL) ====
-  if [[ -n "$PANEL_URL" ]]; then
-    COOKIE_FILE=$(mktemp)
-    LOGIN_OK=false
-
-    if curl -sk -c "$COOKIE_FILE" -X POST "$PANEL_URL/login" \
-         -H "Content-Type: application/x-www-form-urlencoded" \
-         --data "username=$XUI_USER&password=$XUI_PASS" | grep -q '"success":true'; then
-      LOGIN_OK=true
-    else
-      if curl -sk -c "$COOKIE_FILE" -X POST "$PANEL_URL/login" \
-           -H "Content-Type: application/json" \
-           -d "{\"username\":\"$XUI_USER\",\"password\":\"$XUI_PASS\"}" | grep -q '"success":true'; then
-        LOGIN_OK=true
-      fi
-    fi
-
-    if $LOGIN_OK; then
-      echo -e "${GREEN}[OK]${NC} Login to 3x-ui OK"
-    else
-      echo -e "${YELLOW}[WARN]${NC} Login to 3x-ui failed → continue without 3x-ui"
-      PANEL_URL=""
-    fi
-    rm -f "$COOKIE_FILE"
-  fi
-
-  # ==== เขียน config ====
+  # เขียน config
   NIC=$(get_nic)
   [[ -z "$NIC" ]] && NIC=$(ip -o -4 addr show up scope global | awk '{print $2}' | head -n1)
   [[ -z "$NIC" ]] && NIC="eth0"
@@ -207,7 +238,7 @@ NET_IFACE="$NIC"
 EOF
   chmod 600 "$CONF_FILE"
 
-  # ==== ดาวน์โหลดสคริปต์จาก repo ====
+  # ดาวน์โหลดสคริปต์จาก repo
   download_or_die "$SRC_ONLINE" "$SCRIPT_ONLINE"
   download_or_die "$SRC_VNSTAT" "$SCRIPT_VNSTAT"
   download_or_die "$SRC_V2RAY" "$SCRIPT_V2RAY"
@@ -218,10 +249,10 @@ EOF
   download_or_die "$SRC_INDEX" "$WWW_DIR/index.html"
   chmod 644 "$WWW_DIR/index.html"
 
-  # ==== nginx site ====
+  # Nginx
   write_nginx
 
-  # ==== systemd services ====
+  # systemd services
   cat >"$SERVICE_ONLINE" <<'EOF'
 [Unit]
 Description=ShowOn Online Users JSON Generator
@@ -230,7 +261,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/bin/bash -lc 'while true; do /usr/local/bin/online-check.sh; sleep 5; done'
+ExecStart=/bin/bash -c 'while true; do /usr/local/bin/online-check.sh; sleep 5; done'
 Restart=always
 RestartSec=2
 
@@ -246,7 +277,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/bin/bash -lc 'while true; do /usr/local/bin/vnstat-traffic.sh; sleep 5; done'
+ExecStart=/bin/bash -c 'while true; do /usr/local/bin/vnstat-traffic.sh; sleep 5; done'
 Restart=always
 RestartSec=2
 
@@ -262,7 +293,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/bin/bash -lc 'while true; do /usr/local/bin/v2ray-traffic.sh; sleep 5; done'
+ExecStart=/bin/bash -c 'while true; do /usr/local/bin/v2ray-traffic.sh; sleep 5; done'
 Restart=always
 RestartSec=2
 
@@ -270,6 +301,7 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF
 
+  # (แก้แล้ว) sysinfo.service — ไม่มีค่าผิดพลาด
   cat >"$SERVICE_SYSINFO" <<'EOF'
 [Unit]
 Description=ShowOn System Info JSON Generator
@@ -278,7 +310,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/bin/bash -lc 'while true; do /usr/local/bin/sysinfo.sh; sleep 5; done'
+ExecStart=/bin/bash -c 'while true; do /usr/local/bin/sysinfo.sh; sleep 5; done'
 Restart=always
 RestartSec=2
 
@@ -286,6 +318,7 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF
 
+  # เริ่มใช้งาน
   systemctl daemon-reload
   systemctl enable --now online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service
 
@@ -293,6 +326,10 @@ EOF
   echo -e "${CYAN}[INFO]${NC} Open: http://$(hostname -I | awk '{print $1}'):82/server/"
   press
 }
+
+# =====================================================
+# ถอนการติดตั้ง
+# =====================================================
 
 uninstall_script() {
   echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script..."
@@ -317,8 +354,13 @@ uninstall_script() {
   press
 }
 
+# =====================================================
+# อัปเดต
+# =====================================================
+
 update_script() {
   echo -e "${CYAN}[INFO]${NC} Updating all ShowOn components..."
+  rotate_log
 
   download_or_die "$SRC_ONLINE" "$SCRIPT_ONLINE"
   download_or_die "$SRC_VNSTAT" "$SCRIPT_VNSTAT"
@@ -342,7 +384,12 @@ update_script() {
   press
 }
 
+# =====================================================
+# Debug Log / Change Limit
+# =====================================================
+
 check_debug() {
+  rotate_log
   if [[ -f "$DEBUG_LOG" ]]; then
     tail -n 100 "$DEBUG_LOG"
   else
@@ -351,26 +398,121 @@ check_debug() {
   press
 }
 
+change_limit() {
+  if [[ ! -f "$CONF_FILE" ]]; then
+    echo -e "${RED}[ERROR]${NC} Config file not found!"
+    press; return
+  fi
+
+  # shellcheck disable=SC1090
+  source "$CONF_FILE"
+  echo -e "${CYAN}[INFO]${NC} Current Limit User Online: ${LIMIT:-2000}"
+  read -rp "Enter new Limit User Online: " NEW_LIMIT
+  if [[ -z "$NEW_LIMIT" ]]; then
+    echo -e "${YELLOW}[WARN]${NC} ไม่ได้เปลี่ยนค่า"
+    press; return
+  fi
+
+  sed -i "s/^LIMIT=.*/LIMIT=${NEW_LIMIT}/" "$CONF_FILE"
+  echo -e "${GREEN}[OK]${NC} คุณได้เปลี่ยน Limit User Online แล้วเป็น ${NEW_LIMIT} คน"
+  press
+}
+
+# =====================================================
+# Setup Swap (อัตโนมัติ + รีสตาร์ต service)
+# =====================================================
+
+setup_swap() {
+  echo -e "${CYAN}[INFO]${NC} Auto Swap Wizard"
+
+  # ขนาด RAM (MiB)
+  local ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+  local ram_mb=$(( ram_kb / 1024 ))
+
+  # กำหนดสัดส่วน swap ตามช่วง RAM (ยืดหยุ่นได้ทุกสเปค)
+  local swap_mb
+  if   (( ram_mb <= 512 )); then       swap_mb=$(( ram_mb * 2 ))       # <=512MB → x2
+  elif (( ram_mb <= 1024 )); then      swap_mb=$(( ram_mb * 2 ))       # 1GB     → x2
+  elif (( ram_mb <= 2048 )); then      swap_mb=$(( ram_mb * 1 ))       # 2GB     → x1
+  elif (( ram_mb <= 4096 )); then      swap_mb=$(( ram_mb * 1 ))       # 4GB     → x1
+  elif (( ram_mb <= 8192 )); then      swap_mb=4096                    # 8GB     → 4GB
+  elif (( ram_mb <= 16384 )); then     swap_mb=4096                    # 16GB    → 4GB
+  elif (( ram_mb <= 32768 )); then     swap_mb=8192                    # 32GB    → 8GB
+  elif (( ram_mb <= 65536 )); then     swap_mb=8192                    # 64GB    → 8GB
+  else                                  swap_mb=8192                    # >64GB   → 8GB cap
+  fi
+
+  # มี swap แล้วหรือยัง?
+  if swapon --show | awk 'NR>1{print $1}' | grep -q .; then
+    echo -e "${YELLOW}[WARN]${NC} พบ Swap เดิมอยู่แล้ว"
+    read -rp "ต้องการสร้างใหม่ทับเดิมหรือไม่? (Y/n): " ans
+    if [[ -z "$ans" || "$ans" =~ ^[Yy]$ ]]; then
+      swapoff -a || true
+      sed -i '/swapfile showon/d' /etc/fstab || true
+    else
+      echo -e "${GREEN}[OK]${NC} ข้ามการสร้าง Swap ใหม่"
+      press; return
+    fi
+  fi
+
+  echo -e "${CYAN}[INFO]${NC} Creating swapfile size ${swap_mb} MiB ..."
+  fallocate -l "${swap_mb}M" /swapfile || dd if=/dev/zero of=/swapfile bs=1M count="${swap_mb}"
+  chmod 600 /swapfile
+  mkswap /swapfile >/dev/null
+  swapon /swapfile
+
+  if ! grep -q "swapfile showon" /etc/fstab; then
+    echo "/swapfile none swap sw 0 0 # swapfile showon" >> /etc/fstab
+  fi
+
+  # ปรับ vm.swappiness & vfs_cache_pressure แบบย่อมเยา
+  sysctl -w vm.swappiness=10 >/dev/null
+  sysctl -w vm.vfs_cache_pressure=100 >/dev/null
+  if ! grep -q '^vm.swappiness' /etc/sysctl.conf; then echo "vm.swappiness=10" >> /etc/sysctl.conf; fi
+  if ! grep -q '^vm.vfs_cache_pressure' /etc/sysctl.conf; then echo "vm.vfs_cache_pressure=100" >> /etc/sysctl.conf; fi
+
+  echo -e "${GREEN}[OK]${NC} Swap พร้อมใช้งาน:"
+  free -h
+
+  # รีสตาร์ต service หลักให้
+  systemctl restart online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
+  echo -e "${GREEN}[OK]${NC} Restarted ShowOn services."
+  press
+}
+
+# =====================================================
+# เมนู
+# =====================================================
+
 show_menu() {
   header
+  print_status
   check_update
   echo "1) Install Script"
   echo "2) Uninstall Script"
   echo "3) Update Script"
   echo "4) Check Debug Log"
+  echo "5) Change Limit User Online"
+  echo "6) Setup Swap"
   echo "0) Exit"
   echo "==============================="
-  read -rp "Choose an option [0,1,2,3,4]: " choice
+  read -rp "Choose an option [0-6]: " choice
   case "$choice" in
     1) install_script ;;
     2) uninstall_script ;;
     3) update_script ;;
     4) check_debug ;;
+    5) change_limit ;;
+    6) setup_swap ;;
     0) exit 0 ;;
     *) echo -e "${RED}[ERROR]${NC} Invalid choice"; sleep 1 ;;
   esac
   show_menu
 }
+
+# =====================================================
+# Main
+# =====================================================
 
 require_root
 show_menu
