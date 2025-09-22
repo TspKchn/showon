@@ -17,12 +17,7 @@ TMP_COOKIE=$(mktemp /tmp/showon_cookie_XXXXXX)
 NOW=$(date +%s%3N)
 SERVER_IP=$(hostname -I | awk '{print $1}')
 
-# init counters
-SSH_ON=0
-OVPN_ON=0
-DB_ON=0
-V2_ON=0
-AGNUDP_ON=0
+SSH_ON=0; OVPN_ON=0; DB_ON=0; V2_ON=0; AGNUDP_ON=0
 
 # ==== Log Rotate (1MB) ====
 rotate_log() {
@@ -35,7 +30,7 @@ rotate_log() {
 rotate_log
 
 # ==== SSH ====
-SSH_ON=$(ss -nt state established 2>/dev/null | awk '$3 ~ /:22$/ {c++} END {print c+0}')
+SSH_ON=$(ss -nt state established | awk '$3 ~ /:22$/ {c++} END {print c+0}')
 
 # ==== OpenVPN ====
 if [[ -f /etc/openvpn/server/openvpn-status.log ]]; then
@@ -92,33 +87,33 @@ else
   fi
 fi
 
-# ==== AGN-UDP ====
-if [[ -f /etc/hysteria/config.json ]]; then
-  AGNUDP_PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
-    | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//')
+# ==== AGN-UDP (Hysteria) ====
+AGNUDP_ON=0
+AGNUDP_PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
+  | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//')
 
-  if [[ -n "${AGNUDP_PORT:-}" && "$AGNUDP_PORT" =~ ^[0-9]+$ ]]; then
-    if command -v conntrack >/dev/null 2>&1; then
-      RAW_CONN=$(conntrack -L -p udp 2>/dev/null | grep "dport=$AGNUDP_PORT" || true)
-      AGNUDP_ON=$(echo "$RAW_CONN" \
-        | grep 'src=' \
-        | awk '{for(i=1;i<=NF;i++) if($i ~ /^src=/) print $i}' \
-        | cut -d= -f2- \
-        | grep -v "^$SERVER_IP" \
-        | sort -u \
-        | wc -l)
-    fi
+if [[ -n "${AGNUDP_PORT:-}" && "$AGNUDP_PORT" =~ ^[0-9]+$ ]]; then
+  if command -v conntrack >/dev/null 2>&1; then
+    SERVER_IP=$(hostname -I | awk '{print $1}')
+    AGNUDP_ON=$(conntrack -L -p udp 2>/dev/null \
+      | grep "dport=$AGNUDP_PORT" \
+      | grep 'src=' \
+      | awk '{for(i=1;i<=NF;i++) if($i ~ /^src=/) print $i}' \
+      | cut -d= -f2- \
+      | grep -v "^$SERVER_IP" \
+      | sort -u \
+      | wc -l)
   fi
 fi
 
-# log AGN-UDP count
+# log AGN-UDP count → debug log
 {
   echo "[$(date '+%F %T')] AGN-UDP port: ${AGNUDP_PORT:-N/A}"
   echo "AGN-UDP online: ${AGNUDP_ON:-0}"
   echo
 } >> "$DEBUG_LOG"
 
-# ==== JSON OUTPUT ====
+# ==== Ensure numeric defaults ====
 SSH_ON=${SSH_ON:-0}
 OVPN_ON=${OVPN_ON:-0}
 DB_ON=${DB_ON:-0}
