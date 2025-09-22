@@ -1,11 +1,11 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.7 (Extended Edition)
+# ShowOn Script Manager V.1.0.6 (Extended Edition)
 # Author : TspKchn + ChatGPT
 # =====================================================
 
 # ----------------- เวอร์ชัน -----------------
-VERSION="V.1.0.7"
+VERSION="V.1.0.6"
 
 # ----------------- พาธรีโป ------------------
 REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main"
@@ -144,7 +144,11 @@ check_update() {
     read ans
     if [[ -z "$ans" || "$ans" == "y" || "$ans" == "Y" ]]; then
       update_script
-      press
+      # ✅ refresh + กลับไปเมนูทันที
+      clear
+      print_status
+      check_update
+      show_menu
     fi
   fi
 }
@@ -442,7 +446,6 @@ update_script() {
   fi
 
   echo -e "${GREEN}[OK]${NC} Update completed."
-  press
 }
 # =====================================================
 # Debug Log / Change Limit
@@ -543,6 +546,7 @@ setup_swap() {
 # =====================================================
 
 show_menu() {
+  clear
   print_status
   check_update
   echo "1) Install Script"
