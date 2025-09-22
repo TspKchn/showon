@@ -164,6 +164,7 @@ print_status() {
   local c_vn=$( [[ "$stat_vnstat" == "ON" ]] && echo "$GREEN" || echo "$RED" )
   local c_v2=$( [[ "$stat_v2" == "ON" ]] && echo "$GREEN" || echo "$RED" )
   local c_sy=$( [[ "$stat_sys" == "ON" ]] && echo "$GREEN" || echo "$RED" )
+  local c_ct=$( [[ "$(conntrack_status)" == "ON" ]] && echo "$GREEN" || echo "$RED" )
 
   # สถานะติดตั้ง
   local installed="${RED}Not Installed${NC}"
@@ -173,7 +174,7 @@ print_status() {
 
   echo -e "$(printf 'NginX        : [%b%s%b]  Online Check : [%b%s%b]\n' "$c_ng" "$stat_nginx" "$NC" "$c_on" "$stat_online" "$NC")"
   echo -e "$(printf 'vnStat       : [%b%s%b]  V2Ray Traffic : [%b%s%b]\n' "$c_vn" "$stat_vnstat" "$NC" "$c_v2" "$stat_v2" "$NC")"
-  echo -e "$(printf 'SysInfo      : [%b%s%b]\n' "$c_sy" "$stat_sys" "$NC")"
+  echo -e "$(printf 'SysInfo      : [%b%s%b]  Conntrack     : [%b%s%b]\n' "$c_sy" "$stat_sys" "$NC" "$c_ct" "$(conntrack_status)" "$NC")"
   echo "-------------------------------"
   echo -e "Status: $installed"
   echo "==============================="
@@ -189,7 +190,7 @@ install_script() {
   apt update -y >/dev/null 2>&1 || true
 
   echo -e "${CYAN}[INFO]${NC} Installing dependencies..."
-  apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates vnstat >/dev/null 2>&1 || true
+  apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates vnstat conntrack >/dev/null 2>&1 || true
 
   systemctl enable vnstat >/dev/null 2>&1 || true
   systemctl start vnstat >/dev/null 2>&1 || true
