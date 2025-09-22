@@ -81,6 +81,11 @@ write_nginx() {
   mkdir -p "$WWW_DIR"
   mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
 
+  # ลบ default site ที่ใช้ port 80 ทิ้ง
+  rm -f /etc/nginx/sites-enabled/default
+  rm -f /etc/nginx/sites-available/default
+
+  # เขียน config ของ ShowOn → ใช้ port 82 เท่านั้น
   cat >"$SITE_AV" <<EOF
 server {
     listen 82 default_server;
@@ -101,13 +106,13 @@ EOF
   ln -sf "$SITE_AV" "$SITE_EN"
 
   if nginx -t; then
-    systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+    systemctl restart nginx 2>/dev/null || true
   else
-    echo -e "${YELLOW}[WARN]${NC} nginx config test failed → will try to start nginx..."
-    systemctl start nginx 2>/dev/null || true
+    echo -e "${YELLOW}[WARN]${NC} nginx config test failed, forcing restart..."
+    systemctl restart nginx 2>/dev/null || true
   fi
 
-  echo -e "${GREEN}[OK]${NC} Nginx ready at :82 (/server/)"
+  echo -e "${GREEN}[OK]${NC} Nginx is now listening only on port :82 (/server/)"
 }
 
 # สถานะ conntrack (ไว้โชว์ในเมนู)
@@ -182,25 +187,26 @@ print_status() {
 
 install_script() {
   echo -e "${CYAN}[INFO]${NC} Installing ShowOn (${VERSION})..."
-  
+
   # 1) Update system
   echo -e "${CYAN}[INFO]${NC} Updating system packages..."
   apt update -y >/dev/null 2>&1 || true
 
-  # 2) Install Nginx first
-  echo -e "${CYAN}[INFO]${NC} Installing and enabling Nginx..."
-  apt install -y nginx >/dev/null 2>&1 || true
-  systemctl enable --now nginx >/dev/null 2>&1 || true
-
-  # 3) Install other dependencies
+  # 2) Install dependencies (รวม nginx ด้วย)
   echo -e "${CYAN}[INFO]${NC} Installing dependencies..."
-  apt install -y curl jq net-tools psmisc iproute2 ca-certificates vnstat conntrack >/dev/null 2>&1 || true
+  apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates vnstat conntrack >/dev/null 2>&1 || true
 
+  # 🔴 ติดตั้ง nginx เสร็จ → เขียน config และเปิด port 82 เลย
+  write_nginx
+
+  # 3) Enable vnstat
   systemctl enable vnstat >/dev/null 2>&1 || true
   systemctl start vnstat  >/dev/null 2>&1 || true
 
   mkdir -p "$WWW_DIR" "$BIN_DIR" "$(dirname "$DEBUG_LOG")"
   rotate_log
+  ...
+}
 
   # ======================= ตรวจ AGN-UDP (Hysteria) =======================
   local AGN_PRESENT="0" AGN_PORT=""
