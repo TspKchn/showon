@@ -118,22 +118,18 @@ EOF
   echo -e "${GREEN}[OK]${NC} Nginx ready at :82 (/server/)"
 }
 
-# ======================= ตรวจ AGN-UDP (Hysteria) =======================
-detect_agnudp() {
-  # คืนค่า "present|port" เช่น "1|36712" หรือ "0|"
-  local present=0 port=""
-  if [[ -x /usr/local/bin/hysteria || -x /usr/bin/hysteria || -d /etc/hysteria \
-     || -f /etc/systemd/system/hysteria-server.service || -f /lib/systemd/system/hysteria-server.service ]]; then
-    present=1
-    if [[ -f /etc/hysteria/config.json ]]; then
-      # listen อาจเป็น ":36712" / "0.0.0.0:36712" / "[::]:36712"
-      port="$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
-        | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//')"
+# ตรวจสอบ AGN-UDP (hysteria)
+  if [[ -f /etc/hysteria/config.json ]]; then
+    AGNUDP_PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
+      | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//')
+    if [[ -n "$AGNUDP_PORT" && "$AGNUDP_PORT" =~ ^[0-9]+$ ]]; then
+      echo -e "${GREEN}[OK]${NC} AGN-UDP detected on port: ${AGNUDP_PORT}"
+    else
+      echo -e "${YELLOW}[WARN]${NC} Found hysteria config but no valid port"
     fi
-    [[ -z "$port" ]] && port="36712"
+  else
+    echo -e "${CYAN}[INFO]${NC} AGN-UDP (hysteria) not found → skipped"
   fi
-  echo "${present}|${port}"
-}
 
 # สถานะ conntrack (ไว้โชว์ในเมนู)
 conntrack_status() {
