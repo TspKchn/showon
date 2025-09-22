@@ -1,8 +1,19 @@
 #!/bin/bash
-# =====================================================
+# =====================================================================
 # ShowOn Script Manager V.1.0.7 (Extended Full Edition)
 # Author : TspKchn + ChatGPT
-# =====================================================
+# =====================================================================
+# จุดเด่นเวอร์ชันนี้ (สรุป):
+# - เพิ่มรองรับ AGN-UDP (Hysteria) อัตโนมัติ:
+#     * ตรวจว่าเครื่องติดตั้งไว้หรือไม่ (โฟลเดอร์/ไบนารี/คอนฟิก)
+#     * อ่านพอร์ตจาก /etc/hysteria/config.json -> คีย์ "listen"
+#     * หากไม่พบ จะตั้ง AGN_PRESENT=0 และไม่นับ agnudp
+# - ติดตั้ง/ถอดถอน conntrack อัตโนมัติ (Install / Uninstall)
+# - Online Checker (จากรีโป) จะต้องเป็นเวอร์ชันใหม่ที่เขียน agnudp ลง online_app.json
+# - แสดงสถานะ Conntrack ในเมนู (ON/OFF) เพิ่มจากเดิม
+# - บังคับ overwrite ไฟล์สคริปต์/เว็บทุกครั้งตอน Install/Update
+# - คง sleep 5 วิ ให้ทุก service ตามที่ตกลง
+# =====================================================================
 
 # ----------------- เวอร์ชัน -----------------
 VERSION="V.1.0.7"
@@ -11,7 +22,7 @@ VERSION="V.1.0.7"
 REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main"
 
 # ----------------- ซอร์สไฟล์ ----------------
-# หมายเหตุ: online-check.sh (ที่รีโป) ต้องเป็นเวอร์ชันที่เพิ่ม agnudp แล้ว
+# หมายเหตุ: online-check.sh ในรีโป ต้องเป็นเวอร์ชันที่รองรับ agnudp แล้ว
 SRC_ONLINE="$REPO_RAW/scripts/online-check.sh"
 SRC_VNSTAT="$REPO_RAW/scripts/vnstat-traffic.sh"
 SRC_V2RAY="$REPO_RAW/scripts/v2ray-traffic.sh"
@@ -43,9 +54,9 @@ GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; GRAY="\e[90m"; NC=
 CHECK="${GREEN}✔${NC}"
 CROSS="${RED}✘${NC}"
 
-# =====================================================
+# =====================================================================
 # ฟังก์ชันพื้นฐาน
-# =====================================================
+# =====================================================================
 
 require_root() {
   if [[ $EUID -ne 0 ]]; then
@@ -63,15 +74,15 @@ header() {
   echo "==============================="
 }
 
-# ตรวจจับ NIC
 get_nic() {
+  # คืนชื่อ NIC ที่ออกเน็ต
   ip -o -4 route get 8.8.8.8 2>/dev/null \
     | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' \
     | head -n1
 }
 
-# หมุน log (1MB)
 rotate_log() {
+  # หมุน log ที่ 1MB
   local max=1000000
   if [[ -f "$DEBUG_LOG" && $(stat -c%s "$DEBUG_LOG") -gt $max ]]; then
     mv "$DEBUG_LOG" "$DEBUG_LOG.1"
@@ -79,16 +90,38 @@ rotate_log() {
   fi
 }
 
-# ดึงไฟล์แบบ fail-fast
 download_or_die() {
+  # ดาวน์โหลดแบบบังคับทับ (overwrite) ถ้าพลาดให้หยุดทันที
   local url="$1" dst="$2"
+  mkdir -p "$(dirname "$dst")"
   if ! curl -fsSL "$url" -o "$dst"; then
     echo -e "${RED}[ERROR]${NC} Download failed: $url"
     exit 1
   fi
+  # กัน CRLF จาก Windows โดยไม่พัง shell
+  sed -i 's/\r$//' "$dst" 2>/dev/null || true
 }
 
-# เขียน Nginx site
+file_has_text() {
+  # ใช้เช็ค marker ในไฟล์
+  local file="$1" pat="$2"
+  grep -q "$pat" "$file" 2>/dev/null
+}
+
+ensure_exec() {
+  # chmod +x ถ้าจำเป็น
+  local f="$1"
+  [[ -f "$f" ]] && chmod +x "$f" 2>/dev/null || true
+}
+
+safe_mkdirs() {
+  mkdir -p "$WWW_DIR" "$BIN_DIR" "$(dirname "$DEBUG_LOG")"
+}
+
+# =====================================================================
+# งาน Nginx (เว็บหน้า /server/)
+# =====================================================================
+
 write_nginx() {
   mkdir -p "$WWW_DIR"
   mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
@@ -105,7 +138,9 @@ server {
         alias $WWW_DIR/;
         index index.html;
         autoindex off;
-        add_header Cache-Control "no-store";
+        add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0";
+        add_header Pragma "no-cache";
+        expires -1;
     }
 }
 EOF
@@ -122,7 +157,10 @@ EOF
   echo -e "${GREEN}[OK]${NC} Nginx ready at :82 (/server/)"
 }
 
+# =====================================================================
 # ตรวจอัปเดตจากรีโมต (อ่าน VERSION จากไฟล์ Install บน GitHub)
+# =====================================================================
+
 check_update() {
   local remote install_raw
   install_raw="$(curl -fsSL "$REPO_RAW/Install" || true)"
@@ -151,16 +189,22 @@ check_update() {
   fi
 }
 
-# ----------------- ตรวจ AGN-UDP (Hysteria) -----------------
+# =====================================================================
+# ตรวจ AGN-UDP (Hysteria)
+# =====================================================================
+
 detect_agnudp() {
-  # คืนค่า: echo "present|port" เช่น "1|36712" หรือ "0|"
+  # คืนค่า: echo "present|port"
   local present=0 port=""
-  if [[ -x /usr/local/bin/hysteria || -f /etc/systemd/system/hysteria-server.service || -d /etc/hysteria ]]; then
+  # ตรวจความเป็นไปได้ของการติดตั้ง
+  if [[ -x /usr/local/bin/hysteria || -x /usr/bin/hysteria || -d /etc/hysteria || -f /etc/systemd/system/hysteria-server.service || -f /lib/systemd/system/hysteria-server.service ]]; then
     present=1
-    # พยายามอ่าน /etc/hysteria/config.json
+    # พยายามอ่าน config เพื่อหา listen port
     if [[ -f /etc/hysteria/config.json ]]; then
-      # โครงสร้างคอนฟิกตัวอย่าง:  "listen": ":36712"
-      port="$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null | sed -E 's/^:*//; s/[^0-9].*//')"
+      # ค่าปกติในรูป ":36712" หรือ "0.0.0.0:36712" หรือ "[::]:36712"
+      port="$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null | tr -d '"' )"
+      # ตัดหน้า ":" และโฮสต์ออก ให้เหลือแต่ตัวเลขพอร์ต
+      port="$(echo "$port" | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//')"
     fi
     # fallback ถ้าอ่านไม่ได้
     [[ -z "$port" ]] && port="36712"
@@ -168,23 +212,35 @@ detect_agnudp() {
   echo "${present}|${port}"
 }
 
-# ----------------- ปรับข้อความ ON/OFF + สี -----------------
-onoff_color() {
-  local state="$1"
-  if [[ "$state" == "ON" ]]; then echo -ne "${GREEN}ON${NC}"
+# =====================================================================
+# สีสถานะ ON/OFF
+# =====================================================================
+
+state_color() {
+  local s="$1"
+  if [[ "$s" == "ON" ]]; then echo -ne "${GREEN}ON${NC}"
   else echo -ne "${RED}OFF${NC}"; fi
 }
 
-# แสดงสถานะ Service + สถานะติดตั้ง (แบบ service-only)
+# =====================================================================
+# แสดงสถานะ Service + Installed
+# =====================================================================
+
+conntrack_status() {
+  # คืน "ON"/"OFF" (ถ้ามีคำสั่ง conntrack)
+  if command -v conntrack >/dev/null 2>&1; then echo "ON"; else echo "OFF"; fi
+}
+
 print_status() {
-  # เช็ค service
-  local stat_nginx="OFF" stat_online="OFF" stat_vnstat="OFF" stat_v2="OFF" stat_sys="OFF"
+  local stat_nginx="OFF" stat_online="OFF" stat_vnstat="OFF" stat_v2="OFF" stat_sys="OFF" stat_ct="OFF"
 
   systemctl is-active --quiet nginx && stat_nginx="ON"
-  [[ -f "$SERVICE_ONLINE" ]] && systemctl is-active --quiet online-check && stat_online="ON"
+  [[ -f "$SERVICE_ONLINE" ]] && systemctl is-active --quiet online-check  && stat_online="ON"
   [[ -f "$SERVICE_VNSTAT" ]] && systemctl is-active --quiet vnstat-traffic && stat_vnstat="ON"
   [[ -f "$SERVICE_V2RAY"  ]] && systemctl is-active --quiet v2ray-traffic  && stat_v2="ON"
-  [[ -f "$SERVICE_SYSINFO" ]] && systemctl is-active --quiet sysinfo && stat_sys="ON"
+  [[ -f "$SERVICE_SYSINFO" ]] && systemctl is-active --quiet sysinfo       && stat_sys="ON"
+
+  stat_ct="$(conntrack_status)"
 
   # สี
   local c_ng=$( [[ "$stat_nginx"  == "ON" ]] && echo "$GREEN" || echo "$RED" )
@@ -192,25 +248,28 @@ print_status() {
   local c_vn=$( [[ "$stat_vnstat" == "ON" ]] && echo "$GREEN" || echo "$RED" )
   local c_v2=$( [[ "$stat_v2"     == "ON" ]] && echo "$GREEN" || echo "$RED" )
   local c_sy=$( [[ "$stat_sys"    == "ON" ]] && echo "$GREEN" || echo "$RED" )
+  local c_ct=$( [[ "$stat_ct"     == "ON" ]] && echo "$GREEN" || echo "$RED" )
 
-  # สถานะติดตั้ง (แสดงด้วย [✔]/[✘] + สี)
+  # ติดตั้งหรือยัง
   local installed="${CROSS} ${RED}Not Installed${NC}"
   if [[ -f "$SCRIPT_ONLINE" || -f "$SCRIPT_VNSTAT" || -f "$SCRIPT_V2RAY" || -f "$SCRIPT_SYSINFO" ]]; then
     installed="${CHECK} ${GREEN}Installed${NC}"
   fi
 
-  # print
-  echo -e "$(printf 'NginX        : [%b%s%b]  Online Check : [%b%s%b]\n' "$c_ng" "$stat_nginx" "$NC" "$c_on" "$stat_online" "$NC")"
-  echo -e "$(printf 'vnStat       : [%b%s%b]  V2Ray Traffic : [%b%s%b]\n' "$c_vn" "$stat_vnstat" "$NC" "$c_v2" "$stat_v2" "$NC")"
-  echo -e "$(printf 'SysInfo      : [%b%s%b]\n' "$c_sy" "$stat_sys" "$NC")"
+  echo -e "==============================="
+  echo -e "   ShowOn Script Manager ${VERSION}"
+  echo -e "==============================="
+  echo -e "$(printf 'NginX        : [%b%s%b]   Online Check  : [%b%s%b]\n' "$c_ng" "$stat_nginx" "$NC" "$c_on" "$stat_online" "$NC")"
+  echo -e "$(printf 'vnStat       : [%b%s%b]   V2Ray Traffic : [%b%s%b]\n' "$c_vn" "$stat_vnstat" "$NC" "$c_v2" "$stat_v2" "$NC")"
+  echo -e "$(printf 'SysInfo      : [%b%s%b]   Conntrack     : [%b%s%b]\n' "$c_sy" "$stat_sys" "$NC" "$c_ct" "$stat_ct" "$NC")"
   echo "-------------------------------"
   echo -e "Status: ${installed}"
   echo "==============================="
 }
 
-# =====================================================
+# =====================================================================
 # ติดตั้ง
-# =====================================================
+# =====================================================================
 
 install_script() {
   echo -e "${CYAN}[INFO]${NC} Installing ShowOn (${VERSION})..."
@@ -222,9 +281,9 @@ install_script() {
   apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates vnstat conntrack >/dev/null 2>&1 || true
 
   systemctl enable vnstat >/dev/null 2>&1 || true
-  systemctl start vnstat >/dev/null 2>&1 || true
+  systemctl start vnstat  >/dev/null 2>&1 || true
 
-  mkdir -p "$WWW_DIR" "$BIN_DIR" "$(dirname "$DEBUG_LOG")"
+  safe_mkdirs
   rotate_log
 
   # ตรวจว่าเป็น 3x-ui หรือ Xray-Core
@@ -281,12 +340,20 @@ AGN_PORT="$AGN_PORT"
 EOF
   chmod 600 "$CONF_FILE"
 
-  # ดาวน์โหลดสคริปต์จาก repo
+  # ดาวน์โหลดสคริปต์จาก repo (บังคับ overwrite)
   download_or_die "$SRC_ONLINE" "$SCRIPT_ONLINE"
   download_or_die "$SRC_VNSTAT" "$SCRIPT_VNSTAT"
   download_or_die "$SRC_V2RAY"  "$SCRIPT_V2RAY"
   download_or_die "$SRC_SYSINFO" "$SCRIPT_SYSINFO"
-  chmod +x "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
+  ensure_exec "$SCRIPT_ONLINE"
+  ensure_exec "$SCRIPT_VNSTAT"
+  ensure_exec "$SCRIPT_V2RAY"
+  ensure_exec "$SCRIPT_SYSINFO"
+
+  # เตือนถ้า online-check.sh ในรีโปยังไม่มี agnudp (กันกรณีรีโปยังไม่อัป)
+  if ! file_has_text "$SCRIPT_ONLINE" 'agnudp'; then
+    echo -e "${YELLOW}[WARN]${NC} online-check.sh ที่ดึงมา ${BOLD}ไม่พบคำว่า 'agnudp'${NC} — โปรดตรวจสอบว่ารีโปอัปเดตเวอร์ชันล่าสุดแล้ว"
+  fi
 
   mkdir -p "$WWW_DIR"
   download_or_die "$SRC_INDEX" "$WWW_DIR/index.html"
@@ -295,7 +362,7 @@ EOF
   # Nginx
   write_nginx
 
-  # systemd services (5 วินาที ตามสเปค)
+  # systemd services (ทุก 5 วิ ตามสเปค)
   cat >"$SERVICE_ONLINE" <<'EOF'
 [Unit]
 Description=ShowOn Online Users JSON Generator
@@ -369,14 +436,14 @@ EOF
   press
 }
 
-# =====================================================
+# =====================================================================
 # ถอนการติดตั้ง
-# =====================================================
+# =====================================================================
 
 uninstall_script() {
   echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script..."
 
-  systemctl stop online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
+  systemctl stop    online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
   systemctl disable online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
 
   rm -f "$SERVICE_ONLINE" "$SERVICE_VNSTAT" "$SERVICE_V2RAY" "$SERVICE_SYSINFO"
@@ -392,7 +459,7 @@ uninstall_script() {
     systemctl restart nginx 2>/dev/null || true
   fi
 
-  # ลบ conntrack ตามที่ตกลง (ไม่แตะ nginx/vnstat)
+  # ลบ conntrack ตามที่ตกลง
   echo -e "${CYAN}[INFO]${NC} Removing conntrack package..."
   apt purge -y conntrack >/dev/null 2>&1 || true
   apt autoremove -y >/dev/null 2>&1 || true
@@ -401,39 +468,50 @@ uninstall_script() {
   press
 }
 
-# =====================================================
+# =====================================================================
 # อัปเดต
-# =====================================================
+# =====================================================================
 
 update_script() {
   echo -e "${CYAN}[INFO]${NC} Updating all ShowOn components..."
   rotate_log
 
+  # บังคับ overwrite ไฟล์ทั้งหมด
   download_or_die "$SRC_ONLINE" "$SCRIPT_ONLINE"
   download_or_die "$SRC_VNSTAT" "$SCRIPT_VNSTAT"
   download_or_die "$SRC_V2RAY"  "$SCRIPT_V2RAY"
   download_or_die "$SRC_SYSINFO" "$SCRIPT_SYSINFO"
-  chmod +x "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
+  ensure_exec "$SCRIPT_ONLINE"
+  ensure_exec "$SCRIPT_VNSTAT"
+  ensure_exec "$SCRIPT_V2RAY"
+  ensure_exec "$SCRIPT_SYSINFO"
+
+  # เตือนกรณี online-check.sh ยังไม่รองรับ agnudp
+  if ! file_has_text "$SCRIPT_ONLINE" 'agnudp'; then
+    echo -e "${YELLOW}[WARN]${NC} online-check.sh ที่ดึงมา ${BOLD}ไม่พบคำว่า 'agnudp'${NC} — โปรดตรวจสอบรีโปเวอร์ชัน"
+  fi
 
   download_or_die "$SRC_INDEX" "$WWW_DIR/index.html"
   chmod 644 "$WWW_DIR/index.html"
 
+  # อัปเดตตัว Install เอง (ดึงไฟล์ Install จากรีโปมาแทน /root/Install)
   local TMP_SCRIPT="/tmp/Install.$$"
   if curl -fsSL "$REPO_RAW/Install" -o "$TMP_SCRIPT"; then
+    sed -i 's/\r$//' "$TMP_SCRIPT" 2>/dev/null || true
     mv "$TMP_SCRIPT" /root/Install
     chmod +x /root/Install
     echo -e "${GREEN}[OK]${NC} Updated Install script."
   else
-    echo -e "${RED}[ERROR]${NC} Failed to update Install script."
+    echo -e "${YELLOW}[WARN]${NC} Failed to update /root/Install (remote not reachable)."
   fi
 
   echo -e "${GREEN}[OK]${NC} Update completed."
   press
 }
 
-# =====================================================
+# =====================================================================
 # Debug Log / Change Limit
-# =====================================================
+# =====================================================================
 
 check_debug() {
   rotate_log
@@ -460,14 +538,19 @@ change_limit() {
     press; return
   fi
 
+  if ! [[ "$NEW_LIMIT" =~ ^[0-9]+$ ]]; then
+    echo -e "${RED}[ERROR]${NC} ค่า Limit ต้องเป็นตัวเลขเท่านั้น"
+    press; return
+  fi
+
   sed -i "s/^LIMIT=.*/LIMIT=${NEW_LIMIT}/" "$CONF_FILE"
   echo -e "${GREEN}[OK]${NC} คุณได้เปลี่ยน Limit User Online แล้วเป็น ${NEW_LIMIT} คน"
   press
 }
 
-# =====================================================
+# =====================================================================
 # Setup Swap (อัตโนมัติ + รีสตาร์ต service)
-# =====================================================
+# =====================================================================
 
 setup_swap() {
   echo -e "${CYAN}[INFO]${NC} Auto Swap Wizard"
@@ -528,9 +611,9 @@ setup_swap() {
   press
 }
 
-# =====================================================
+# =====================================================================
 # เมนู
-# =====================================================
+# =====================================================================
 
 show_menu() {
   header
@@ -557,10 +640,3 @@ show_menu() {
   esac
   show_menu
 }
-
-# =====================================================
-# Main
-# =====================================================
-
-require_root
-show_menu
