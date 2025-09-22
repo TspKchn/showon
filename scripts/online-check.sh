@@ -3,6 +3,7 @@
 # online-check.sh - ShowOn Online Users Checker
 # รองรับ: SSH / OpenVPN / Dropbear / 3x-ui / Xray-Core / AGN-UDP
 # Author: TspKchn + ChatGPT
+# Compatible: Ubuntu 18.04+
 # =====================================================
 
 set -euo pipefail
@@ -16,11 +17,7 @@ TMP_COOKIE=$(mktemp /tmp/showon_cookie_XXXXXX)
 NOW=$(date +%s%3N)
 SERVER_IP=$(hostname -I | awk '{print $1}')
 
-SSH_ON=0
-OVPN_ON=0
-DB_ON=0
-V2_ON=0
-AGNUDP_ON=0
+SSH_ON=0; OVPN_ON=0; DB_ON=0; V2_ON=0; AGNUDP_ON=0
 
 # ==== Log Rotate (1MB) ====
 rotate_log() {
@@ -47,40 +44,30 @@ fi
 
 # ==== V2Ray/Xray ====
 if [[ -n "${PANEL_URL:-}" ]]; then
-  # ===== MODE: 3x-ui =====
   LOGIN_OK=false
-
   if curl -sk -c "$TMP_COOKIE" -X POST "$PANEL_URL/login" \
        -H "Content-Type: application/x-www-form-urlencoded" \
        --data "username=$XUI_USER&password=$XUI_PASS" | grep -q '"success":true'; then
     LOGIN_OK=true
-  else
-    if curl -sk -c "$TMP_COOKIE" -X POST "$PANEL_URL/login" \
-         -H "Content-Type: application/json" \
-         -d "{\"username\":\"$XUI_USER\",\"password\":\"$XUI_PASS\"}" | grep -q '"success":true'; then
-      LOGIN_OK=true
-    fi
+  elif curl -sk -c "$TMP_COOKIE" -X POST "$PANEL_URL/login" \
+       -H "Content-Type: application/json" \
+       -d "{\"username\":\"$XUI_USER\",\"password\":\"$XUI_PASS\"}" | grep -q '"success":true'; then
+    LOGIN_OK=true
   fi
 
   if $LOGIN_OK; then
-    RESP=$(curl -sk -b "$TMP_COOKIE" -X POST "$PANEL_URL/panel/api/inbounds/onlines" || true)
+    RESP=$(curl -sk -b "$TMP_COOKIE" "$PANEL_URL/panel/api/inbounds/onlines" || true)
     if echo "$RESP" | grep -q '"success":true'; then
       V2_ON=$(echo "$RESP" | jq '[.obj[]?] | length')
     else
-      RESP=$(curl -sk -b "$TMP_COOKIE" "$PANEL_URL/panel/api/inbounds/onlines" || true)
+      RESP=$(curl -sk -b "$TMP_COOKIE" "$PANEL_URL/panel/api/inbounds/list" || true)
       if echo "$RESP" | grep -q '"success":true'; then
-        V2_ON=$(echo "$RESP" | jq '[.obj[]?] | length')
-      else
-        RESP=$(curl -sk -b "$TMP_COOKIE" "$PANEL_URL/panel/api/inbounds/list" || true)
-        if echo "$RESP" | grep -q '"success":true'; then
-          V2_ON=$(echo "$RESP" | jq --argjson now "$NOW" '
-            [ .obj[]?.clientStats[]?
-              | select(.lastOnline != null and ($now - .lastOnline) < 5000)
-            ] | length')
-        fi
+        V2_ON=$(echo "$RESP" | jq --argjson now "$NOW" '
+          [ .obj[]?.clientStats[]?
+            | select(.lastOnline != null and ($now - .lastOnline) < 5000)
+          ] | length')
       fi
     fi
-
     {
       echo "[$(date '+%F %T')] 3x-ui API response"
       echo "$RESP" | jq '.' 2>/dev/null || echo "$RESP"
@@ -88,43 +75,34 @@ if [[ -n "${PANEL_URL:-}" ]]; then
       echo
     } >> "$DEBUG_LOG"
   fi
-
 else
-  # ===== MODE: Xray-Core =====
   if [[ -f /usr/local/etc/xray/config.json || -f /etc/xray/config.json ]]; then
-    
     if [[ -f /var/log/xray/vless_ntls.log ]]; then
       V2_ON=$(grep 'accepted' /var/log/xray/vless_ntls.log | grep 'email:' \
                 | awk '{print $3}' | cut -d: -f1 | sort -u | wc -l)
-      {
-        echo "[$(date '+%F %T')] XRAY-CORE (YoLoNET) snapshot"
-        echo "→ Counted unique IPs: $V2_ON"
-        echo
-      } >> "$DEBUG_LOG"
     elif [[ -f /var/log/xray/access.log ]]; then
       V2_ON=$(grep 'accepted' /var/log/xray/access.log | grep 'email:' \
                 | awk '{print $3}' | cut -d: -f1 | sort -u | wc -l)
-      {
-        echo "[$(date '+%F %T')] XRAY-CORE (Givpn) snapshot"
-        echo "→ Counted unique IPs: $V2_ON"
-        echo
-      } >> "$DEBUG_LOG"
     fi
   fi
 fi
 
-# ==== AGN-UDP ====
+# ==== AGN-UDP (Hysteria) ====
 if [[ -f /etc/hysteria/config.json ]]; then
   AGNUDP_PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
     | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//')
 
   if [[ -n "$AGNUDP_PORT" && "$AGNUDP_PORT" =~ ^[0-9]+$ ]]; then
     if command -v conntrack >/dev/null 2>&1; then
+      # ปรับ timeout ลงเหลือ 5s เพื่อให้ค่า agnudp ลดเร็ว
+      sysctl -w net.netfilter.nf_conntrack_udp_timeout=5 >/dev/null 2>&1 || true
+      sysctl -w net.netfilter.nf_conntrack_udp_timeout_stream=5 >/dev/null 2>&1 || true
+
       AGNUDP_ON=$(conntrack -L -p udp 2>/dev/null \
         | grep "dport=$AGNUDP_PORT" \
         | grep 'src=' \
         | awk '{for(i=1;i<=NF;i++) if($i ~ /^src=/) print $i}' \
-        | cut -d= -f2- \
+        | cut -d= -f2 \
         | grep -v "^$SERVER_IP" \
         | sort -u \
         | grep -c . || echo 0)
