@@ -196,9 +196,6 @@ install_script() {
   echo -e "${CYAN}[INFO]${NC} Installing dependencies..."
   apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates vnstat conntrack >/dev/null 2>&1 || true
 
-  # 🔴 ติดตั้ง nginx เสร็จ → เขียน config และเปิด port 82 เลย
-  write_nginx
-
   # 3) Enable vnstat
   systemctl enable vnstat >/dev/null 2>&1 || true
   systemctl start vnstat  >/dev/null 2>&1 || true
