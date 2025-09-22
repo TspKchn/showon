@@ -6,6 +6,7 @@
 # =====================================================
 
 set -euo pipefail
+trap 'echo "[ERROR] line $LINENO: command exited with status $?" >> "$DEBUG_LOG"' ERR
 
 CONF=/etc/showon.conf
 source "$CONF"
@@ -80,7 +81,6 @@ if [[ -n "${PANEL_URL:-}" ]]; then
       fi
     fi
 
-    # ==== Debug log ====
     {
       echo "[$(date '+%F %T')] 3x-ui API response"
       echo "$RESP" | jq '.' 2>/dev/null || echo "$RESP"
@@ -93,22 +93,17 @@ else
   # ===== MODE: Xray-Core =====
   if [[ -f /usr/local/etc/xray/config.json || -f /etc/xray/config.json ]]; then
     
-    # ---- YoLoNET style ----
     if [[ -f /var/log/xray/vless_ntls.log ]]; then
       V2_ON=$(grep 'accepted' /var/log/xray/vless_ntls.log | grep 'email:' \
                 | awk '{print $3}' | cut -d: -f1 | sort -u | wc -l)
-
       {
         echo "[$(date '+%F %T')] XRAY-CORE (YoLoNET) snapshot"
         echo "→ Counted unique IPs: $V2_ON"
         echo
       } >> "$DEBUG_LOG"
-
-    # ---- Givpn style ----
     elif [[ -f /var/log/xray/access.log ]]; then
       V2_ON=$(grep 'accepted' /var/log/xray/access.log | grep 'email:' \
                 | awk '{print $3}' | cut -d: -f1 | sort -u | wc -l)
-
       {
         echo "[$(date '+%F %T')] XRAY-CORE (Givpn) snapshot"
         echo "→ Counted unique IPs: $V2_ON"
@@ -120,12 +115,13 @@ fi
 
 # ==== AGN-UDP ====
 if [[ -f /etc/hysteria/config.json ]]; then
-  AGNUDP_PORT=$(jq -r '.listen' /etc/hysteria/config.json 2>/dev/null | tr -d '"')
-  AGNUDP_PORT=${AGNUDP_PORT#:}
+  AGNUDP_PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
+    | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//')
 
   if [[ -n "$AGNUDP_PORT" && "$AGNUDP_PORT" =~ ^[0-9]+$ ]]; then
     if command -v conntrack >/dev/null 2>&1; then
-      AGNUDP_ON=$(conntrack -L -p udp --dport $AGNUDP_PORT 2>/dev/null \
+      AGNUDP_ON=$(conntrack -L -p udp 2>/dev/null \
+        | grep "dport=$AGNUDP_PORT" \
         | grep 'src=' \
         | awk '{for(i=1;i<=NF;i++) if($i ~ /^src=/) print $i}' \
         | cut -d= -f2- \
