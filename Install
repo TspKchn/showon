@@ -170,9 +170,9 @@ print_status() {
   local c_sy=$( [[ "$stat_sys" == "ON" ]] && echo "$GREEN" || echo "$RED" )
   local c_ct=$( [[ "$(conntrack_status)" == "ON" ]] && echo "$GREEN" || echo "$RED" )
 
-  local installed="${RED}✘ Not Installed${NC}"
+  local installed="${RED}✘ Not Installed  ${NC}"
   if [[ -f "$SCRIPT_ONLINE" || -f "$SCRIPT_VNSTAT" || -f "$SCRIPT_V2RAY" || -f "$SCRIPT_SYSINFO" ]]; then
-    installed="${GREEN}✔ Installed${NC}"
+    installed="${GREEN}✔ Installed  ${NC}"
   fi
 
   echo "==============================="
