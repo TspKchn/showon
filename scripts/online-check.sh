@@ -104,9 +104,22 @@ if [[ -f /etc/hysteria/config.json ]]; then
         | grep -v "^$SERVER_IP" \
         | sort -u \
         | wc -l)
+    else
+      AGNUDP_ON=0
     fi
+  else
+    AGNUDP_ON=0
   fi
+else
+  AGNUDP_ON=0
 fi
+
+# log AGN-UDP count → debug log
+{
+  echo "[$(date '+%F %T')] AGN-UDP port: ${AGNUDP_PORT:-N/A}"
+  echo "AGN-UDP online: $AGNUDP_ON"
+  echo
+} >> "$DEBUG_LOG"
 
 TOTAL=$((SSH_ON + OVPN_ON + DB_ON + V2_ON + AGNUDP_ON))
 
