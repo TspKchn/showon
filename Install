@@ -118,19 +118,6 @@ EOF
   echo -e "${GREEN}[OK]${NC} Nginx ready at :82 (/server/)"
 }
 
-# ตรวจสอบ AGN-UDP (hysteria)
-  if [[ -f /etc/hysteria/config.json ]]; then
-    AGNUDP_PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
-      | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//')
-    if [[ -n "$AGNUDP_PORT" && "$AGNUDP_PORT" =~ ^[0-9]+$ ]]; then
-      echo -e "${GREEN}[OK]${NC} AGN-UDP detected on port: ${AGNUDP_PORT}"
-    else
-      echo -e "${YELLOW}[WARN]${NC} Found hysteria config but no valid port"
-    fi
-  else
-    echo -e "${CYAN}[INFO]${NC} AGN-UDP (hysteria) not found → skipped"
-  fi
-
 # สถานะ conntrack (ไว้โชว์ในเมนู)
 conntrack_status() {
   if command -v conntrack >/dev/null 2>&1; then echo "ON"; else echo "OFF"; fi
@@ -217,6 +204,32 @@ install_script() {
   mkdir -p "$WWW_DIR" "$BIN_DIR" "$(dirname "$DEBUG_LOG")"
   rotate_log
 
+# ======================= ตรวจ AGN-UDP (Hysteria) =======================
+local AGN_PRESENT="0" AGN_PORT=""
+
+# วิธีที่ 1: ตรวจจากไฟล์ config.json
+if [[ -f /etc/hysteria/config.json ]]; then
+  AGN_PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
+    | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//')
+
+  if [[ -n "$AGN_PORT" && "$AGN_PORT" =~ ^[0-9]+$ ]]; then
+    AGN_PRESENT="1"
+    echo -e "${GREEN}[OK]${NC} AGN-UDP (Hysteria) detected from config → port: ${B}${AGN_PORT}${NC}"
+  else
+    echo -e "${YELLOW}[WARN]${NC} Found hysteria config but no valid port"
+  fi
+fi
+
+# วิธีที่ 2: fallback → ตรวจจาก detect_agnudp()
+if [[ "$AGN_PRESENT" == "0" ]]; then
+  IFS='|' read -r AGN_PRESENT AGN_PORT <<<"$(detect_agnudp)"
+  if [[ "$AGN_PRESENT" == "1" ]]; then
+    echo -e "${GREEN}[OK]${NC} AGN-UDP (Hysteria) detected via systemd/binary → port: ${B}${AGN_PORT}${NC}"
+  else
+    echo -e "${CYAN}[INFO]${NC} AGN-UDP (Hysteria) not found → skipped"
+  fi
+fi
+
   # ตรวจว่าเป็น 3x-ui หรือ Xray-Core
   local PANEL_URL XUI_USER XUI_PASS
   if [[ -d /etc/x-ui ]]; then
@@ -233,15 +246,6 @@ install_script() {
     PANEL_URL=""
     XUI_USER=""
     XUI_PASS=""
-  fi
-
-  # ตรวจจับ Hysteria/AGN-UDP
-  local AGN_PRESENT="0" AGN_PORT=""
-  IFS='|' read -r AGN_PRESENT AGN_PORT <<<"$(detect_agnudp)"
-  if [[ "$AGN_PRESENT" == "1" ]]; then
-    echo -e "${GREEN}[OK]${NC} พบ AGN-UDP (Hysteria) → listen port: ${B}${AGN_PORT}${NC}"
-  else
-    echo -e "${YELLOW}[WARN]${NC} ไม่พบ AGN-UDP (Hysteria) → จะไม่นับ agnudp"
   fi
 
   # Limit
