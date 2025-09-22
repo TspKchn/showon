@@ -17,7 +17,12 @@ TMP_COOKIE=$(mktemp /tmp/showon_cookie_XXXXXX)
 NOW=$(date +%s%3N)
 SERVER_IP=$(hostname -I | awk '{print $1}')
 
-SSH_ON=0; OVPN_ON=0; DB_ON=0; V2_ON=0; AGNUDP_ON=0
+# init counters
+SSH_ON=0
+OVPN_ON=0
+DB_ON=0
+V2_ON=0
+AGNUDP_ON=0
 
 # ==== Log Rotate (1MB) ====
 rotate_log() {
@@ -30,7 +35,7 @@ rotate_log() {
 rotate_log
 
 # ==== SSH ====
-SSH_ON=$(ss -nt state established | awk '$3 ~ /:22$/ {c++} END {print c+0}')
+SSH_ON=$(ss -nt state established 2>/dev/null | awk '$3 ~ /:22$/ {c++} END {print c+0}')
 
 # ==== OpenVPN ====
 if [[ -f /etc/openvpn/server/openvpn-status.log ]]; then
@@ -88,39 +93,38 @@ else
 fi
 
 # ==== AGN-UDP ====
-AGNUDP_ON=0
 if [[ -f /etc/hysteria/config.json ]]; then
   AGNUDP_PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
     | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//')
 
-  if [[ -n "$AGNUDP_PORT" && "$AGNUDP_PORT" =~ ^[0-9]+$ ]]; then
+  if [[ -n "${AGNUDP_PORT:-}" && "$AGNUDP_PORT" =~ ^[0-9]+$ ]]; then
     if command -v conntrack >/dev/null 2>&1; then
-      SERVER_IP=$(hostname -I | awk '{print $1}')
-      AGNUDP_ON=$(conntrack -L -p udp 2>/dev/null \
-        | grep "dport=$AGNUDP_PORT" \
+      RAW_CONN=$(conntrack -L -p udp 2>/dev/null | grep "dport=$AGNUDP_PORT" || true)
+      AGNUDP_ON=$(echo "$RAW_CONN" \
         | grep 'src=' \
         | awk '{for(i=1;i<=NF;i++) if($i ~ /^src=/) print $i}' \
         | cut -d= -f2- \
         | grep -v "^$SERVER_IP" \
         | sort -u \
-        | wc -l || echo 0)
+        | wc -l)
     fi
   fi
 fi
 
-# log AGN-UDP count → debug log
+# log AGN-UDP count
 {
   echo "[$(date '+%F %T')] AGN-UDP port: ${AGNUDP_PORT:-N/A}"
   echo "AGN-UDP online: ${AGNUDP_ON:-0}"
   echo
 } >> "$DEBUG_LOG"
 
-# ensure numeric defaults for all counters
+# ==== JSON OUTPUT ====
 SSH_ON=${SSH_ON:-0}
 OVPN_ON=${OVPN_ON:-0}
 DB_ON=${DB_ON:-0}
 V2_ON=${V2_ON:-0}
 AGNUDP_ON=${AGNUDP_ON:-0}
+LIMIT=${LIMIT:-2000}
 
 TOTAL=$((SSH_ON + OVPN_ON + DB_ON + V2_ON + AGNUDP_ON))
 
