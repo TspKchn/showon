@@ -184,7 +184,7 @@ print_status() {
   [[ -f "$SERVICE_ONLINE" ]] && systemctl is-active --quiet online-check && stat_online="ON"
   [[ -f "$SERVICE_VNSTAT" ]] && systemctl is-active --quiet vnstat-traffic && stat_vnstat="ON"
   [[ -f "$SERVICE_V2RAY"  ]] && systemctl is-active --quiet v2ray-traffic  && stat_v2="ON"
-  [[ -f "$SERVICE_SYSINFO" ]] && systemctl is-active --quiet sysinfo        && stat_sys="ON"
+  [[ -f "$SERVICE_SYSINFO" ]] && systemctl is-active --quiet sysinfo && stat_sys="ON"
 
   # สี
   local c_ng=$( [[ "$stat_nginx"  == "ON" ]] && echo "$GREEN" || echo "$RED" )
