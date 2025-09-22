@@ -1,8 +1,8 @@
 #!/bin/bash
 # =====================================================
 # online-check.sh - ShowOn Online Users Checker
-# รองรับ: SSH / OpenVPN / Dropbear / 3x-ui / Xray-Core (YoLoNET,Givpn)
-# Author: TspKchn
+# รองรับ: SSH / OpenVPN / Dropbear / 3x-ui / Xray-Core / AGN-UDP
+# Author: TspKchn + ChatGPT
 # =====================================================
 
 set -euo pipefail
@@ -13,11 +13,13 @@ source "$CONF"
 JSON_OUT="$WWW_DIR/online_app.json"
 TMP_COOKIE=$(mktemp /tmp/showon_cookie_XXXXXX)
 NOW=$(date +%s%3N)
+SERVER_IP=$(hostname -I | awk '{print $1}')
 
 SSH_ON=0
 OVPN_ON=0
 DB_ON=0
 V2_ON=0
+AGNUDP_ON=0
 
 # ==== Log Rotate (1MB) ====
 rotate_log() {
@@ -27,7 +29,6 @@ rotate_log() {
     : > "$DEBUG_LOG"
   fi
 }
-
 rotate_log
 
 # ==== SSH ====
@@ -117,9 +118,27 @@ else
   fi
 fi
 
-TOTAL=$((SSH_ON + OVPN_ON + DB_ON + V2_ON))
+# ==== AGN-UDP ====
+if [[ -f /etc/hysteria/config.json ]]; then
+  AGNUDP_PORT=$(jq -r '.listen' /etc/hysteria/config.json 2>/dev/null | tr -d '"')
+  AGNUDP_PORT=${AGNUDP_PORT#:}
+
+  if [[ -n "$AGNUDP_PORT" && "$AGNUDP_PORT" =~ ^[0-9]+$ ]]; then
+    if command -v conntrack >/dev/null 2>&1; then
+      AGNUDP_ON=$(conntrack -L -p udp --dport $AGNUDP_PORT 2>/dev/null \
+        | grep 'src=' \
+        | awk '{for(i=1;i<=NF;i++) if($i ~ /^src=/) print $i}' \
+        | cut -d= -f2- \
+        | grep -v "^$SERVER_IP" \
+        | sort -u \
+        | grep -c . || echo 0)
+    fi
+  fi
+fi
+
+TOTAL=$((SSH_ON + OVPN_ON + DB_ON + V2_ON + AGNUDP_ON))
 
 mkdir -p "$WWW_DIR"
-echo -n "[{\"onlines\":$TOTAL,\"limite\":$LIMIT,\"ssh\":$SSH_ON,\"openvpn\":$OVPN_ON,\"dropbear\":$DB_ON,\"v2ray\":$V2_ON,\"timestamp\":$NOW}]" > "$JSON_OUT"
+echo -n "[{\"onlines\":$TOTAL,\"limite\":$LIMIT,\"ssh\":$SSH_ON,\"openvpn\":$OVPN_ON,\"dropbear\":$DB_ON,\"v2ray\":$V2_ON,\"agnudp\":$AGNUDP_ON,\"timestamp\":$NOW}]" > "$JSON_OUT"
 
 rm -f "$TMP_COOKIE"
