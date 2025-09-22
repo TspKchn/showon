@@ -88,14 +88,14 @@ else
 fi
 
 # ==== AGN-UDP ====
+AGNUDP_ON=0
 if [[ -f /etc/hysteria/config.json ]]; then
   AGNUDP_PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
     | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//')
 
-  SERVER_IP=$(hostname -I | awk '{print $1}')
-
   if [[ -n "$AGNUDP_PORT" && "$AGNUDP_PORT" =~ ^[0-9]+$ ]]; then
     if command -v conntrack >/dev/null 2>&1; then
+      SERVER_IP=$(hostname -I | awk '{print $1}')
       AGNUDP_ON=$(conntrack -L -p udp 2>/dev/null \
         | grep "dport=$AGNUDP_PORT" \
         | grep 'src=' \
