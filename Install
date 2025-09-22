@@ -1,11 +1,11 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.6 (Extended Edition)
+# ShowOn Script Manager V.1.0.7 (Extended Edition)
 # Author : TspKchn + ChatGPT
 # =====================================================
 
 # ----------------- เวอร์ชัน -----------------
-VERSION="V.1.0.6"
+VERSION="V.1.0.7"
 
 # ----------------- พาธรีโป ------------------
 REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main"
@@ -166,9 +166,9 @@ print_status() {
   local c_sy=$( [[ "$stat_sys" == "ON" ]] && echo "$GREEN" || echo "$RED" )
   local c_ct=$( [[ "$(conntrack_status)" == "ON" ]] && echo "$GREEN" || echo "$RED" )
 
-  local installed="${RED}Not Installed${NC}"
+  local installed="${RED}✘ Not Installed${NC}"
   if [[ -f "$SCRIPT_ONLINE" || -f "$SCRIPT_VNSTAT" || -f "$SCRIPT_V2RAY" || -f "$SCRIPT_SYSINFO" ]]; then
-    installed="${GREEN}Installed${NC}"
+    installed="${GREEN}✔ Installed${NC}"
   fi
 
   echo "==============================="
@@ -195,6 +195,18 @@ install_script() {
   # 2) Install dependencies (รวม nginx ด้วย)
   echo -e "${CYAN}[INFO]${NC} Installing dependencies..."
   apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates vnstat conntrack >/dev/null 2>&1 || true
+
+  # ปรับ timeout ของ conntrack UDP ให้เหลือ 5 วินาที  
+  echo -e "${CYAN}[INFO]${NC} Tuning conntrack UDP timeout → 5s"  
+  sysctl -w net.netfilter.nf_conntrack_udp_timeout=5 >/dev/null 2>&1 || true  
+  sysctl -w net.netfilter.nf_conntrack_udp_timeout_stream=5 >/dev/null 2>&1 || true  
+
+  # บันทึกถาวรลง /etc/sysctl.conf  
+  if ! grep -q "nf_conntrack_udp_timeout" /etc/sysctl.conf; then  
+    echo "net.netfilter.nf_conntrack_udp_timeout=5" >> /etc/sysctl.conf  
+    echo "net.netfilter.nf_conntrack_udp_timeout_stream=5" >> /etc/sysctl.conf  
+    sysctl -p >/dev/null 2>&1 || true  
+  fi
 
   # 3) Enable vnstat
   systemctl enable vnstat >/dev/null 2>&1 || true
@@ -392,6 +404,13 @@ uninstall_script() {
   # ลบ conntrack ออกจากระบบ
   apt purge -y conntrack >/dev/null 2>&1 || true
   apt autoremove -y >/dev/null 2>&1 || true
+
+  # ลบค่า timeout ของ conntrack UDP ออกจาก /etc/sysctl.conf
+  sed -i '/^net\.netfilter\.nf_conntrack_udp_timeout=/d' /etc/sysctl.conf
+  sed -i '/^net\.netfilter\.nf_conntrack_udp_timeout_stream=/d' /etc/sysctl.conf
+
+  # รีโหลด sysctl เพื่อคืนค่า default ของระบบ
+  sysctl -p >/dev/null 2>&1 || true
 
   echo -e "${GREEN}[SUCCESS]${NC} Uninstalled completely (ShowOn + conntrack removed)."
 }
