@@ -46,12 +46,12 @@ fi
 
 # ==== JSON Export (compact, no spaces/newlines) ====
 JSON=$(jq -c -n \
-  --argjson rx "$VN_RX" \
-  --argjson tx "$VN_TX" \
-  --argjson up "$V2_UP" \
-  --argjson down "$V2_DOWN" \
-  '[{"vnstat":{"rx":$rx,"tx":$tx},"v2ray":{"up":$up,"down":$down}}]')
-
+  --arg rx "$RX" \
+  --arg tx "$TX" \
+  --arg up "$UP" \
+  --arg down "$DOWN" \
+  '[{"vnstat_rx":$rx,"vnstat_tx":$tx,"v2ray_up":$up,"v2ray_down":$down}]')
+  
 mkdir -p "$WWW_DIR"
 echo -n "$JSON" > "$OUT"
 
