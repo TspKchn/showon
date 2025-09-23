@@ -102,9 +102,10 @@ server {
         add_header Cache-Control "no-store";
 
         # บังคับ MIME สำหรับ online_app (ไม่มีนามสกุล) และ online_app.json
-        location ~ /server/online_app(\.json)?$ {
-            default_type application/json;
-        }
+location ~ /server/online_app(\.json)?$ {
+    default_type application/json;
+    add_header Content-Type application/json;
+       }
     }
 }
 EOF
