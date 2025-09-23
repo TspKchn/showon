@@ -26,7 +26,7 @@ Dashboard สำหรับตรวจสอบสถานะ Online ขอ�
 
 ### วิธีที่ 1: ใช้ `wget`
 ```bash
-wget -O /root/Install https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install
+wget -O /root/Install https://raw.githubusercontent.com/TspKchn/showon/main/Install
 chmod +x /root/Install
 /root/Install
 
@@ -34,7 +34,7 @@ chmod +x /root/Install
 
 ### วิธีที่ 2: ใช้ `curl`
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main/Install)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/TspKchn/showon/main/Install)"
 
 ```
 
