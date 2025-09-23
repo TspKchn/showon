@@ -191,6 +191,26 @@ print_status() {
   echo -e "Status: $installed"
   echo "==============================="
 }
+
+# ตรวจจับ AGN-UDP (Hysteria) จาก systemd / process
+detect_agnudp() {
+  local present="0" port=""
+  
+  # ตรวจจาก systemd service
+  if systemctl list-units --type=service | grep -q 'hysteria'; then
+    port=$(ss -tulnp | grep hysteria | awk '{print $5}' | cut -d: -f2 | head -n1)
+    [[ -n "$port" ]] && present="1"
+  fi
+
+  # ตรวจจาก binary โดยตรง
+  if [[ "$present" == "0" && -x "$(command -v hysteria)" ]]; then
+    port=$(ss -tulnp | grep hysteria | awk '{print $5}' | cut -d: -f2 | head -n1)
+    [[ -n "$port" ]] && present="1"
+  fi
+
+  echo "$present|$port"
+}
+
 # =====================================================
 # ติดตั้ง
 # =====================================================
