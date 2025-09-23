@@ -14,27 +14,21 @@ OUT="$WWW_DIR/netinfo.json"
 TMP_COOKIE=$(mktemp /tmp/showon_cookie_XXXXXX)
 NOW=$(date +%s%3N)
 
-VN_RX=0
-VN_TX=0
-V2_UP=0
-V2_DOWN=0
+VN_RX=0; VN_TX=0; V2_UP=0; V2_DOWN=0
 
 # ==== vnStat ====
 if command -v vnstat >/dev/null 2>&1; then
-  VN_RX=$(vnstat --json s | jq -r '.interfaces[0].traffic.total.rx' || echo 0)
-  VN_TX=$(vnstat --json s | jq -r '.interfaces[0].traffic.total.tx' || echo 0)
+  VN_RX=$(vnstat --json a | jq -r '.interfaces[0].traffic.total.rx // 0')
+  VN_TX=$(vnstat --json a | jq -r '.interfaces[0].traffic.total.tx // 0')
 fi
 
-# ==== V2Ray / Xray (ผ่าน 3x-ui API) ====
+# ==== V2Ray / Xray (3x-ui API) ====
 if [[ -n "${PANEL_URL:-}" ]]; then
   LOGIN_OK=false
-
-  # login: form-data
   if curl -sk -c "$TMP_COOKIE" -X POST "$PANEL_URL/login" \
        -H "Content-Type: application/x-www-form-urlencoded" \
        --data "username=$XUI_USER&password=$XUI_PASS" | grep -q '"success":true'; then
     LOGIN_OK=true
-  # login: json
   elif curl -sk -c "$TMP_COOKIE" -X POST "$PANEL_URL/login" \
        -H "Content-Type: application/json" \
        -d "{\"username\":\"$XUI_USER\",\"password\":\"$XUI_PASS\"}" | grep -q '"success":true'; then
