@@ -11,15 +11,22 @@ CONF="/etc/showon.conf"
 source "$CONF"
 
 OUT="$WWW_DIR/sysinfo.json"
-log(){ echo "[$(date '+%F %T')][SYS] $*" >> "$DEBUG_LOG"; }
+log() { echo "[$(date '+%F %T')][SYS] $*" >> "$DEBUG_LOG"; }
 
+# ==== Uptime ====
 uptime=$(uptime -p | sed 's/^up //')
+
+# ==== CPU Usage ====
 cpu_free=$(top -bn1 | awk '/Cpu\(s\)/ {print $8}' || echo "0")
 cpu_use=$(awk -v f="$cpu_free" 'BEGIN{printf("%.1f%%",100-f)}')
-ram=$(free -m | awk 'NR==2{printf "%s/%sMB",$3,$2}')
-disk=$(df -h / | awk 'NR==2{printf "%s/%s",$3,$2}')
 
-# ✅ JSON แบบ compact
+# ==== RAM Usage ====
+ram="$(free -m | awk 'NR==2{printf "%s/%sMB",$3,$2}')"
+
+# ==== Disk Usage ====
+disk="$(df -h / | awk 'NR==2{printf "%s/%s",$3,$2}')"
+
+# ==== JSON Export (compact, no spaces/newlines) ====
 JSON=$(jq -c -n \
   --arg uptime "$uptime" \
   --arg cpu "$cpu_use" \
@@ -29,4 +36,5 @@ JSON=$(jq -c -n \
 
 mkdir -p "$WWW_DIR"
 echo -n "$JSON" > "$OUT"
+
 log "sysinfo: $JSON"
