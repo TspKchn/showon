@@ -197,12 +197,13 @@ TOTAL=$((SSH_ON + OVPN_ON + DB_ON + V2_ON + AGNUDP_ON))
 # Output JSON (overwrite)
 # ---------------------------
 mkdir -p "$WWW_DIR"
-JSON_DATA="[{"onlines":$TOTAL,"limite":$LIMIT,"ssh":$SSH_ON,"openvpn":$OVPN_ON,"dropbear":$DB_ON,"v2ray":$V2_ON,"agnudp":$AGNUDP_ON,"timestamp":$NOW}]"
+
+JSON_DATA="[{\"onlines\":$TOTAL,\"limite\":$LIMIT,\"ssh\":$SSH_ON,\"openvpn\":$OVPN_ON,\"dropbear\":$DB_ON,\"v2ray\":$V2_ON,\"agnudp\":$AGNUDP_ON,\"timestamp\":$NOW}]"
 
 # export เป็น online_app.json
 echo -n "$JSON_DATA" > "$WWW_DIR/online_app.json"
 
-# export เป็น online_app.js (เนื้อหาเดียวกัน)
+# export เป็น online_app (ไม่มีนามสกุล แต่เนื้อหาเดียวกัน)
 echo -n "$JSON_DATA" > "$WWW_DIR/online_app"
 
 rm -f "$TMP_COOKIE"
