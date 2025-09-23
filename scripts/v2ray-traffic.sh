@@ -43,10 +43,10 @@ fi
 
 # ==== JSON Export (compact, no spaces/newlines) ====
 JSON=$(jq -c -n \
-  --argjson up "$V2_UP" \
-  --argjson down "$V2_DOWN" \
-  '[{"v2ray":{"up":$up,"down":$down}}]')
-
+  --arg up "$V2_UP" \
+  --arg down "$V2_DOWN" \
+  '[{"v2ray_up":$up,"v2ray_down":$down}]')
+  
 mkdir -p "$WWW_DIR"
 echo -n "$JSON" > "$OUT"
 
