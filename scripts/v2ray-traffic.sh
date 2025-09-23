@@ -16,7 +16,7 @@ TMP_COOKIE=$(mktemp /tmp/showon_cookie_XXXXXX)
 V2_UP=0
 V2_DOWN=0
 
-# ==== V2Ray / Xray (3x-ui API) ====
+# ==== V2Ray / Xray (ผ่าน 3x-ui API) ====
 if [[ -n "${PANEL_URL:-}" ]]; then
   LOGIN_OK=false
 
@@ -46,7 +46,7 @@ JSON=$(jq -c -n \
   --arg up "$V2_UP" \
   --arg down "$V2_DOWN" \
   '[{"v2ray_up":$up,"v2ray_down":$down}]')
-  
+
 mkdir -p "$WWW_DIR"
 echo -n "$JSON" > "$OUT"
 
