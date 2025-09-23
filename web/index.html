@@ -9,7 +9,7 @@
     body{
       background:#0d1117;
       color:#e6edf3;
-      font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, sans-serif;
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Ubuntu,sans-serif;
       max-width:1200px;
       margin:0 auto;
       padding:20px;
@@ -94,65 +94,59 @@
       const r=await fetch(u+"?_="+Date.now(),{cache:"no-store"});
       if(!r.ok)throw new Error(r.status);return r.json();
     }
+
     function fmtBytes(n){
       if(!n||isNaN(n))return"0 B";
+      n=parseFloat(n);
       if(n<1024)return n+" B";
       const u=["KB","MB","GB","TB","PB"];let i=-1;
       do{n/=1024;i++}while(n>=1024&&i<u.length-1);
       return n.toFixed(2)+" "+u[i];
     }
 
-    function toNum(v){ return Number(v)||0; } // ✅ helper แปลง string → number
-
     async function loadAll(){
-      // Online
-      try{
-        const a=await j('./online_app.json').catch(()=>j('./online_app'));
-        lastOnline=Array.isArray(a)?a[0]:a
-      }catch(e){}
+      // Online Summary
+      try{const a=await j('./online_app.json');lastOnline=Array.isArray(a)?a[0]:a}catch(e){}
       if(lastOnline){
         document.getElementById('row-online').innerHTML=
-          `<td class="ok">${toNum(lastOnline.onlines)}</td>
-           <td class="highlight">${toNum(lastOnline.limite)}</td>
-           <td>${toNum(lastOnline.ssh)}</td>
-           <td>${toNum(lastOnline.openvpn)}</td>
-           <td>${toNum(lastOnline.dropbear)}</td>
-           <td>${toNum(lastOnline.v2ray)}</td>
-           <td class="warn">${toNum(lastOnline.agnudp)}</td>`;
+          `<td class="ok">${lastOnline.onlines}</td>
+           <td class="highlight">${lastOnline.limite}</td>
+           <td>${lastOnline.ssh}</td>
+           <td>${lastOnline.openvpn}</td>
+           <td>${lastOnline.dropbear}</td>
+           <td>${lastOnline.v2ray}</td>
+           <td class="warn">${lastOnline.agnudp}</td>`;
       }
 
-      // System
-      try{
-        const s=await j('./sysinfo.json');if(Array.isArray(s)&&s.length>0)lastSys=s[0]
-      }catch(e){}
+      // System Info
+      try{const s=await j('./sysinfo.json');lastSys=Array.isArray(s)?s[0]:s}catch(e){}
       if(lastSys){
         document.getElementById('sys').innerText=
           `⏱ Uptime: ${lastSys.uptime}\n🖥 CPU: ${lastSys.cpu_usage}\n🧠 RAM: ${lastSys.ram_usage}\n💾 Disk: ${lastSys.disk_usage}`;
       }
 
-      // Traffic
-      try{
-        const n=await j('./netinfo.json');lastTraffic=Array.isArray(n)?n[0]:n
-      }catch(e){}
+      // Traffic Info
+      try{const n=await j('./netinfo.json');lastTraffic=Array.isArray(n)?n[0]:n}catch(e){}
       if(lastTraffic){
         const d=lastTraffic;
-        if(d.v2ray&&(toNum(d.v2ray.up)>0||toNum(d.v2ray.down)>0)){
+        if((d.v2ray_up && d.v2ray_up!=="0")||(d.v2ray_down && d.v2ray_down!=="0")){
           document.getElementById('traffic-head').innerHTML=
             `<tr><th>vnStat RX</th><th>vnStat TX</th><th>⚡ V2Ray Up</th><th>⚡ V2Ray Down</th></tr>`;
           document.getElementById('row-net').innerHTML=
-            `<td>${fmtBytes(toNum(d.vnstat.rx))}</td>
-             <td>${fmtBytes(toNum(d.vnstat.tx))}</td>
-             <td>${fmtBytes(toNum(d.v2ray.up))}</td>
-             <td>${fmtBytes(toNum(d.v2ray.down))}</td>`;
+            `<td>${fmtBytes(d.vnstat_rx)}</td>
+             <td>${fmtBytes(d.vnstat_tx)}</td>
+             <td>${fmtBytes(d.v2ray_up)}</td>
+             <td>${fmtBytes(d.v2ray_down)}</td>`;
         }else{
           document.getElementById('traffic-head').innerHTML=
             `<tr><th>vnStat RX</th><th>vnStat TX</th></tr>`;
           document.getElementById('row-net').innerHTML=
-            `<td>${fmtBytes(toNum(d.vnstat.rx))}</td>
-             <td>${fmtBytes(toNum(d.vnstat.tx))}</td>`;
+            `<td>${fmtBytes(d.vnstat_rx)}</td>
+             <td>${fmtBytes(d.vnstat_tx)}</td>`;
         }
       }
     }
+
     loadAll();setInterval(loadAll,5000);
   </script>
 </body>
