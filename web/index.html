@@ -101,8 +101,13 @@
       return n.toFixed(2)+" "+u[i];
     }
     async function loadAll(){
-      // Online
-      try{const a=await j('./online_app.json');lastOnline=Array.isArray(a)?a[0]:a}catch(e){}
+      // Online (ลอง json → ถ้าไม่ได้ fallback ไป online_app)
+      try{
+        let a;
+        try{ a=await j('./online_app.json'); }
+        catch(e){ a=await j('./online_app'); }
+        lastOnline=Array.isArray(a)?a[0]:a;
+      }catch(e){}
       if(lastOnline){
         document.getElementById('row-online').innerHTML=
           `<td class="ok">${lastOnline.onlines}</td>
