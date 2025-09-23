@@ -8,7 +8,7 @@
 VERSION="V.1.0.7"
 
 # ----------------- พาธรีโป ------------------
-REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main"
+REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/main"
 
 # ----------------- ซอร์สไฟล์ ----------------
 SRC_ONLINE="$REPO_RAW/scripts/online-check.sh"
@@ -433,17 +433,17 @@ update_script() {
   echo -e "${CYAN}[INFO]${NC} Updating all ShowOn components..."
   rotate_log
 
-  download_or_die "$SRC_ONLINE" "$SCRIPT_ONLINE"
-  download_or_die "$SRC_VNSTAT" "$SCRIPT_VNSTAT"
-  download_or_die "$SRC_V2RAY"  "$SCRIPT_V2RAY"
-  download_or_die "$SRC_SYSINFO" "$SCRIPT_SYSINFO"
+  download_or_die "$SRC_ONLINE?$(date +%s)" "$SCRIPT_ONLINE"
+  download_or_die "$SRC_VNSTAT?$(date +%s)" "$SCRIPT_VNSTAT"
+  download_or_die "$SRC_V2RAY?$(date +%s)" "$SCRIPT_V2RAY"
+  download_or_die "$SRC_SYSINFO?$(date +%s)" "$SCRIPT_SYSINFO"
   chmod +x "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
 
-  download_or_die "$SRC_INDEX" "$WWW_DIR/index.html"
+  download_or_die "$SRC_INDEX?$(date +%s)" "$WWW_DIR/index.html"
   chmod 644 "$WWW_DIR/index.html"
 
   local TMP_SCRIPT="/tmp/Install.$$"
-  if curl -fsSL "$REPO_RAW/Install" -o "$TMP_SCRIPT"; then
+  if curl -fsSL "$REPO_RAW/Install?$(date +%s)" -o "$TMP_SCRIPT"; then
     mv "$TMP_SCRIPT" /root/Install
     chmod +x /root/Install
     echo -e "${GREEN}[OK]${NC} Updated Install script."
@@ -451,8 +451,13 @@ update_script() {
     echo -e "${RED}[ERROR]${NC} Failed to update Install script."
   fi
 
+  # ✅ Reload services
+  systemctl daemon-reload
+  systemctl restart online-check vnstat-traffic v2ray-traffic sysinfo 2>/dev/null || true
+
   echo -e "${GREEN}[OK]${NC} Update completed."
 }
+
 # =====================================================
 # Debug Log / Change Limit
 # =====================================================
