@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================
-# online-check.sh - ShowOn Online Users Checker (COMPACT JSON)
+# online-check.sh - ShowOn Online Users Checker (FINAL)
 # รองรับ: SSH / OpenVPN / Dropbear / 3x-ui / Xray-Core / AGN-UDP (Hysteria)
 # Author: TspKchn + ChatGPT
 # Compatible: Ubuntu 18.04+
@@ -109,7 +109,7 @@ fi
 # ---------------------------
 AGNUDP_ON=0
 AGNUDP_PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
-  | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//')
+  | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//' || true)
 
 LOCAL_IPS_REGEX="$(local_ipv4_regex || true)"
 INTERNAL_REGEX='^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|172\.17\.|169\.254\.)'
@@ -148,16 +148,13 @@ LIMIT=${LIMIT:-2000}
 TOTAL=$((SSH_ON + OVPN_ON + DB_ON + V2_ON + AGNUDP_ON))
 
 # ---------------------------
-# Output JSON (one-line compact)
+# Output JSON (compact one-line)
 # ---------------------------
 mkdir -p "$WWW_DIR"
 
 JSON_DATA="[{\"onlines\":\"$TOTAL\",\"limite\":\"$LIMIT\",\"ssh\":\"$SSH_ON\",\"openvpn\":\"$OVPN_ON\",\"dropbear\":\"$DB_ON\",\"v2ray\":\"$V2_ON\",\"agnudp\":\"$AGNUDP_ON\",\"timestamp\":\"$NOW\"}]"
 
-# export เป็น online_app.json
 echo -n "$JSON_DATA" > "$WWW_DIR/online_app.json"
-
-# export เป็น online_app (ไม่มีนามสกุล แต่เนื้อหาเดียวกัน)
 echo -n "$JSON_DATA" > "$WWW_DIR/online_app"
 
 rm -f "$TMP_COOKIE"
