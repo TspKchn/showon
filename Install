@@ -81,11 +81,11 @@ write_nginx() {
   mkdir -p "$WWW_DIR"
   mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
 
-  # ลบ default site ที่ใช้ port 80 ทิ้ง
+  # ลบ default site
   rm -f /etc/nginx/sites-enabled/default
   rm -f /etc/nginx/sites-available/default
 
-  # เขียน config ของ ShowOn → ใช้ port 82 เท่านั้น
+  # Config ใหม่
   cat >"$SITE_AV" <<EOF
 server {
     listen 82 default_server;
@@ -94,11 +94,17 @@ server {
     location = / {
         return 302 /server/;
     }
+
     location /server/ {
         alias $WWW_DIR/;
         index index.html;
         autoindex off;
         add_header Cache-Control "no-store";
+
+        # บังคับ MIME สำหรับ online_app (ไม่มีนามสกุล) และ online_app.json
+        location ~ /server/online_app(\.json)?$ {
+            default_type application/json;
+        }
     }
 }
 EOF
