@@ -1,20 +1,25 @@
 #!/bin/bash
-# Generate sysinfo.json
+# =====================================================
+# sysinfo.sh - ShowOn System Info JSON Generator
+# Author: TspKchn + ChatGPT
+# =====================================================
+
 set -euo pipefail
+trap 'echo "[ERROR] line $LINENO: $BASH_COMMAND" >> "$DEBUG_LOG"' ERR
 
 CONF="/etc/showon.conf"
 source "$CONF"
 
 OUT="$WWW_DIR/sysinfo.json"
-log() { echo "[$(date '+%F %T')][SYS] $*" >> "$DEBUG_LOG"; }
+log(){ echo "[$(date '+%F %T')][SYS] $*" >> "$DEBUG_LOG"; }
 
 uptime=$(uptime -p | sed 's/^up //')
 cpu_free=$(top -bn1 | awk '/Cpu\(s\)/ {print $8}' || echo "0")
 cpu_use=$(awk -v f="$cpu_free" 'BEGIN{printf("%.1f%%",100-f)}')
-ram="$(free -m | awk 'NR==2{printf "%s/%sMB",$3,$2}')"
-disk="$(df -h / | awk 'NR==2{printf "%s/%s",$3,$2}')"
+ram=$(free -m | awk 'NR==2{printf "%s/%sMB",$3,$2}')
+disk=$(df -h / | awk 'NR==2{printf "%s/%s",$3,$2}')
 
-# ✅ JSON ไม่มีช่องว่าง/เว้นบรรทัด
+# ✅ JSON แบบ compact
 JSON=$(jq -c -n \
   --arg uptime "$uptime" \
   --arg cpu "$cpu_use" \
@@ -22,5 +27,6 @@ JSON=$(jq -c -n \
   --arg disk "$disk" \
   '[{"uptime":$uptime,"cpu_usage":$cpu,"ram_usage":$ram,"disk_usage":$disk}]')
 
+mkdir -p "$WWW_DIR"
 echo -n "$JSON" > "$OUT"
 log "sysinfo: $JSON"
