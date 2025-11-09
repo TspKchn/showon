@@ -62,9 +62,13 @@ fi
 # ---------------------------
 # Dropbear
 # ---------------------------
-if pgrep dropbear >/dev/null 2>&1; then
-  DB_ON=$(pgrep -a dropbear | grep -c 'dropbear\(\|_convert\|key\)\? ' || true)
-  [[ "$DB_ON" -eq 0 ]] && DB_ON=$(pgrep -a dropbear | wc -l)
+DB_ON=0
+if command -v ss >/dev/null 2>&1; then
+    # นับ connection ESTABLISHED port 22
+    DB_ON=$(ss -nt state established 2>/dev/null | awk '$4 ~ /:22$/ {c++} END {print c+0}')
+else
+    # fallback ถ้าไม่มี ss ใช้ netstat
+    DB_ON=$(netstat -nt 2>/dev/null | awk '$6=="ESTABLISHED" && $4 ~ /:22$/ {c++} END {print c+0}')
 fi
 
 # ---------------------------
