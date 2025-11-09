@@ -1,11 +1,11 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.7 (Extended Edition)
+# ShowOn Script Manager V.1.0.8 (Extended Edition)
 # Author : TspKchn + ChatGPT
 # =====================================================
 
 # ----------------- เวอร์ชัน -----------------
-VERSION="V.1.0.7"
+VERSION="V.1.0.8"
 
 # ----------------- พาธรีโป ------------------
 REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/main"
@@ -52,14 +52,12 @@ require_root() {
 
 press() { read -rp "Press Enter to continue..." _; }
 
-# ตรวจจับ NIC
 get_nic() {
   ip -o -4 route get 8.8.8.8 2>/dev/null \
     | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' \
     | head -n1
 }
 
-# หมุน log (1MB)
 rotate_log() {
   local max=1000000
   if [[ -f "$DEBUG_LOG" && $(stat -c%s "$DEBUG_LOG") -gt $max ]]; then
@@ -68,7 +66,6 @@ rotate_log() {
   fi
 }
 
-# ดึงไฟล์แบบ fail-fast
 download_or_die() {
   local url="$1" dst="$2"
   if ! curl -fsSL "$url" -o "$dst"; then
@@ -77,25 +74,42 @@ download_or_die() {
   fi
 }
 
-# เขียน Nginx site (ใช้พอร์ตจาก config)
+# =====================================================
+# ตรวจ Public IP
+# =====================================================
+get_public_ip() {
+  local ip
+  for url in "https://ifconfig.me" "https://icanhazip.com" "https://api.ipify.org"; do
+    ip=$(curl -s $url)
+    if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo "$ip"
+      return
+    fi
+  done
+  # ถ้าไม่เจอ ให้กรอกเอง
+  read -rp "ไม่พบ Public IP กรุณากรอก IP ด้วยตนเอง: " ip
+  echo "$ip"
+}
+
+# =====================================================
+# เขียน Nginx site
+# =====================================================
 write_nginx() {
   mkdir -p "$WWW_DIR"
   mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
-
-  # ลบ default site
   rm -f /etc/nginx/sites-enabled/default
   rm -f /etc/nginx/sites-available/default
 
-  # อ่านพอร์ตจาก config หรือใช้ default 82
+  local port=82
   if [[ -f "$CONF_FILE" ]]; then
+    # shellcheck disable=SC1090
     source "$CONF_FILE"
+    [[ -n "$PORT" ]] && port="$PORT"
   fi
-  PORT=${PORT:-82}
 
-  # Config ใหม่
   cat >"$SITE_AV" <<EOF
 server {
-    listen $PORT default_server;
+    listen $port default_server;
     server_name _;
 
     location = / {
@@ -108,10 +122,9 @@ server {
         autoindex off;
         add_header Cache-Control "no-store";
 
-        # บังคับ MIME สำหรับ online_app (ไม่มีนามสกุล) และ online_app.json
         location ~ /server/online_app(\.json)?$ {
-            default_type application/json;
-            add_header Content-Type application/json;
+          default_type application/json;
+          add_header Content-Type application/json;
         }
     }
 }
@@ -126,15 +139,19 @@ EOF
     systemctl restart nginx 2>/dev/null || true
   fi
 
-  echo -e "${GREEN}[OK]${NC} Nginx is now listening on port: $PORT (/server/)"
+  echo -e "${GREEN}[OK]${NC} Nginx is now listening on port :$port (/server/)"
 }
 
-# สถานะ conntrack (ไว้โชว์ในเมนู)
+# =====================================================
+# สถานะ conntrack
+# =====================================================
 conntrack_status() {
   if command -v conntrack >/dev/null 2>&1; then echo "ON"; else echo "OFF"; fi
 }
 
-# ตรวจอัปเดตจากรีโมต (อ่าน VERSION จากไฟล์ Install บน GitHub)
+# =====================================================
+# ตรวจอัปเดต
+# =====================================================
 check_update() {
   local remote install_raw
   install_raw="$(curl -fsSL "$REPO_RAW/Install" || true)"
@@ -166,7 +183,9 @@ check_update() {
   fi
 }
 
-# แสดงสถานะ Service + สถานะติดตั้ง
+# =====================================================
+# แสดงสถานะ Service + Status
+# =====================================================
 print_status() {
   local stat_nginx="OFF" stat_online="OFF" stat_vnstat="OFF" stat_v2="OFF" stat_sys="OFF"
 
@@ -198,18 +217,17 @@ print_status() {
   echo -e "Status: $installed"
   echo "==============================="
 }
-
-# ตรวจจับ AGN-UDP (Hysteria) จาก systemd / process
+# =====================================================
+# ตรวจจับ AGN-UDP (Hysteria)
+# =====================================================
 detect_agnudp() {
   local present="0" port=""
 
-  # ตรวจจาก systemd service
   if systemctl list-units --type=service | grep -q 'hysteria'; then
     port=$(ss -tulnp | grep hysteria | awk '{print $5}' | cut -d: -f2 | head -n1)
     [[ -n "$port" ]] && present="1"
   fi
 
-  # ตรวจจาก binary โดยตรง
   if [[ "$present" == "0" && -x "$(command -v hysteria)" ]]; then
     port=$(ss -tulnp | grep hysteria | awk '{print $5}' | cut -d: -f2 | head -n1)
     [[ -n "$port" ]] && present="1"
@@ -219,118 +237,98 @@ detect_agnudp() {
 }
 
 # =====================================================
-# ติดตั้ง
+# ติดตั้ง Script
 # =====================================================
-
 install_script() {
   echo -e "${CYAN}[INFO]${NC} Installing ShowOn (${VERSION})..."
 
-  # 1) Update system
   echo -e "${CYAN}[INFO]${NC} Updating system packages..."
   apt update -y >/dev/null 2>&1 || true
 
-  # 2) Install dependencies (รวม nginx ด้วย)
   echo -e "${CYAN}[INFO]${NC} Installing dependencies..."
   apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates vnstat conntrack >/dev/null 2>&1 || true
 
-  # ปรับ timeout ของ conntrack UDP ให้เหลือ 5 วินาที
   echo -e "${CYAN}[INFO]${NC} Tuning conntrack UDP timeout → 5s"
   sysctl -w net.netfilter.nf_conntrack_udp_timeout=5 >/dev/null 2>&1 || true
   sysctl -w net.netfilter.nf_conntrack_udp_timeout_stream=5 >/dev/null 2>&1 || true
 
-  # บันทึกถาวรลง /etc/sysctl.conf
   if ! grep -q "nf_conntrack_udp_timeout" /etc/sysctl.conf; then
     echo "net.netfilter.nf_conntrack_udp_timeout=5" >> /etc/sysctl.conf
     echo "net.netfilter.nf_conntrack_udp_timeout_stream=5" >> /etc/sysctl.conf
     sysctl -p >/dev/null 2>&1 || true
   fi
 
-  # 3) Enable vnstat
   systemctl enable vnstat >/dev/null 2>&1 || true
-  systemctl start vnstat >/dev/null 2>&1 || true
+  systemctl start vnstat  >/dev/null 2>&1 || true
 
   mkdir -p "$WWW_DIR" "$BIN_DIR" "$(dirname "$DEBUG_LOG")"
   rotate_log
 
-  # ======================= ตรวจ AGN-UDP (Hysteria) =======================
   local AGN_PRESENT="0" AGN_PORT=""
 
-  # วิธีที่ 1: ตรวจจากไฟล์ config.json
   if [[ -f /etc/hysteria/config.json ]]; then
     AGN_PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
       | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//')
 
     if [[ -n "$AGN_PORT" && "$AGN_PORT" =~ ^[0-9]+$ ]]; then
       AGN_PRESENT="1"
-      echo -e "${GREEN}[OK]${NC} AGN-UDP (Hysteria) detected from config → port: ${B}${AGN_PORT}${NC}"
+      echo -e "${GREEN}[OK]${NC} AGN-UDP detected → port: ${B}${AGN_PORT}${NC}"
     else
       echo -e "${YELLOW}[WARN]${NC} Found hysteria config but no valid port"
     fi
   fi
 
-  # วิธีที่ 2: fallback → ตรวจจาก detect_agnudp()
   if [[ "$AGN_PRESENT" == "0" ]]; then
     IFS='|' read -r AGN_PRESENT AGN_PORT <<<"$(detect_agnudp)"
     if [[ "$AGN_PRESENT" == "1" ]]; then
-      echo -e "${GREEN}[OK]${NC} AGN-UDP (Hysteria) detected via systemd/binary → port: ${B}${AGN_PORT}${NC}"
+      echo -e "${GREEN}[OK]${NC} AGN-UDP detected via systemd/binary → port: ${B}${AGN_PORT}${NC}"
     else
-      echo -e "${CYAN}[INFO]${NC} AGN-UDP (Hysteria) not found → skipped"
+      echo -e "${CYAN}[INFO]${NC} AGN-UDP not found → skipped"
     fi
   fi
 
-  # ตรวจว่าเป็น 3x-ui หรือ Xray-Core
   local PANEL_URL XUI_USER XUI_PASS
   if [[ -d /etc/x-ui ]]; then
-    echo -e "${CYAN}[INFO]${NC} ตรวจพบ 3x-ui → ตั้งค่าการเชื่อมต่อ API"
-    echo "  👉 กรุณา 'วางลิงก์หน้าล็อกอินทั้งเส้น' เช่น:"
-    echo "     https://IP:PORT/RandomPath"
+    echo -e "${CYAN}[INFO]${NC} 3x-ui detected → configure API"
     read -rp "3X-UI URL (copy login link): " PANEL_URL
     PANEL_URL="$(echo "$PANEL_URL" | sed 's:/*$::')"
 
     read -rp "3X-UI Username: " XUI_USER
     read -rp "3X-UI Password: " XUI_PASS
   else
-    echo -e "${CYAN}[INFO]${NC} ตรวจพบ Xray-Core → ข้ามการตั้งค่า 3x-ui"
     PANEL_URL=""
     XUI_USER=""
     XUI_PASS=""
   fi
 
-  # Limit
   read -rp "Limit User Online (Default: 2000): " LIMIT
   LIMIT=${LIMIT:-2000}
 
-  # Port (ใหม่ เพิ่มถามผู้ใช้)
-  read -rp "Web Port for ShowOn (Default: 82): " PORT
+  read -rp "Port for Nginx (Default: 82): " PORT
   PORT=${PORT:-82}
 
-  # เขียน config
   NIC=$(get_nic)
   [[ -z "$NIC" ]] && NIC=$(ip -o -4 addr show up scope global | awk '{print $2}' | head -n1)
   [[ -z "$NIC" ]] && NIC="eth0"
+
+  PUBLIC_IP=$(get_public_ip)
 
   cat >"$CONF_FILE" <<EOF
 VERSION="${VERSION}"
 WWW_DIR="$WWW_DIR"
 LIMIT=${LIMIT}
+PORT=${PORT}
 DEBUG_LOG="$DEBUG_LOG"
-
 PANEL_URL="$PANEL_URL"
 XUI_USER="$XUI_USER"
 XUI_PASS="$XUI_PASS"
-
 NET_IFACE="$NIC"
-
-# --- AGN-UDP (Hysteria) ---
+PUBLIC_IP="$PUBLIC_IP"
 AGN_PRESENT=$AGN_PRESENT
 AGN_PORT="$AGN_PORT"
-
-# --- Web Port ---
-PORT=${PORT}
 EOF
   chmod 600 "$CONF_FILE"
 
-  # ดาวน์โหลดสคริปต์จาก repo
   download_or_die "$SRC_ONLINE" "$SCRIPT_ONLINE"
   download_or_die "$SRC_VNSTAT" "$SCRIPT_VNSTAT"
   download_or_die "$SRC_V2RAY"  "$SCRIPT_V2RAY"
@@ -341,11 +339,12 @@ EOF
   download_or_die "$SRC_INDEX" "$WWW_DIR/index.html"
   chmod 644 "$WWW_DIR/index.html"
 
-  # Nginx
   write_nginx
   systemctl enable --now nginx >/dev/null 2>&1 || true
 
-  # systemd services (ทุก 5 วิ)
+  # =====================================================
+  # systemd services
+  # =====================================================
   cat >"$SERVICE_ONLINE" <<'EOF'
 [Unit]
 Description=ShowOn Online Users JSON Generator
@@ -410,63 +409,48 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF
 
-  # เริ่มใช้งาน
   systemctl daemon-reload
   systemctl enable --now online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service
 
   echo -e "${GREEN}[OK]${NC} Installed ShowOn ${VERSION}"
-  echo -e "${CYAN}[INFO]${NC} Open: http://$(hostname -I | awk '{print $1}'):$PORT/server/"
+  echo -e "${CYAN}[INFO]${NC} Open: http://$PUBLIC_IP:$PORT/server/"
   press
 }
-
 # =====================================================
-# ถอนการติดตั้ง
+# ถอนการติดตั้ง Script
 # =====================================================
-
 uninstall_script() {
   echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script (Full Clean)..."
 
-  # หยุดและปิด service ทั้งหมด
   systemctl stop online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
   systemctl disable online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
 
-  # ลบ service file
   rm -f "$SERVICE_ONLINE" "$SERVICE_VNSTAT" "$SERVICE_V2RAY" "$SERVICE_SYSINFO"
   systemctl daemon-reload
 
-  # ลบ script และ config
   rm -f "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
   rm -f "$CONF_FILE" "$DEBUG_LOG"
 
-  # ลบ nginx site
   rm -f "$SITE_AV" "$SITE_EN"
   if systemctl is-active --quiet nginx; then
     systemctl reload nginx 2>/dev/null || true
   fi
 
-  # ถ้าอยากถอน nginx ออกด้วย
-  apt purge -y nginx >/dev/null 2>&1 || true
-
-  # ลบ conntrack ออกจากระบบ
-  apt purge -y conntrack >/dev/null 2>&1 || true
+  apt purge -y nginx conntrack >/dev/null 2>&1 || true
   apt autoremove -y >/dev/null 2>&1 || true
 
-  # ลบค่า timeout ของ conntrack UDP ออกจาก /etc/sysctl.conf
   sed -i '/^net\.netfilter\.nf_conntrack_udp_timeout=/d' /etc/sysctl.conf
   sed -i '/^net\.netfilter\.nf_conntrack_udp_timeout_stream=/d' /etc/sysctl.conf
-
-  # รีโหลด sysctl เพื่อคืนค่า default ของระบบ
   sysctl -p >/dev/null 2>&1 || true
 
   echo -e "${GREEN}[SUCCESS]${NC} Uninstalled completely (ShowOn + conntrack removed)."
 }
 
 # =====================================================
-# อัปเดต
+# Update Script
 # =====================================================
-
 update_script() {
-  echo -e "${CYAN}[INFO]${NC} Updating all ShowOn components..."
+  echo -e "${CYAN}[INFO]${NC} Updating ShowOn components..."
   rotate_log
 
   download_or_die "$SRC_ONLINE?$(date +%s)" "$SCRIPT_ONLINE"
@@ -487,7 +471,6 @@ update_script() {
     echo -e "${RED}[ERROR]${NC} Failed to update Install script."
   fi
 
-  # ✅ Reload services
   systemctl daemon-reload
   systemctl restart online-check vnstat-traffic v2ray-traffic sysinfo 2>/dev/null || true
 
@@ -495,9 +478,8 @@ update_script() {
 }
 
 # =====================================================
-# Debug Log / Change Limit
+# Debug / Change Limit / Change Port
 # =====================================================
-
 check_debug() {
   rotate_log
   if [[ -f "$DEBUG_LOG" ]]; then
@@ -514,23 +496,18 @@ change_limit() {
     press; return
   fi
 
-  # shellcheck disable=SC1090
   source "$CONF_FILE"
   echo -e "${CYAN}[INFO]${NC} Current Limit User Online: ${LIMIT:-2000}"
   read -rp "Enter new Limit User Online: " NEW_LIMIT
   if [[ -z "$NEW_LIMIT" ]]; then
-    echo -e "${YELLOW}[WARN]${NC} ไม่ได้เปลี่ยนค่า"
+    echo -e "${YELLOW}[WARN]${NC} Not changed"
     press; return
   fi
 
   sed -i "s/^LIMIT=.*/LIMIT=${NEW_LIMIT}/" "$CONF_FILE"
-  echo -e "${GREEN}[OK]${NC} คุณได้เปลี่ยน Limit User Online แล้วเป็น ${NEW_LIMIT} คน"
+  echo -e "${GREEN}[OK]${NC} Limit User Online changed to ${NEW_LIMIT}"
   press
 }
-
-# =====================================================
-# Change Web Port
-# =====================================================
 
 change_port() {
   if [[ ! -f "$CONF_FILE" ]]; then
@@ -538,39 +515,32 @@ change_port() {
     press; return
   fi
 
-  # shellcheck disable=SC1090
   source "$CONF_FILE"
-  echo -e "${CYAN}[INFO]${NC} Current Web Port: ${PORT:-82}"
-  read -rp "Enter new Web Port: " NEW_PORT
+  echo -e "${CYAN}[INFO]${NC} Current Nginx Port: ${PORT:-82}"
+  read -rp "Enter new Nginx Port: " NEW_PORT
   if [[ -z "$NEW_PORT" ]]; then
-    echo -e "${YELLOW}[WARN]${NC} ไม่ได้เปลี่ยนค่า"
+    echo -e "${YELLOW}[WARN]${NC} Not changed"
     press; return
   fi
 
-  # แก้ไข config
+  PORT="$NEW_PORT"
   sed -i "s/^PORT=.*/PORT=${NEW_PORT}/" "$CONF_FILE"
 
-  # แก้ไข nginx config
-  sed -i "s/listen [0-9]\+/listen ${NEW_PORT}/" "$SITE_AV"
-  if nginx -t; then
-    systemctl restart nginx
-    echo -e "${GREEN}[OK]${NC} Web Port เปลี่ยนเป็น ${NEW_PORT} เรียบร้อยแล้ว"
-  else
-    echo -e "${RED}[ERROR]${NC} nginx config test failed, port not changed"
-  fi
+  write_nginx
+  echo -e "${GREEN}[OK]${NC} Nginx port changed to ${NEW_PORT}"
   press
 }
 
 # =====================================================
-# Setup Swap (อัตโนมัติ + รีสตาร์ต service)
+# Setup Swap
 # =====================================================
-
 setup_swap() {
   echo -e "${CYAN}[INFO]${NC} Auto Swap Wizard"
 
   local ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
   local ram_mb=$(( ram_kb / 1024 ))
   local swap_mb
+
   if   (( ram_mb <= 512 )); then       swap_mb=$(( ram_mb * 2 ))
   elif (( ram_mb <= 1024 )); then      swap_mb=$(( ram_mb * 2 ))
   elif (( ram_mb <= 2048 )); then      swap_mb=$(( ram_mb * 1 ))
@@ -578,23 +548,22 @@ setup_swap() {
   elif (( ram_mb <= 8192 )); then      swap_mb=4096
   elif (( ram_mb <= 16384 )); then     swap_mb=4096
   elif (( ram_mb <= 32768 )); then     swap_mb=8192
-  elif (( ram_mb <= 65536 )); then     swap_mb=8192
   else                                 swap_mb=8192
   fi
 
   if swapon --show | awk 'NR>1{print $1}' | grep -q .; then
-    echo -e "${YELLOW}[WARN]${NC} พบ Swap เดิมอยู่แล้ว"
-    read -rp "ต้องการสร้างใหม่ทับเดิมหรือไม่? (Y/n): " ans
+    echo -e "${YELLOW}[WARN]${NC} Existing Swap found"
+    read -rp "Overwrite existing swap? (Y/n): " ans
     if [[ -z "$ans" || "$ans" =~ ^[Yy]$ ]]; then
       swapoff -a || true
       sed -i '/swapfile showon/d' /etc/fstab || true
     else
-      echo -e "${GREEN}[OK]${NC} ข้ามการสร้าง Swap ใหม่"
+      echo -e "${GREEN}[OK]${NC} Skip swap creation"
       press; return
     fi
   fi
 
-  echo -e "${CYAN}[INFO]${NC} Creating swapfile size ${swap_mb} MiB ..."
+  echo -e "${CYAN}[INFO]${NC} Creating swapfile ${swap_mb} MiB ..."
   fallocate -l "${swap_mb}M" /swapfile || dd if=/dev/zero of=/swapfile bs=1M count="${swap_mb}"
   chmod 600 /swapfile
   mkswap /swapfile >/dev/null
@@ -606,21 +575,17 @@ setup_swap() {
 
   sysctl -w vm.swappiness=10 >/dev/null
   sysctl -w vm.vfs_cache_pressure=100 >/dev/null
-  if ! grep -q '^vm.swappiness' /etc/sysctl.conf; then echo "vm.swappiness=10" >> /etc/sysctl.conf; fi
-  if ! grep -q '^vm.vfs_cache_pressure' /etc/sysctl.conf; then echo "vm.vfs_cache_pressure=100" >> /etc/sysctl.conf; fi
+  grep -q '^vm.swappiness' /etc/sysctl.conf || echo "vm.swappiness=10" >> /etc/sysctl.conf
+  grep -q '^vm.vfs_cache_pressure' /etc/sysctl.conf || echo "vm.vfs_cache_pressure=100" >> /etc/sysctl.conf
 
-  echo -e "${GREEN}[OK]${NC} Swap พร้อมใช้งาน:"
   free -h
-
   systemctl restart online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
-  echo -e "${GREEN}[OK]${NC} Restarted ShowOn services."
   press
 }
 
 # =====================================================
-# เมนู
+# Main Menu
 # =====================================================
-
 show_menu() {
   clear
   print_status
@@ -630,7 +595,7 @@ show_menu() {
   echo "3) Update Script"
   echo "4) Check Debug Log"
   echo "5) Change Limit User Online"
-  echo "6) Change Web Port"
+  echo "6) Change Nginx Port"
   echo "7) Setup Swap"
   echo "0) Exit"
   echo "==============================="
@@ -652,6 +617,5 @@ show_menu() {
 # =====================================================
 # Main
 # =====================================================
-
 require_root
 show_menu
