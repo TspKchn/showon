@@ -152,9 +152,15 @@ TOTAL=$((SSH_ON + OVPN_ON + DB_ON + V2_ON + AGNUDP_ON))
 # ---------------------------
 mkdir -p "$WWW_DIR"
 
+# สร้าง JSON จากจำนวน user
 JSON_DATA="[{\"onlines\":\"$TOTAL\",\"limite\":\"$LIMIT\",\"ssh\":\"$SSH_ON\",\"openvpn\":\"$OVPN_ON\",\"dropbear\":\"$DB_ON\",\"v2ray\":\"$V2_ON\",\"agnudp\":\"$AGNUDP_ON\",\"timestamp\":\"$NOW\"}]"
 
+# เขียนไฟล์ JSON
 echo -n "$JSON_DATA" > "$WWW_DIR/online_app.json"
 echo -n "$JSON_DATA" > "$WWW_DIR/online_app"
+
+# ถ้าเกิดไฟล์ยังไม่ถูกสร้างจริง ๆ ให้ fallback เป็น []
+[[ ! -f "$WWW_DIR/online_app.json" ]] && echo '[]' > "$WWW_DIR/online_app.json"
+[[ ! -f "$WWW_DIR/online_app" ]] && echo '[]' > "$WWW_DIR/online_app"
 
 rm -f "$TMP_COOKIE"
