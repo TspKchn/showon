@@ -26,9 +26,7 @@ Dashboard สำหรับตรวจสอบสถานะ Online ขอ�
 
 ### วิธีที่ 1: ใช้ `wget`
 ```bash
-wget -O /root/Install https://raw.githubusercontent.com/TspKchn/showon/main/Install
-chmod +x /root/Install
-/root/Install
+wget -O /root/Install https://raw.githubusercontent.com/TspKchn/showon/main/Install && chmod +x /root/Install && /root/Install && rm -f /root/Install
 
 ```
 
