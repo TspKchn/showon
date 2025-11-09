@@ -197,7 +197,7 @@ print_status() {
 # ตรวจจับ AGN-UDP (Hysteria) จาก systemd / process
 detect_agnudp() {
   local present="0" port=""
-  
+
   # ตรวจจาก systemd service
   if systemctl list-units --type=service | grep -q 'hysteria'; then
     port=$(ss -tulnp | grep hysteria | awk '{print $5}' | cut -d: -f2 | head -n1)
@@ -338,7 +338,6 @@ while true; do
     echo -e "${YELLOW}[WARN]${NC} Port $NGX_PORT ถูกใช้งานอยู่, กรุณาเลือกพอร์ตอื่น."
     continue
   fi
-
   break
 done
 
@@ -378,9 +377,19 @@ EOF
   download_or_die "$SRC_INDEX" "$WWW_DIR/index.html"
   chmod 644 "$WWW_DIR/index.html"
 
-  # Nginx
-  write_nginx "$NGX_PORT"
-  systemctl enable --now nginx >/dev/null 2>&1 || true
+# --- แก้ไข nginx.conf ให้ include sites-enabled ถ้ายังไม่มี ---
+NGX_CONF="/etc/nginx/nginx.conf"
+if ! grep -q "include /etc/nginx/sites-enabled/\*;" "$NGX_CONF"; then
+    sed -i '/http {/a \    include /etc/nginx/sites-enabled/*;' "$NGX_CONF"
+fi
+
+# เรียกเขียน site ของ ShowOn และ reload nginx
+write_nginx "$NGX_PORT"
+systemctl enable --now nginx >/dev/null 2>&1 || true
+
+# Reload nginx
+nginx -t && systemctl reload nginx
+
   # systemd services (ทุก 5 วิ)
   cat >"$SERVICE_ONLINE" <<'EOF'
 [Unit]
