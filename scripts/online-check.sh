@@ -1,7 +1,7 @@
 #!/bin/bash
 # =====================================================
 # online-check.sh - ShowOn Online Users Checker (FINAL+DEBUG)
-# รองรับ: SSH / Dropbear (Hybrid) / OpenVPN / V2Ray / AGN-UDP (Hysteria)
+# รองรับ: SSH / Dropbear (Hybrid) / OpenVPN / V2Ray / AGN-UDP (ไกด์ไลน์)
 # Author: TspKchn + ChatGPT
 # =====================================================
 
@@ -44,38 +44,49 @@ echo "[INFO] WWW_DIR = $WWW_DIR" >> "$DEBUG_LOG"
 echo "[INFO] LIMIT = $LIMIT" >> "$DEBUG_LOG"
 
 # ---------------------------
-# SSH - Hybrid port check
+# SSH Hybrid (Unique IP) - Port 22, 443, 8880
 # ---------------------------
-SSH_PORTS=(22 443 8880)  # เพิ่ม port SSH SSL / Websocket ตามต้องการ
+SSH_PORTS=(22 443 8880)
 SSH_ON=0
 for port in "${SSH_PORTS[@]}"; do
     if command -v ss >/dev/null 2>&1; then
-        SSH_ON=$((SSH_ON + $(ss -nt state established 2>/dev/null | awk -v p=":$port\$" '$4 ~ p {c++} END {print c+0}')))
+        SSH_ON=$((SSH_ON + $(ss -nt state established 2>/dev/null \
+          | awk -v p=":$port\$" '$4 ~ p {ip=$5; sub(/:.*/,"",ip); seen[ip]++} END {print length(seen)}')))
     else
-        SSH_ON=$((SSH_ON + $(netstat -nt 2>/dev/null | awk -v p=":$port\$" '$6=="ESTABLISHED" && $4 ~ p {c++} END {print c+0}')))
+        SSH_ON=$((SSH_ON + $(netstat -nt 2>/dev/null \
+          | awk -v p=":$port\$" '$6=="ESTABLISHED" && $4 ~ p {ip=$5; sub(/:.*/,"",ip); seen[ip]++} END {print length(seen)}')))
     fi
 done
 
 # ---------------------------
-# Dropbear - Hybrid port check
+# Dropbear Hybrid (Unique IP) - Port 109, 143, 443
 # ---------------------------
 DROPBEAR_PORTS=(109 143 443)
 DB_ON=0
 for port in "${DROPBEAR_PORTS[@]}"; do
     if command -v ss >/dev/null 2>&1; then
-        DB_ON=$((DB_ON + $(ss -nt state established 2>/dev/null | awk -v p=":$port\$" '$4 ~ p {c++} END {print c+0}')))
+        DB_ON=$((DB_ON + $(ss -nt state established 2>/dev/null \
+          | awk -v p=":$port\$" '$4 ~ p {ip=$5; sub(/:.*/,"",ip); seen[ip]++} END {print length(seen)}')))
     else
-        DB_ON=$((DB_ON + $(netstat -nt 2>/dev/null | awk -v p=":$port\$" '$6=="ESTABLISHED" && $4 ~ p {c++} END {print c+0}')))
+        DB_ON=$((DB_ON + $(netstat -nt 2>/dev/null \
+          | awk -v p=":$port\$" '$6=="ESTABLISHED" && $4 ~ p {ip=$5; sub(/:.*/,"",ip); seen[ip]++} END {print length(seen)}')))
     fi
 done
 
 # ---------------------------
-# OpenVPN / V2Ray / AGN-UDP (Hysteria)
+# OpenVPN (ไกด์ไลน์)
 # ---------------------------
-# ไกด์ไลน์เฉย ๆ
-# OpenVPN: TCP 1194, UDP 2200, SSL 990
-# V2Ray/Xray: TLS 443, None TLS 80, WS 8880
-# AGN-UDP/Hysteria: UDP 36712
+if [[ -f /etc/openvpn/server/openvpn-status.log ]]; then
+  OVPN_ON=$(grep -c "^CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || true)
+fi
+
+# ---------------------------
+# V2Ray / Xray (ไกด์ไลน์)
+# ---------------------------
+
+# ---------------------------
+# AGN-UDP / Hysteria (ไกด์ไลน์)
+# ---------------------------
 
 # ---------------------------
 # Ensure numeric defaults
