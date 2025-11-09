@@ -1,7 +1,7 @@
 #!/bin/bash
 # =====================================================
-# online-check.sh - ShowOn Online Users Checker (FINAL+DEBUG)
-# รองรับ: SSH / Dropbear (Hybrid) / OpenVPN / V2Ray / AGN-UDP (ไกด์ไลน์)
+# online-check.sh - ShowOn Online Users Checker (FINAL)
+# รองรับ: SSH / OpenVPN / Dropbear / 3x-ui / Xray-Core / AGN-UDP (Hysteria)
 # Author: TspKchn + ChatGPT
 # =====================================================
 
@@ -39,54 +39,53 @@ rotate_log() {
 }
 rotate_log
 
-# ---- Debug Output ----
 echo "[INFO] WWW_DIR = $WWW_DIR" >> "$DEBUG_LOG"
 echo "[INFO] LIMIT = $LIMIT" >> "$DEBUG_LOG"
 
 # ---------------------------
-# SSH Hybrid (Unique IP) - Port 22, 443, 8880
+# SSH - หลายพอร์ต
 # ---------------------------
 SSH_PORTS=(22 443 8880)
 SSH_ON=0
 for port in "${SSH_PORTS[@]}"; do
     if command -v ss >/dev/null 2>&1; then
-        SSH_ON=$((SSH_ON + $(ss -nt state established 2>/dev/null \
-          | awk -v p=":$port\$" '$4 ~ p {ip=$5; sub(/:.*/,"",ip); seen[ip]++} END {print length(seen)}')))
+        SSH_ON=$((SSH_ON + $(ss -nt state established 2>/dev/null | awk -v p=":$port\$" '$4 ~ p {c++} END {print c+0}')))
     else
-        SSH_ON=$((SSH_ON + $(netstat -nt 2>/dev/null \
-          | awk -v p=":$port\$" '$6=="ESTABLISHED" && $4 ~ p {ip=$5; sub(/:.*/,"",ip); seen[ip]++} END {print length(seen)}')))
+        SSH_ON=$((SSH_ON + $(netstat -nt 2>/dev/null | awk -v p=":$port\$" '$6=="ESTABLISHED" && $4 ~ p {c++} END {print c+0}')))
     fi
 done
 
 # ---------------------------
-# Dropbear Hybrid (Unique IP) - Port 109, 143, 443
-# ---------------------------
-DROPBEAR_PORTS=(109 143 443)
-DB_ON=0
-for port in "${DROPBEAR_PORTS[@]}"; do
-    if command -v ss >/dev/null 2>&1; then
-        DB_ON=$((DB_ON + $(ss -nt state established 2>/dev/null \
-          | awk -v p=":$port\$" '$4 ~ p {ip=$5; sub(/:.*/,"",ip); seen[ip]++} END {print length(seen)}')))
-    else
-        DB_ON=$((DB_ON + $(netstat -nt 2>/dev/null \
-          | awk -v p=":$port\$" '$6=="ESTABLISHED" && $4 ~ p {ip=$5; sub(/:.*/,"",ip); seen[ip]++} END {print length(seen)}')))
-    fi
-done
-
-# ---------------------------
-# OpenVPN (ไกด์ไลน์)
+# OpenVPN
 # ---------------------------
 if [[ -f /etc/openvpn/server/openvpn-status.log ]]; then
   OVPN_ON=$(grep -c "^CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || true)
 fi
 
 # ---------------------------
-# V2Ray / Xray (ไกด์ไลน์)
+# Dropbear - หลายพอร์ต
 # ---------------------------
+DROPBEAR_PORTS=(109 143 443)
+DB_ON=0
+for port in "${DROPBEAR_PORTS[@]}"; do
+    if command -v ss >/dev/null 2>&1; then
+        DB_ON=$((DB_ON + $(ss -nt state established 2>/dev/null | awk -v p=":$port\$" '$4 ~ p {c++} END {print c+0}')))
+    else
+        DB_ON=$((DB_ON + $(netstat -nt 2>/dev/null | awk -v p=":$port\$" '$6=="ESTABLISHED" && $4 ~ p {c++} END {print c+0}')))
+    fi
+done
 
 # ---------------------------
-# AGN-UDP / Hysteria (ไกด์ไลน์)
+# V2Ray / Xray
 # ---------------------------
+# ไกด์ไลน์: future hybrid detection
+# V2_ON=...
+
+# ---------------------------
+# AGN-UDP (Hysteria)
+# ---------------------------
+# ไกด์ไลน์: future hybrid detection
+# AGNUDP_ON=...
 
 # ---------------------------
 # Ensure numeric defaults
