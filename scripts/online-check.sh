@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================
-# online-check.sh - ShowOn Online Users Checker (FINAL+DEBUG)
+# online-check.sh - ShowOn Online Users Checker (Hybrid Auto+Config)
 # รองรับ: SSH / OpenVPN / Dropbear / 3x-ui / Xray-Core / AGN-UDP (Hysteria)
 # Author: TspKchn + ChatGPT
 # =====================================================
@@ -39,53 +39,52 @@ rotate_log() {
 }
 rotate_log
 
-# ---- Debug Output ----
 echo "[INFO] WWW_DIR = $WWW_DIR" >> "$DEBUG_LOG"
 echo "[INFO] LIMIT = $LIMIT" >> "$DEBUG_LOG"
 
-# ---------------------------
-# SSH
-# ---------------------------
-if command -v ss >/dev/null 2>&1; then
-  SSH_ON=$(ss -nt state established 2>/dev/null | awk '$3 ~ /:22$/ {c++} END {print c+0}')
-else
-  SSH_ON=$(netstat -nt 2>/dev/null | awk '$6 == "ESTABLISHED" && $4 ~ /:22$/ {c++} END {print c+0}')
+# =====================================================
+# SSH DETECTION (Hybrid)
+# =====================================================
+if [[ -z "${SSH_PORTS:-}" ]]; then
+  SSH_PORTS=$(ss -lntp 2>/dev/null | grep sshd | awk '{print $4}' | sed 's/.*://g' | sort -u | tr '\n' ' ')
+fi
+SSH_REGEX=$(echo "$SSH_PORTS" | sed 's/ /|/g')
+if [[ -n "$SSH_REGEX" ]]; then
+  SSH_ON=$(ss -nt state established 2>/dev/null | awk -v re=":($SSH_REGEX)$" '$4 ~ re {c++} END {print c+0}')
 fi
 
-# ---------------------------
-# OpenVPN
-# ---------------------------
+# =====================================================
+# OPENVPN DETECTION
+# =====================================================
 if [[ -f /etc/openvpn/server/openvpn-status.log ]]; then
   OVPN_ON=$(grep -c "^CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || true)
 fi
 
-# ---------------------------
-# Dropbear
-# ---------------------------
-DB_ON=0
-if command -v ss >/dev/null 2>&1; then
-    # นับ connection ESTABLISHED port 22
-    DB_ON=$(ss -nt state established 2>/dev/null | awk '$4 ~ /:22$/ {c++} END {print c+0}')
-else
-    # fallback ถ้าไม่มี ss ใช้ netstat
-    DB_ON=$(netstat -nt 2>/dev/null | awk '$6=="ESTABLISHED" && $4 ~ /:22$/ {c++} END {print c+0}')
+# =====================================================
+# DROPBEAR DETECTION (Hybrid)
+# =====================================================
+if [[ -z "${DROPBEAR_PORTS:-}" ]]; then
+  DROPBEAR_PORTS=$(ss -lntp 2>/dev/null | grep dropbear | awk '{print $4}' | sed 's/.*://g' | sort -u | tr '\n' ' ')
+fi
+DB_REGEX=$(echo "$DROPBEAR_PORTS" | sed 's/ /|/g')
+if [[ -n "$DB_REGEX" ]]; then
+  DB_ON=$(ss -nt state established 2>/dev/null | awk -v re=":($DB_REGEX)$" '$4 ~ re {c++} END {print c+0}')
 fi
 
-# ---------------------------
-# V2Ray / Xray
-# ---------------------------
-# (เหมือนโค้ดเดิมของคุณ)
-# สามารถคงเดิมได้
+# =====================================================
+# V2RAY / XRAY DETECTION (Optional / Same as old)
+# =====================================================
+# (สามารถเพิ่มการตรวจจาก process หรือพอร์ตเฉพาะในอนาคต)
+V2_ON=${V2_ON:-0}
 
-# ---------------------------
+# =====================================================
 # AGN-UDP (Hysteria)
-# ---------------------------
-# (เหมือนโค้ดเดิมของคุณ)
-# สามารถคงเดิมได้
+# =====================================================
+AGNUDP_ON=${AGNUDP_ON:-0}
 
-# ---------------------------
-# Ensure numeric defaults
-# ---------------------------
+# =====================================================
+# SUMMARIZE
+# =====================================================
 SSH_ON=${SSH_ON:-0}
 OVPN_ON=${OVPN_ON:-0}
 DB_ON=${DB_ON:-0}
@@ -94,9 +93,9 @@ AGNUDP_ON=${AGNUDP_ON:-0}
 
 TOTAL=$((SSH_ON + OVPN_ON + DB_ON + V2_ON + AGNUDP_ON))
 
-# ---------------------------
-# Output JSON
-# ---------------------------
+# =====================================================
+# OUTPUT JSON
+# =====================================================
 JSON_DATA="[{\"onlines\":\"$TOTAL\",\"limite\":\"$LIMIT\",\"ssh\":\"$SSH_ON\",\"openvpn\":\"$OVPN_ON\",\"dropbear\":\"$DB_ON\",\"v2ray\":\"$V2_ON\",\"agnudp\":\"$AGNUDP_ON\",\"timestamp\":\"$NOW\"}]"
 
 echo -n "$JSON_DATA" > "$WWW_DIR/online_app.json"
