@@ -460,15 +460,38 @@ EOF
   systemctl daemon-reload
   systemctl enable --now online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service
 
-# ติดตั้ง wrapper showon
-cat > /usr/local/bin/showon <<'EOF'
-#!/bin/bash
-source /root/Install   # หรือ path ของ script นี้
-show_menu
-EOF
-chmod +x /usr/local/bin/showon
-echo -e "${GREEN}[OK]${NC} You can now run 'showon' from anywhere."
+# ---- สร้างคำสั่ง showon ----
+SHOWON_BIN="/usr/local/bin/showon"
 
+cat >"$SHOWON_BIN" <<'EOF'
+#!/bin/bash
+# showon - Run ShowOn menu from GitHub
+set -euo pipefail
+
+INSTALL_URL="https://raw.githubusercontent.com/TspKchn/showon/main/Install"
+TMP_FILE=$(mktemp /tmp/showon_install_XXXXXX)
+
+# ดาวน์โหลดไฟล์ Install
+if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$INSTALL_URL" -o "$TMP_FILE"
+elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$TMP_FILE" "$INSTALL_URL"
+else
+    echo "Error: curl or wget required" >&2
+    exit 1
+fi
+
+# รันไฟล์ Install ชั่วคราว
+bash "$TMP_FILE"
+
+# ลบไฟล์ชั่วคราว
+rm -f "$TMP_FILE"
+EOF
+
+chmod +x "$SHOWON_BIN"
+echo "[INFO] showon command installed at $SHOWON_BIN"
+
+  echo -e "${GREEN}[OK]${NC} You can now run 'showon' from anywhere."
   echo -e "${GREEN}[OK]${NC} Installed ShowOn ${VERSION}"
   echo -e "${CYAN}[INFO]${NC} Open: http://${PUB_IP}:${NGX_PORT}/server/"
   press
