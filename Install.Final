@@ -338,6 +338,7 @@ while true; do
     echo -e "${YELLOW}[WARN]${NC} Port $NGX_PORT ถูกใช้งานอยู่, กรุณาเลือกพอร์ตอื่น."
     continue
   fi
+
   break
 done
 
