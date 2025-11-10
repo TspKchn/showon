@@ -29,7 +29,9 @@ rotate_log() {
 }
 rotate_log
 
-# --------------------------- Helper: join local IPv4s as regex ---------------------------
+# ---------------------------
+# Helper: join local IPv4s as regex
+# ---------------------------
 local_ipv4_regex() {
   ip -o -4 addr show up scope global \
     | awk '{print $4}' \
@@ -37,25 +39,33 @@ local_ipv4_regex() {
     | paste -sd'|' -
 }
 
-# --------------------------- SSH ---------------------------
+# ---------------------------
+# SSH
+# ---------------------------
 if command -v ss >/dev/null 2>&1; then
   SSH_ON=$(ss -nt state established 2>/dev/null | awk '$3 ~ /:22$/ {c++} END {print c+0}')
 else
   SSH_ON=$(netstat -nt 2>/dev/null | awk '$6 == "ESTABLISHED" && $4 ~ /:22$/ {c++} END {print c+0}')
 fi
 
-# --------------------------- OpenVPN ---------------------------
+# ---------------------------
+# OpenVPN
+# ---------------------------
 if [[ -f /etc/openvpn/server/openvpn-status.log ]]; then
   OVPN_ON=$(grep -c "^CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || true)
 fi
 
-# --------------------------- Dropbear ---------------------------
+# ---------------------------
+# Dropbear (Fixed Counting)
+# ---------------------------
 if pgrep dropbear >/dev/null 2>&1; then
-  DB_ON=$(pgrep -a dropbear | grep -c 'dropbear\(\|_convert\|key\)\? ' || true)
-  [[ "$DB_ON" -eq 0 ]] && DB_ON=$(pgrep -a dropbear | wc -l)
+  DB_ON=$(expr $(ps aux | grep '[d]ropbear' | grep -v grep | wc -l) - 1)
+  [[ "$DB_ON" -lt 0 ]] && DB_ON=0
 fi
 
-# --------------------------- V2Ray / Xray ---------------------------
+# ---------------------------
+# V2Ray / Xray
+# ---------------------------
 if [[ -n "${PANEL_URL:-}" ]]; then
   LOGIN_OK=false
   if curl -sk -c "$TMP_COOKIE" -X POST "$PANEL_URL/login" \
@@ -94,7 +104,9 @@ else
   fi
 fi
 
-# --------------------------- AGN-UDP (Hysteria) ---------------------------
+# ---------------------------
+# AGN-UDP (Hysteria)
+# ---------------------------
 AGNUDP_ON=0
 AGNUDP_PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
   | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//' || true)
@@ -123,7 +135,9 @@ fi
 
 AGNUDP_ON=${AGNUDP_ON:-0}
 
-# --------------------------- Ensure numeric defaults ---------------------------
+# ---------------------------
+# Ensure numeric defaults
+# ---------------------------
 SSH_ON=${SSH_ON:-0}
 OVPN_ON=${OVPN_ON:-0}
 DB_ON=${DB_ON:-0}
@@ -133,20 +147,16 @@ LIMIT=${LIMIT:-2000}
 
 TOTAL=$((SSH_ON + OVPN_ON + DB_ON + V2_ON + AGNUDP_ON))
 
-# --------------------------- Output JSON ---------------------------
+# ---------------------------
+# Output JSON (compact one-line)
+# ---------------------------
 mkdir -p "$WWW_DIR"
 
-# JSON compact and pretty
-JSON_DATA="[{\"onlines\":$TOTAL,\"limit\":$LIMIT,\"ssh\":$SSH_ON,\"openvpn\":$OVPN_ON,\"dropbear\":$DB_ON,\"v2ray\":$V2_ON,\"agnudp\":$AGNUDP_ON,\"timestamp\":$NOW}]"
+JSON_DATA="[{\"onlines\":\"$TOTAL\",\"limite\":\"$LIMIT\",\"ssh\":\"$SSH_ON\",\"openvpn\":\"$OVPN_ON\",\"dropbear\":\"$DB_ON\",\"v2ray\":\"$V2_ON\",\"agnudp\":\"$AGNUDP_ON\",\"timestamp\":\"$NOW\"}]"
 
-# online_app.json → compact JSON
-echo -n "$JSON_DATA" | jq -c '.' > "$WWW_DIR/online_app.json"
-
-# online_app → pretty JSON
-echo -n "$JSON_DATA" | jq '.' > "$WWW_DIR/online_app"
-
-# ตั้งสิทธิ์อ่านได้
-chmod 644 "$WWW_DIR/online_app.json" "$WWW_DIR/online_app"
+# สร้างไฟล์ JSON
+echo -n "$JSON_DATA" > "$WWW_DIR/online_app.json"
+echo -n "$JSON_DATA" > "$WWW_DIR/online_app"
 
 # ลบ cookie ชั่วคราว
 rm -f "$TMP_COOKIE"
