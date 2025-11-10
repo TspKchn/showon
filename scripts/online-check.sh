@@ -7,18 +7,19 @@
 # =====================================================
 
 set -euo pipefail
-trap 'echo "[ERROR] line $LINENO: command exited with status $?" >> "${DEBUG_LOG:-/var/log/showon-debug.log}"' ERR
+trap 'echo "[ERROR] line $LINENO: command exited with status $?" >> "$DEBUG_LOG"' ERR
 
 CONF=/etc/showon.conf
+# shellcheck disable=SC1090
 [[ -f "$CONF" ]] && source "$CONF"
 
+# ---- Fallback Defaults ----
 WWW_DIR=${WWW_DIR:-/var/www/html/server}
 LIMIT=${LIMIT:-2000}
 DEBUG_LOG=${DEBUG_LOG:-/var/log/showon-debug.log}
 
 mkdir -p "$WWW_DIR"
 
-JSON_OUT="$WWW_DIR/online_app.json"
 TMP_COOKIE=$(mktemp /tmp/showon_cookie_XXXXXX)
 NOW=$(date +%s%3N)
 
@@ -43,42 +44,45 @@ local_ipv4_regex() {
     | cut -d/ -f1 \
     | paste -sd'|' -
 }
-LOCAL_IPS_REGEX="$(local_ipv4_regex || true)"
+
+LOCAL_IPS=$(hostname -I | tr ' ' '|')
 INTERNAL_REGEX='^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|172\.17\.|169\.254\.)'
 
 # ---------------------------
 # SSH (unique IP across multiple ports)
 # ---------------------------
 SSH_PORTS=(22 443 8880)
-ALL_SSH_IPS=()
 for port in "${SSH_PORTS[@]}"; do
     if command -v ss >/dev/null 2>&1; then
-        IPS=$(ss -nt state established 2>/dev/null \
-            | awk -v p=":$port$" '$4 ~ p {print $5}' | sed 's/::ffff://')
+        SSH_ON=$((SSH_ON + $(ss -tn state established 2>/dev/null \
+            | awk -v p=":$port$" -v local="$LOCAL_IPS" -v internal="$INTERNAL_REGEX" \
+            '$4 ~ p {split($5,a,":"); ip=a[1]; if(ip!~local && ip!~internal) print ip}' \
+            | sort -u | wc -l)))
     else
-        IPS=$(netstat -nt 2>/dev/null \
-            | awk -v p=":$port$" '$6=="ESTABLISHED" && $4 ~ p {print $5}' | sed 's/::ffff://')
+        SSH_ON=$((SSH_ON + $(netstat -nt 2>/dev/null \
+            | awk -v p=":$port$" -v local="$LOCAL_IPS" -v internal="$INTERNAL_REGEX" \
+            '$6=="ESTABLISHED" && $4 ~ p {split($5,a,":"); ip=a[1]; if(ip!~local && ip!~internal) print ip}' \
+            | sort -u | wc -l)))
     fi
-    ALL_SSH_IPS+=($IPS)
 done
-SSH_ON=$(printf "%s\n" "${ALL_SSH_IPS[@]}" | grep -Ev "$LOCAL_IPS_REGEX|$INTERNAL_REGEX" | sort -u | wc -l)
 
 # ---------------------------
 # Dropbear (unique IP across multiple ports)
 # ---------------------------
 DB_PORTS=(109 143 443)
-ALL_DB_IPS=()
 for port in "${DB_PORTS[@]}"; do
     if command -v ss >/dev/null 2>&1; then
-        IPS=$(ss -nt state established 2>/dev/null \
-            | awk -v p=":$port$" '$4 ~ p {print $5}' | sed 's/::ffff://')
+        DB_ON=$((DB_ON + $(ss -tn state established 2>/dev/null \
+            | awk -v p=":$port$" -v local="$LOCAL_IPS" -v internal="$INTERNAL_REGEX" \
+            '$4 ~ p {split($5,a,":"); ip=a[1]; if(ip!~local && ip!~internal) print ip}' \
+            | sort -u | wc -l)))
     else
-        IPS=$(netstat -nt 2>/dev/null \
-            | awk -v p=":$port$" '$6=="ESTABLISHED" && $4 ~ p {print $5}' | sed 's/::ffff://')
+        DB_ON=$((DB_ON + $(netstat -nt 2>/dev/null \
+            | awk -v p=":$port$" -v local="$LOCAL_IPS" -v internal="$INTERNAL_REGEX" \
+            '$6=="ESTABLISHED" && $4 ~ p {split($5,a,":"); ip=a[1]; if(ip!~local && ip!~internal) print ip}' \
+            | sort -u | wc -l)))
     fi
-    ALL_DB_IPS+=($IPS)
 done
-DB_ON=$(printf "%s\n" "${ALL_DB_IPS[@]}" | grep -Ev "$LOCAL_IPS_REGEX|$INTERNAL_REGEX" | sort -u | wc -l)
 
 # ---------------------------
 # OpenVPN
@@ -102,6 +106,7 @@ if [[ -n "${PANEL_URL:-}" ]]; then
        -d "{\"username\":\"$XUI_USER\",\"password\":\"$XUI_PASS\"}" | grep -q '"success":true'; then
     LOGIN_OK=true
   fi
+
   if $LOGIN_OK; then
     RESP=$(curl -sk -b "$TMP_COOKIE" "$PANEL_URL/panel/api/inbounds/onlines" || true)
     if echo "$RESP" | grep -q '"success":true'; then
@@ -110,7 +115,9 @@ if [[ -n "${PANEL_URL:-}" ]]; then
       RESP=$(curl -sk -b "$TMP_COOKIE" "$PANEL_URL/panel/api/inbounds/list" || true)
       if echo "$RESP" | grep -q '"success":true'; then
         V2_ON=$(echo "$RESP" | jq --argjson now "$NOW" '
-          [ .obj[]?.clientStats[]? | select(.lastOnline != null and ($now - .lastOnline) < 5000) ] | length')
+          [ .obj[]?.clientStats[]?
+            | select(.lastOnline != null and ($now - .lastOnline) < 5000)
+          ] | length')
       fi
     fi
   fi
@@ -138,11 +145,18 @@ if [[ -n "${AGNUDP_PORT:-}" && "$AGNUDP_PORT" =~ ^[0-9]+$ && -x "$(command -v co
               | grep -F "dport=$AGNUDP_PORT" \
               | awk '{for(i=1;i<=NF;i++) if($i ~ /^src=/) {sub(/^src=/,"",$i); print $i}}' \
               | awk 'NF') || true
-  FILTERED=$(echo "$RAW_SRC" \
+
+  if [[ -n "${RAW_SRC:-}" ]]; then
+    FILTERED=$(echo "$RAW_SRC" \
       | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
-      | grep -Ev "$LOCAL_IPS_REGEX|$INTERNAL_REGEX" \
-      | sort -u)
-  AGNUDP_ON=$(echo "$FILTERED" | wc -l)
+      | grep -Ev "$LOCAL_IPS" \
+      | grep -Ev "$INTERNAL_REGEX" \
+      | sort -u) || true
+
+    if [[ -n "${FILTERED:-}" ]]; then
+      AGNUDP_ON=$(echo "$FILTERED" | wc -l)
+    fi
+  fi
 fi
 
 # ---------------------------
@@ -153,22 +167,18 @@ OVPN_ON=${OVPN_ON:-0}
 DB_ON=${DB_ON:-0}
 V2_ON=${V2_ON:-0}
 AGNUDP_ON=${AGNUDP_ON:-0}
-LIMIT=${LIMIT:-2000}
 
 TOTAL=$((SSH_ON + OVPN_ON + DB_ON + V2_ON + AGNUDP_ON))
 
 # ---------------------------
-# Output JSON (สร้างไฟล์แน่ ๆ)
+# Output JSON (compact one-line)
 # ---------------------------
-mkdir -p "$WWW_DIR"
-
 JSON_DATA="[{\"onlines\":\"$TOTAL\",\"limite\":\"$LIMIT\",\"ssh\":\"$SSH_ON\",\"openvpn\":\"$OVPN_ON\",\"dropbear\":\"$DB_ON\",\"v2ray\":\"$V2_ON\",\"agnudp\":\"$AGNUDP_ON\",\"timestamp\":\"$NOW\"}]"
 
-# สร้างไฟล์ online_app และ online_app.json แน่นอน
 echo -n "$JSON_DATA" > "$WWW_DIR/online_app.json"
 echo -n "$JSON_DATA" > "$WWW_DIR/online_app"
 
-# fallback เผื่อ mkdir หรือ echo ล้มเหลว
+# fallback empty JSON if something fails
 [[ ! -f "$WWW_DIR/online_app.json" ]] && echo '[]' > "$WWW_DIR/online_app.json"
 [[ ! -f "$WWW_DIR/online_app" ]] && echo '[]' > "$WWW_DIR/online_app"
 
