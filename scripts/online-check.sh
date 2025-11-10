@@ -7,19 +7,20 @@
 # =====================================================
 
 set -euo pipefail
-trap 'echo "[ERROR] line $LINENO: command exited with status $?" >> "$DEBUG_LOG"' ERR
+trap 'echo "[ERROR] line $LINENO: command exited with status $?" >> "${DEBUG_LOG:-/var/log/showon-debug.log}"' ERR
 
 # ---- Load Config ----
 CONF=/etc/showon.conf
-source "$CONF" || true
+[[ -f "$CONF" ]] && source "$CONF"
 
-# ---- Defaults ----
+# ---- Fallback Defaults ----
 WWW_DIR=${WWW_DIR:-/var/www/html/server}
 LIMIT=${LIMIT:-2000}
 DEBUG_LOG=${DEBUG_LOG:-/var/log/showon-debug.log}
 
 mkdir -p "$WWW_DIR"
-JSON_OUT="$WWW_DIR/online_app.json"
+
+# ---- Temporary cookie ----
 TMP_COOKIE=$(mktemp /tmp/showon_cookie_XXXXXX)
 NOW=$(date +%s%3N)
 
@@ -51,33 +52,31 @@ INTERNAL_REGEX='^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|172\.17\.|
 # SSH (unique IP across multiple ports)
 # ---------------------------
 SSH_PORTS=(22 443 8880)
-SSH_IPS=$(for port in "${SSH_PORTS[@]}"; do
+SSH_IPS=()
+for port in "${SSH_PORTS[@]}"; do
     if command -v ss >/dev/null 2>&1; then
-        ss -nt state established 2>/dev/null \
-          | awk -v p=":$port$" '$4 ~ p {print $5}' | cut -d: -f1
+        IPS=$(ss -nt state established 2>/dev/null | awk -v p=":$port$" '$4 ~ p {print $5}' | cut -d: -f1)
     else
-        netstat -nt 2>/dev/null \
-          | awk -v p=":$port$" '$6=="ESTABLISHED" && $4 ~ p {print $5}' | cut -d: -f1
+        IPS=$(netstat -nt 2>/dev/null | awk -v p=":$port$" '$6=="ESTABLISHED" && $4 ~ p {print $5}' | cut -d: -f1)
     fi
-done | sort -u)
-
-SSH_ON=$(echo "$SSH_IPS" | grep -Ev "$INTERNAL_REGEX" | wc -l)
+    SSH_IPS+=($IPS)
+done
+SSH_ON=$(printf "%s\n" "${SSH_IPS[@]}" | grep -Ev "$INTERNAL_REGEX" | sort -u | wc -l)
 
 # ---------------------------
 # Dropbear (unique IP across multiple ports)
 # ---------------------------
 DB_PORTS=(109 143 443)
-DB_IPS=$(for port in "${DB_PORTS[@]}"; do
+DB_IPS=()
+for port in "${DB_PORTS[@]}"; do
     if command -v ss >/dev/null 2>&1; then
-        ss -nt state established 2>/dev/null \
-          | awk -v p=":$port$" '$4 ~ p {print $5}' | cut -d: -f1
+        IPS=$(ss -nt state established 2>/dev/null | awk -v p=":$port$" '$4 ~ p {print $5}' | cut -d: -f1)
     else
-        netstat -nt 2>/dev/null \
-          | awk -v p=":$port$" '$6=="ESTABLISHED" && $4 ~ p {print $5}' | cut -d: -f1
+        IPS=$(netstat -nt 2>/dev/null | awk -v p=":$port$" '$6=="ESTABLISHED" && $4 ~ p {print $5}' | cut -d: -f1)
     fi
-done | sort -u)
-
-DB_ON=$(echo "$DB_IPS" | grep -Ev "$INTERNAL_REGEX" | wc -l)
+    DB_IPS+=($IPS)
+done
+DB_ON=$(printf "%s\n" "${DB_IPS[@]}" | grep -Ev "$INTERNAL_REGEX" | sort -u | wc -l)
 
 # ---------------------------
 # OpenVPN
@@ -89,7 +88,6 @@ fi
 # ---------------------------
 # V2Ray / Xray
 # ---------------------------
-V2_ON=0
 if [[ -n "${PANEL_URL:-}" ]]; then
   LOGIN_OK=false
   if curl -sk -c "$TMP_COOKIE" -X POST "$PANEL_URL/login" \
@@ -136,7 +134,6 @@ AGNUDP_PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
   | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//' || true)
 
 LOCAL_IPS_REGEX="$(local_ipv4_regex || true)"
-
 if [[ -n "${AGNUDP_PORT:-}" && "$AGNUDP_PORT" =~ ^[0-9]+$ && -x "$(command -v conntrack)" ]]; then
   RAW_SRC=$(conntrack -L -p udp 2>/dev/null \
               | grep -F "dport=$AGNUDP_PORT" \
@@ -169,16 +166,15 @@ LIMIT=${LIMIT:-2000}
 TOTAL=$((SSH_ON + OVPN_ON + DB_ON + V2_ON + AGNUDP_ON))
 
 # ---------------------------
-# Output JSON (compact one-line)
+# Output JSON
 # ---------------------------
 mkdir -p "$WWW_DIR"
-
 JSON_DATA="[{\"onlines\":\"$TOTAL\",\"limite\":\"$LIMIT\",\"ssh\":\"$SSH_ON\",\"openvpn\":\"$OVPN_ON\",\"dropbear\":\"$DB_ON\",\"v2ray\":\"$V2_ON\",\"agnudp\":\"$AGNUDP_ON\",\"timestamp\":\"$NOW\"}]"
 
 echo -n "$JSON_DATA" > "$WWW_DIR/online_app.json"
 echo -n "$JSON_DATA" > "$WWW_DIR/online_app"
 
-# fallback
+# Fallback
 [[ ! -f "$WWW_DIR/online_app.json" ]] && echo '[]' > "$WWW_DIR/online_app.json"
 [[ ! -f "$WWW_DIR/online_app" ]] && echo '[]' > "$WWW_DIR/online_app"
 
