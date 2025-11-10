@@ -13,6 +13,11 @@ trap 'echo "[ERROR] line $LINENO: command exited with status $?" >> /var/log/sho
 CONF=/etc/showon.conf
 [[ -f "$CONF" ]] && source "$CONF"
 
+# Fallback WWW_DIR (หากยังว่างอยู่)
+WWW_DIR=${WWW_DIR:-/var/www/html/server}
+[[ -z "$WWW_DIR" ]] && WWW_DIR="/var/www/html/server"
+mkdir -p "$WWW_DIR"
+
 # Default Paths
 WWW_DIR=${WWW_DIR:-/var/www/html/server}
 DEBUG_LOG=${DEBUG_LOG:-/var/log/showon-debug.log}
