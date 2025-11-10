@@ -10,7 +10,6 @@ set -euo pipefail
 trap 'echo "[ERROR] line $LINENO: command exited with status $?" >> "$DEBUG_LOG"' ERR
 
 CONF=/etc/showon.conf
-# shellcheck disable=SC1090
 [[ -f "$CONF" ]] && source "$CONF"
 
 # ---- Fallback Defaults ----
@@ -35,54 +34,19 @@ rotate_log() {
 }
 rotate_log
 
-# ---------------------------
-# Helper: join local IPv4s as regex
-# ---------------------------
-local_ipv4_regex() {
-  ip -o -4 addr show up scope global \
-    | awk '{print $4}' \
-    | cut -d/ -f1 \
-    | paste -sd'|' -
-}
-
 LOCAL_IPS=$(hostname -I | tr ' ' '|')
 INTERNAL_REGEX='^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|172\.17\.|169\.254\.)'
 
 # ---------------------------
-# SSH (unique IP across multiple ports)
+# SSH (นับ process แบบ givpn)
 # ---------------------------
-SSH_PORTS=(22 443 8880)
-for port in "${SSH_PORTS[@]}"; do
-    if command -v ss >/dev/null 2>&1; then
-        SSH_ON=$((SSH_ON + $(ss -tn state established 2>/dev/null \
-            | awk -v p=":$port$" -v local="$LOCAL_IPS" -v internal="$INTERNAL_REGEX" \
-            '$4 ~ p {split($5,a,":"); ip=a[1]; if(ip!~local && ip!~internal) print ip}' \
-            | sort -u | wc -l)))
-    else
-        SSH_ON=$((SSH_ON + $(netstat -nt 2>/dev/null \
-            | awk -v p=":$port$" -v local="$LOCAL_IPS" -v internal="$INTERNAL_REGEX" \
-            '$6=="ESTABLISHED" && $4 ~ p {split($5,a,":"); ip=a[1]; if(ip!~local && ip!~internal) print ip}' \
-            | sort -u | wc -l)))
-    fi
-done
+SSH_ON=$(ps aux | grep '[s]shd:' | grep -v root | grep -v grep | awk 'NR>1{c++} END{print c+0}')
 
 # ---------------------------
-# Dropbear (unique IP across multiple ports)
+# Dropbear (นับ process แบบ givpn)
 # ---------------------------
-DB_PORTS=(109 143 443)
-for port in "${DB_PORTS[@]}"; do
-    if command -v ss >/dev/null 2>&1; then
-        DB_ON=$((DB_ON + $(ss -tn state established 2>/dev/null \
-            | awk -v p=":$port$" -v local="$LOCAL_IPS" -v internal="$INTERNAL_REGEX" \
-            '$4 ~ p {split($5,a,":"); ip=a[1]; if(ip!~local && ip!~internal) print ip}' \
-            | sort -u | wc -l)))
-    else
-        DB_ON=$((DB_ON + $(netstat -nt 2>/dev/null \
-            | awk -v p=":$port$" -v local="$LOCAL_IPS" -v internal="$INTERNAL_REGEX" \
-            '$6=="ESTABLISHED" && $4 ~ p {split($5,a,":"); ip=a[1]; if(ip!~local && ip!~internal) print ip}' \
-            | sort -u | wc -l)))
-    fi
-done
+DB_ON=$(expr $(ps aux | grep '[d]ropbear' | grep -v grep | wc -l) - 1)
+if [[ $DB_ON -lt 0 ]]; then DB_ON=0; fi
 
 # ---------------------------
 # OpenVPN
@@ -178,7 +142,6 @@ JSON_DATA="[{\"onlines\":\"$TOTAL\",\"limite\":\"$LIMIT\",\"ssh\":\"$SSH_ON\",\"
 echo -n "$JSON_DATA" > "$WWW_DIR/online_app.json"
 echo -n "$JSON_DATA" > "$WWW_DIR/online_app"
 
-# fallback empty JSON if something fails
 [[ ! -f "$WWW_DIR/online_app.json" ]] && echo '[]' > "$WWW_DIR/online_app.json"
 [[ ! -f "$WWW_DIR/online_app" ]] && echo '[]' > "$WWW_DIR/online_app"
 
