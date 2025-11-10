@@ -1,37 +1,25 @@
 #!/bin/bash
 # =====================================================
 # online-check.sh - ShowOn Online Users Checker (FINAL)
-# รองรับ: SSH / OpenVPN / Dropbear / 3x-ui / Xray-Core / AGN-UDP
-# Author: TspKchn + ChatGPT (Final Fix 2025-11)
+# รองรับ: SSH / OpenVPN / Dropbear / 3x-ui / Xray-Core / AGN-UDP (Hysteria)
+# Author: TspKchn + ChatGPT
 # Compatible: Ubuntu 18.04+
 # =====================================================
 
 set -euo pipefail
-trap 'echo "[ERROR] line $LINENO: command exited with status $?" >> /var/log/showon-debug.log' ERR
+trap 'echo "[ERROR] line $LINENO: command exited with status $?" >> "$DEBUG_LOG"' ERR
 
-# ---- CONFIG ----
 CONF=/etc/showon.conf
-[[ -f "$CONF" ]] && source "$CONF"
+# shellcheck disable=SC1090
+source "$CONF"
 
-# Fallback WWW_DIR (หากยังว่างอยู่)
-WWW_DIR=${WWW_DIR:-/var/www/html/server}
-[[ -z "$WWW_DIR" ]] && WWW_DIR="/var/www/html/server"
-mkdir -p "$WWW_DIR"
-
-# Default Paths
-WWW_DIR=${WWW_DIR:-/var/www/html/server}
-DEBUG_LOG=${DEBUG_LOG:-/var/log/showon-debug.log}
-LIMIT=${LIMIT:-2000}
-
-# Ensure directory exists
-mkdir -p "$WWW_DIR"
-
+JSON_OUT="$WWW_DIR/online_app.json"
 TMP_COOKIE=$(mktemp /tmp/showon_cookie_XXXXXX)
 NOW=$(date +%s%3N)
 
 SSH_ON=0; OVPN_ON=0; DB_ON=0; V2_ON=0; AGNUDP_ON=0
 
-# ---- Rotate Debug Log (1MB limit) ----
+# ==== Log Rotate (1MB) ====
 rotate_log() {
   local max=1000000
   if [[ -f "$DEBUG_LOG" && $(stat -c%s "$DEBUG_LOG") -gt $max ]]; then
@@ -41,33 +29,33 @@ rotate_log() {
 }
 rotate_log
 
-# ---------------------------
-# SSH
-# ---------------------------
+# --------------------------- Helper: join local IPv4s as regex ---------------------------
+local_ipv4_regex() {
+  ip -o -4 addr show up scope global \
+    | awk '{print $4}' \
+    | cut -d/ -f1 \
+    | paste -sd'|' -
+}
+
+# --------------------------- SSH ---------------------------
 if command -v ss >/dev/null 2>&1; then
   SSH_ON=$(ss -nt state established 2>/dev/null | awk '$3 ~ /:22$/ {c++} END {print c+0}')
 else
   SSH_ON=$(netstat -nt 2>/dev/null | awk '$6 == "ESTABLISHED" && $4 ~ /:22$/ {c++} END {print c+0}')
 fi
 
-# ---------------------------
-# OpenVPN
-# ---------------------------
+# --------------------------- OpenVPN ---------------------------
 if [[ -f /etc/openvpn/server/openvpn-status.log ]]; then
   OVPN_ON=$(grep -c "^CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || true)
 fi
 
-# ---------------------------
-# Dropbear (Fixed Counting)
-# ---------------------------
+# --------------------------- Dropbear ---------------------------
 if pgrep dropbear >/dev/null 2>&1; then
-  DB_ON=$(expr $(ps aux | grep '[d]ropbear' | grep -v grep | wc -l) - 1)
-  [[ "$DB_ON" -lt 0 ]] && DB_ON=0
+  DB_ON=$(pgrep -a dropbear | grep -c 'dropbear\(\|_convert\|key\)\? ' || true)
+  [[ "$DB_ON" -eq 0 ]] && DB_ON=$(pgrep -a dropbear | wc -l)
 fi
 
-# ---------------------------
-# V2Ray / Xray
-# ---------------------------
+# --------------------------- V2Ray / Xray ---------------------------
 if [[ -n "${PANEL_URL:-}" ]]; then
   LOGIN_OK=false
   if curl -sk -c "$TMP_COOKIE" -X POST "$PANEL_URL/login" \
@@ -96,51 +84,69 @@ if [[ -n "${PANEL_URL:-}" ]]; then
   fi
 else
   if [[ -f /usr/local/etc/xray/config.json || -f /etc/xray/config.json ]]; then
-    LOG_FILE="/var/log/xray/access.log"
-    [[ -f /var/log/xray/vless_ntls.log ]] && LOG_FILE="/var/log/xray/vless_ntls.log"
-    if [[ -f "$LOG_FILE" ]]; then
-      V2_ON=$(grep -F 'accepted' "$LOG_FILE" | grep -F 'email:' \
-              | awk '{print $3}' | cut -d: -f1 | sort -u | wc -l)
+    if [[ -f /var/log/xray/vless_ntls.log ]]; then
+      V2_ON=$(grep -F 'accepted' /var/log/xray/vless_ntls.log | grep -F 'email:' \
+                | awk '{print $3}' | cut -d: -f1 | sort -u | wc -l)
+    elif [[ -f /var/log/xray/access.log ]]; then
+      V2_ON=$(grep -F 'accepted' /var/log/xray/access.log | grep -F 'email:' \
+                | awk '{print $3}' | cut -d: -f1 | sort -u | wc -l)
     fi
   fi
 fi
 
-# ---------------------------
-# AGN-UDP (Hysteria)
-# ---------------------------
+# --------------------------- AGN-UDP (Hysteria) ---------------------------
 AGNUDP_ON=0
-if [[ -f /etc/hysteria/config.json ]]; then
-  PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
-        | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//' || true)
-  if [[ -n "$PORT" && -x "$(command -v conntrack)" ]]; then
-    SRC_IPS=$(conntrack -L -p udp 2>/dev/null | grep "dport=$PORT" \
-              | grep -oP 'src=\K[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort -u)
-    [[ -n "$SRC_IPS" ]] && AGNUDP_ON=$(echo "$SRC_IPS" | wc -l)
+AGNUDP_PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
+  | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//' || true)
+
+LOCAL_IPS_REGEX="$(local_ipv4_regex || true)"
+INTERNAL_REGEX='^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|172\.17\.|169\.254\.)'
+
+if [[ -n "${AGNUDP_PORT:-}" && "$AGNUDP_PORT" =~ ^[0-9]+$ && -x "$(command -v conntrack)" ]]; then
+  RAW_SRC=$(conntrack -L -p udp 2>/dev/null \
+              | grep -F "dport=$AGNUDP_PORT" \
+              | awk '{for(i=1;i<=NF;i++) if($i ~ /^src=/) {sub(/^src=/,"",$i); print $i}}' \
+              | awk 'NF') || true
+
+  if [[ -n "${RAW_SRC:-}" ]]; then
+    FILTERED=$(echo "$RAW_SRC" \
+      | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+      | { if [[ -n "$LOCAL_IPS_REGEX" ]]; then grep -Ev "$LOCAL_IPS_REGEX"; else cat; fi; } \
+      | grep -Ev "$INTERNAL_REGEX" \
+      | sort -u) || true
+
+    if [[ -n "${FILTERED:-}" ]]; then
+      AGNUDP_ON=$(echo "$FILTERED" | wc -l)
+    fi
   fi
 fi
 
-# ---------------------------
-# รวมข้อมูลและเขียนไฟล์ออก
-# ---------------------------
+AGNUDP_ON=${AGNUDP_ON:-0}
+
+# --------------------------- Ensure numeric defaults ---------------------------
+SSH_ON=${SSH_ON:-0}
+OVPN_ON=${OVPN_ON:-0}
+DB_ON=${DB_ON:-0}
+V2_ON=${V2_ON:-0}
+AGNUDP_ON=${AGNUDP_ON:-0}
+LIMIT=${LIMIT:-2000}
+
 TOTAL=$((SSH_ON + OVPN_ON + DB_ON + V2_ON + AGNUDP_ON))
-JSON_DATA="[{\"onlines\":\"$TOTAL\",\"limite\":\"$LIMIT\",\"ssh\":\"$SSH_ON\",\"openvpn\":\"$OVPN_ON\",\"dropbear\":\"$DB_ON\",\"v2ray\":\"$V2_ON\",\"agnudp\":\"$AGNUDP_ON\",\"timestamp\":\"$NOW\"}]"
 
-# เขียนข้อมูลหลัก
-echo -n "$JSON_DATA" > "$WWW_DIR/online_app.json"
-echo -n "$JSON_DATA" > "$WWW_DIR/online_app"
+# --------------------------- Output JSON ---------------------------
+mkdir -p "$WWW_DIR"
 
-# ถ้าไฟล์ไม่ถูกสร้างเลย ให้ใส่ค่าเริ่มต้นเป็น []
-[[ ! -f "$WWW_DIR/online_app.json" ]] && echo '[]' > "$WWW_DIR/online_app.json"
-[[ ! -f "$WWW_DIR/online_app" ]] && echo '[]' > "$WWW_DIR/online_app"
+# JSON compact and pretty
+JSON_DATA="[{\"onlines\":$TOTAL,\"limit\":$LIMIT,\"ssh\":$SSH_ON,\"openvpn\":$OVPN_ON,\"dropbear\":$DB_ON,\"v2ray\":$V2_ON,\"agnudp\":$AGNUDP_ON,\"timestamp\":$NOW}]"
 
-# สำรอง fallback ถ้าเขียนไฟล์ล้มเหลว
-if [[ ! -s "$WWW_DIR/online_app.json" ]]; then
-  mkdir -p /var/www/html/server
-  echo "$JSON_DATA" > /var/www/html/server/online_app.json
-  echo "$JSON_DATA" > /var/www/html/server/online_app
-fi
+# online_app.json → compact JSON
+echo -n "$JSON_DATA" | jq -c '.' > "$WWW_DIR/online_app.json"
 
+# online_app → pretty JSON
+echo -n "$JSON_DATA" | jq '.' > "$WWW_DIR/online_app"
+
+# ตั้งสิทธิ์อ่านได้
+chmod 644 "$WWW_DIR/online_app.json" "$WWW_DIR/online_app"
+
+# ลบ cookie ชั่วคราว
 rm -f "$TMP_COOKIE"
-
-echo "✅ Updated online_app successfully!"
-echo "SSH=$SSH_ON | Dropbear=$DB_ON | Total=$TOTAL"
