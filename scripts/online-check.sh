@@ -1,22 +1,24 @@
 #!/bin/bash
 # =====================================================
-# online-check.sh - ShowOn Online Users Checker (FINAL)
-# รองรับ: SSH / OpenVPN / Dropbear / 3x-ui / Xray-Core / AGN-UDP (Hysteria)
+# online-check.sh - ShowOn Online Users Checker (FIXED)
+# รองรับ: SSH / OpenVPN / Dropbear / 3x-ui / Xray-Core / AGN-UDP
 # Author: TspKchn + ChatGPT
 # Compatible: Ubuntu 18.04+
 # =====================================================
 
 set -euo pipefail
-trap 'echo "[ERROR] line $LINENO: command exited with status $?" >> "$DEBUG_LOG"' ERR
+trap 'echo "[ERROR] line $LINENO: command exited with status $?" >> /var/log/showon-debug.log' ERR
 
+# ---- CONFIG ----
 CONF=/etc/showon.conf
 [[ -f "$CONF" ]] && source "$CONF"
 
-# ---- Fallback Defaults ----
+# Fallback ถ้าไม่ได้ประกาศ WWW_DIR ใน conf
 WWW_DIR=${WWW_DIR:-/var/www/html/server}
-LIMIT=${LIMIT:-2000}
 DEBUG_LOG=${DEBUG_LOG:-/var/log/showon-debug.log}
+LIMIT=${LIMIT:-2000}
 
+# สร้างโฟลเดอร์ปลายทางแน่นอน
 mkdir -p "$WWW_DIR"
 
 TMP_COOKIE=$(mktemp /tmp/showon_cookie_XXXXXX)
@@ -34,19 +36,24 @@ rotate_log() {
 }
 rotate_log
 
-LOCAL_IPS=$(hostname -I | tr ' ' '|')
-INTERNAL_REGEX='^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|172\.17\.|169\.254\.)'
+# ---------------------------
+# Helper: join local IPv4s as regex
+# ---------------------------
+local_ipv4_regex() {
+  ip -o -4 addr show up scope global 2>/dev/null \
+    | awk '{print $4}' \
+    | cut -d/ -f1 \
+    | paste -sd'|' -
+}
 
 # ---------------------------
-# SSH (นับ process แบบ givpn)
+# SSH
 # ---------------------------
-SSH_ON=$(ps aux | grep '[s]shd:' | grep -v root | grep -v grep | awk 'NR>1{c++} END{print c+0}')
-
-# ---------------------------
-# Dropbear (นับ process แบบ givpn)
-# ---------------------------
-DB_ON=$(expr $(ps aux | grep '[d]ropbear' | grep -v grep | wc -l) - 1)
-if [[ $DB_ON -lt 0 ]]; then DB_ON=0; fi
+if command -v ss >/dev/null 2>&1; then
+  SSH_ON=$(ss -nt state established 2>/dev/null | awk '$3 ~ /:22$/ {c++} END {print c+0}')
+else
+  SSH_ON=$(netstat -nt 2>/dev/null | awk '$6 == "ESTABLISHED" && $4 ~ /:22$/ {c++} END {print c+0}')
+fi
 
 # ---------------------------
 # OpenVPN
@@ -56,9 +63,16 @@ if [[ -f /etc/openvpn/server/openvpn-status.log ]]; then
 fi
 
 # ---------------------------
+# Dropbear
+# ---------------------------
+if pgrep dropbear >/dev/null 2>&1; then
+  DB_ON=$(expr $(ps aux | grep '[d]ropbear' | grep -v grep | wc -l) - 1)
+  [[ "$DB_ON" -lt 0 ]] && DB_ON=0
+fi
+
+# ---------------------------
 # V2Ray / Xray
 # ---------------------------
-V2_ON=0
 if [[ -n "${PANEL_URL:-}" ]]; then
   LOGIN_OK=false
   if curl -sk -c "$TMP_COOKIE" -X POST "$PANEL_URL/login" \
@@ -100,9 +114,11 @@ fi
 # ---------------------------
 # AGN-UDP (Hysteria)
 # ---------------------------
-AGNUDP_ON=0
 AGNUDP_PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
   | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//' || true)
+
+LOCAL_IPS_REGEX="$(local_ipv4_regex || true)"
+INTERNAL_REGEX='^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|172\.17\.|169\.254\.)'
 
 if [[ -n "${AGNUDP_PORT:-}" && "$AGNUDP_PORT" =~ ^[0-9]+$ && -x "$(command -v conntrack)" ]]; then
   RAW_SRC=$(conntrack -L -p udp 2>/dev/null \
@@ -113,10 +129,9 @@ if [[ -n "${AGNUDP_PORT:-}" && "$AGNUDP_PORT" =~ ^[0-9]+$ && -x "$(command -v co
   if [[ -n "${RAW_SRC:-}" ]]; then
     FILTERED=$(echo "$RAW_SRC" \
       | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
-      | grep -Ev "$LOCAL_IPS" \
+      | { if [[ -n "$LOCAL_IPS_REGEX" ]]; then grep -Ev "$LOCAL_IPS_REGEX"; else cat; fi; } \
       | grep -Ev "$INTERNAL_REGEX" \
       | sort -u) || true
-
     if [[ -n "${FILTERED:-}" ]]; then
       AGNUDP_ON=$(echo "$FILTERED" | wc -l)
     fi
@@ -124,25 +139,18 @@ if [[ -n "${AGNUDP_PORT:-}" && "$AGNUDP_PORT" =~ ^[0-9]+$ && -x "$(command -v co
 fi
 
 # ---------------------------
-# Ensure numeric defaults
+# รวมข้อมูลและเขียนไฟล์ออก
 # ---------------------------
-SSH_ON=${SSH_ON:-0}
-OVPN_ON=${OVPN_ON:-0}
-DB_ON=${DB_ON:-0}
-V2_ON=${V2_ON:-0}
-AGNUDP_ON=${AGNUDP_ON:-0}
-
 TOTAL=$((SSH_ON + OVPN_ON + DB_ON + V2_ON + AGNUDP_ON))
-
-# ---------------------------
-# Output JSON (compact one-line)
-# ---------------------------
 JSON_DATA="[{\"onlines\":\"$TOTAL\",\"limite\":\"$LIMIT\",\"ssh\":\"$SSH_ON\",\"openvpn\":\"$OVPN_ON\",\"dropbear\":\"$DB_ON\",\"v2ray\":\"$V2_ON\",\"agnudp\":\"$AGNUDP_ON\",\"timestamp\":\"$NOW\"}]"
 
 echo -n "$JSON_DATA" > "$WWW_DIR/online_app.json"
 echo -n "$JSON_DATA" > "$WWW_DIR/online_app"
 
-[[ ! -f "$WWW_DIR/online_app.json" ]] && echo '[]' > "$WWW_DIR/online_app.json"
-[[ ! -f "$WWW_DIR/online_app" ]] && echo '[]' > "$WWW_DIR/online_app"
+# สำรอง fallback เผื่อเขียนไฟล์ล้มเหลว
+if [[ ! -s "$WWW_DIR/online_app.json" ]]; then
+  echo "$JSON_DATA" > /var/www/html/server/online_app.json
+  echo "$JSON_DATA" > /var/www/html/server/online_app
+fi
 
 rm -f "$TMP_COOKIE"
