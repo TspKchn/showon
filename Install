@@ -76,6 +76,7 @@ download_or_die() {
     exit 1
   fi
 }
+
 # เขียน Nginx site
 write_nginx() {
   local port=${1:-82}  # รับพอร์ตจาก argument
@@ -83,8 +84,8 @@ write_nginx() {
   mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
 
   # ลบ default site เฉพาะถ้าเป็น default
-[[ -f /etc/nginx/sites-enabled/default ]] && rm -f /etc/nginx/sites-enabled/default
-[[ -f /etc/nginx/sites-available/default ]] && rm -f /etc/nginx/sites-available/default
+  [[ -f /etc/nginx/sites-enabled/default ]] && rm -f /etc/nginx/sites-enabled/default
+  [[ -f /etc/nginx/sites-available/default ]] && rm -f /etc/nginx/sites-available/default
 
   # Config ใหม่
   cat >"$SITE_AV" <<EOF
@@ -193,7 +194,6 @@ print_status() {
   echo -e "Status: $installed"
   echo "==============================="
 }
-
 # ตรวจจับ AGN-UDP (Hysteria) จาก systemd / process
 detect_agnudp() {
   local present="0" port=""
@@ -309,40 +309,40 @@ install_script() {
   fi
 
   # Limit
-read -rp "Limit User Online (Default: 2000): " LIMIT
-LIMIT=${LIMIT:-2000}
+  read -rp "Limit User Online (Default: 2000): " LIMIT
+  LIMIT=${LIMIT:-2000}
 
-# ตรวจสอบ Public IP
-PUB_IP=$(get_public_ip)
-echo -e "${CYAN}[INFO]${NC} ตรวจพบ Public IP: $PUB_IP"
+  # ตรวจสอบ Public IP
+  PUB_IP=$(get_public_ip)
+  echo -e "${CYAN}[INFO]${NC} ตรวจพบ Public IP: $PUB_IP"
 
-# --- เลือก Nginx Port ---
-while true; do
-  read -rp "กรุณากรอก Nginx Port (default: 82): " NGX_PORT
-  NGX_PORT=${NGX_PORT:-82}
+  # --- เลือก Nginx Port ---
+  while true; do
+    read -rp "กรุณากรอก Nginx Port (default: 82): " NGX_PORT
+    NGX_PORT=${NGX_PORT:-82}
 
-  # ตรวจสอบว่าตัวเลข
-  if ! [[ "$NGX_PORT" =~ ^[0-9]+$ ]]; then
-    echo -e "${RED}[ERROR]${NC} กรุณากรอกเป็นตัวเลขเท่านั้น."
-    continue
-  fi
+    # ตรวจสอบว่าตัวเลข
+    if ! [[ "$NGX_PORT" =~ ^[0-9]+$ ]]; then
+      echo -e "${RED}[ERROR]${NC} กรุณากรอกเป็นตัวเลขเท่านั้น."
+      continue
+    fi
 
-  # ตรวจสอบ range 1-65535
-  if (( NGX_PORT < 1 || NGX_PORT > 65535 )); then
-    echo -e "${RED}[ERROR]${NC} Port must be 1-65535"
-    continue
-  fi
+    # ตรวจสอบ range 1-65535
+    if (( NGX_PORT < 1 || NGX_PORT > 65535 )); then
+      echo -e "${RED}[ERROR]${NC} Port must be 1-65535"
+      continue
+    fi
 
-  # ตรวจสอบว่า port ว่าง
-  if ss -tulnp | grep -w "$NGX_PORT" >/dev/null 2>&1; then
-    echo -e "${YELLOW}[WARN]${NC} Port $NGX_PORT ถูกใช้งานอยู่, กรุณาเลือกพอร์ตอื่น."
-    continue
-  fi
+    # ตรวจสอบว่า port ว่าง
+    if ss -tulnp | grep -w "$NGX_PORT" >/dev/null 2>&1; then
+      echo -e "${YELLOW}[WARN]${NC} Port $NGX_PORT ถูกใช้งานอยู่, กรุณาเลือกพอร์ตอื่น."
+      continue
+    fi
 
-  break
-done
+    break
+  done
 
-echo -e "${GREEN}[OK]${NC} Nginx จะใช้พอร์ต: $NGX_PORT"
+  echo -e "${GREEN}[OK]${NC} Nginx จะใช้พอร์ต: $NGX_PORT"
 
   # เขียน config
   NIC=$(get_nic)
@@ -378,19 +378,19 @@ EOF
   download_or_die "$SRC_INDEX" "$WWW_DIR/index.html"
   chmod 644 "$WWW_DIR/index.html"
 
-# --- แก้ไข nginx.conf ให้ include sites-enabled ถ้ายังไม่มี ---
-NGX_CONF="/etc/nginx/nginx.conf"
-if ! grep -q "include /etc/nginx/sites-enabled/\*;" "$NGX_CONF"; then
-    sed -i '/http {/a \    include /etc/nginx/sites-enabled/*;' "$NGX_CONF"
-fi
+  # --- แก้ไข nginx.conf ให้ include sites-enabled ถ้ายังไม่มี ---
+  NGX_CONF="/etc/nginx/nginx.conf"
+  if ! grep -q "include /etc/nginx/sites-enabled/\*;" "$NGX_CONF"; then
+      sed -i '/http {/a \    include /etc/nginx/sites-enabled/*;' "$NGX_CONF"
+  fi
 
-# เรียกเขียน site ของ ShowOn และ reload nginx
-write_nginx "$NGX_PORT"
-systemctl enable --now nginx >/dev/null 2>&1 || true
+  # เรียกเขียน site ของ ShowOn และ reload nginx
+  write_nginx "$NGX_PORT"
+  systemctl enable --now nginx >/dev/null 2>&1 || true
 
-# Reload nginx
-nginx -t && systemctl reload nginx
-
+  # Reload nginx
+  nginx -t && systemctl reload nginx
+}
   # systemd services (ทุก 5 วิ)
   cat >"$SERVICE_ONLINE" <<'EOF'
 [Unit]
