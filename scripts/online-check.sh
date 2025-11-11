@@ -1,21 +1,19 @@
 #!/bin/bash
 # =====================================================
-# online-check.sh - ShowOn Online Users Checker (FIXED PATH)
+# online-check.sh - ShowOn Online Users Checker (FINAL)
 # รองรับ: SSH / OpenVPN / Dropbear / 3x-ui / Xray-Core / AGN-UDP (Hysteria)
 # Author: TspKchn + ChatGPT
 # Compatible: Ubuntu 18.04+
 # =====================================================
 
 set -euo pipefail
-trap 'echo "[ERROR] line $LINENO: command exited with status $?" >> /var/log/showon-debug.log' ERR
+trap 'echo "[ERROR] line $LINENO: command exited with status $?" >> "$DEBUG_LOG"' ERR
 
 CONF=/etc/showon.conf
 # shellcheck disable=SC1090
 source "$CONF"
 
-# ---------- FIXED PATH ----------
-WWW_DIR="/var/www/html/server"
-DEBUG_LOG="/var/log/showon-debug.log"
+WWW_DIR="${WWW_DIR:-/var/www/html/server}"
 JSON_OUT="$WWW_DIR/online_app.json"
 TMP_COOKIE=$(mktemp /tmp/showon_cookie_XXXXXX)
 NOW=$(date +%s%3N)
@@ -59,11 +57,11 @@ if [[ -f /etc/openvpn/server/openvpn-status.log ]]; then
 fi
 
 # ---------------------------
-# Dropbear (Fixed Counting)
+# Dropbear
 # ---------------------------
 if pgrep dropbear >/dev/null 2>&1; then
-  DB_ON=$(expr $(ps aux | grep '[d]ropbear' | grep -v grep | wc -l) - 1)
-  [[ "$DB_ON" -lt 0 ]] && DB_ON=0
+  DB_ON=$(pgrep -a dropbear | grep -c 'dropbear\(\|_convert\|key\)\? ' || true)
+  [[ "$DB_ON" -eq 0 ]] && DB_ON=$(pgrep -a dropbear | wc -l)
 fi
 
 # ---------------------------
@@ -137,6 +135,8 @@ if [[ -n "${AGNUDP_PORT:-}" && "$AGNUDP_PORT" =~ ^[0-9]+$ && -x "$(command -v co
   fi
 fi
 
+AGNUDP_ON=${AGNUDP_ON:-0}
+
 # ---------------------------
 # Ensure numeric defaults
 # ---------------------------
@@ -156,7 +156,7 @@ mkdir -p "$WWW_DIR"
 
 JSON_DATA="[{\"onlines\":\"$TOTAL\",\"limite\":\"$LIMIT\",\"ssh\":\"$SSH_ON\",\"openvpn\":\"$OVPN_ON\",\"dropbear\":\"$DB_ON\",\"v2ray\":\"$V2_ON\",\"agnudp\":\"$AGNUDP_ON\",\"timestamp\":\"$NOW\"}]"
 
-# สร้างไฟล์ JSON
+# สร้างไฟล์ทั้ง 2
 echo -n "$JSON_DATA" > "$WWW_DIR/online_app.json"
 echo -n "$JSON_DATA" > "$WWW_DIR/online_app"
 
