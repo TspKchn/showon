@@ -56,13 +56,12 @@ if [[ -f /etc/openvpn/server/openvpn-status.log ]]; then
 fi
 
 # ---------------------------
-# Dropbear
+# Dropbear (Fixed Counting)
 # ---------------------------
+DB_ON=0
 if pgrep dropbear >/dev/null 2>&1; then
-  # นับเฉพาะ process session ไม่ใช่ master
-  DB_ON=$(pgrep -a dropbear | grep -c 'dropbear\(\|_convert\|key\)\? ' || true)
-  # ถ้าดูแล้วไม่นิ่ง ให้ fallback เป็นจำนวนบรรทัดทั้งหมด
-  [[ "$DB_ON" -eq 0 ]] && DB_ON=$(pgrep -a dropbear | wc -l)
+  DB_ON=$(expr $(ps aux | grep '[d]ropbear' | grep -v grep | wc -l) - 1)
+  [[ "$DB_ON" -lt 0 ]] && DB_ON=0
 fi
 
 # ---------------------------
