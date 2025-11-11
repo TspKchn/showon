@@ -384,38 +384,41 @@ EOF
 # =====================================================
 
 uninstall_script() {
-  echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script..."
+  echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script (Full Clean)..."
 
-  # หยุด service
+  # ----------------- หยุดและปิด service -----------------
   systemctl stop online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
   systemctl disable online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
 
-  # ลบไฟล์ service
+  # ----------------- ลบ service file -----------------
   rm -f "$SERVICE_ONLINE" "$SERVICE_VNSTAT" "$SERVICE_V2RAY" "$SERVICE_SYSINFO"
   systemctl daemon-reload
 
-  # ลบ script และ config
+  # ----------------- ลบ script และ config -----------------
   rm -f "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
   rm -f "$CONF_FILE" "$DEBUG_LOG"
 
-  # ลบไฟล์ Contrack / JSON / index.html
-  rm -rf "$WWW_DIR/online_app" \
-         "$WWW_DIR/online_app.json" \
-         "$WWW_DIR/vnstat.json" \
-         "$WWW_DIR/v2ray.json" \
-         "$WWW_DIR/sysinfo.json" \
-         "$WWW_DIR/index.html"
+  # ----------------- ลบ web server files -----------------
+  rm -rf "$WWW_DIR"/*
 
-  # ลบ nginx site
+  # ----------------- ลบ nginx site -----------------
   rm -f "$SITE_AV" "$SITE_EN"
-  if nginx -t 2>/dev/null; then
+  if systemctl is-active --quiet nginx; then
     systemctl reload nginx 2>/dev/null || true
-  else
-    systemctl restart nginx 2>/dev/null || true
   fi
 
-  echo -e "${GREEN}[SUCCESS]${NC} Uninstalled completely."
-  press
+  # ----------------- ถอน nginx ถ้าต้องการ -----------------
+  # apt purge -y nginx >/dev/null 2>&1 || true
+
+  # ----------------- ลบ conntrack package (ถ้ามี) -----------------
+  apt purge -y conntrack >/dev/null 2>&1 || true
+  apt autoremove -y >/dev/null 2>&1 || true
+
+  # ----------------- ลบค่า timeout ของ conntrack จาก sysctl -----------------
+  sed -i '/^net\.netfilter\.nf_conntrack_/d' /etc/sysctl.conf
+  sysctl -p >/dev/null 2>&1 || true
+
+  echo -e "${GREEN}[SUCCESS]${NC} Uninstalled completely (ShowOn + conntrack config removed)."
 }
 
 # =====================================================
