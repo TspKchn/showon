@@ -1,18 +1,21 @@
 #!/bin/bash
 # =====================================================
-# online-check.sh - ShowOn Online Users Checker (FINAL)
+# online-check.sh - ShowOn Online Users Checker (FIXED PATH)
 # รองรับ: SSH / OpenVPN / Dropbear / 3x-ui / Xray-Core / AGN-UDP (Hysteria)
 # Author: TspKchn + ChatGPT
 # Compatible: Ubuntu 18.04+
 # =====================================================
 
 set -euo pipefail
-trap 'echo "[ERROR] line $LINENO: command exited with status $?" >> "$DEBUG_LOG"' ERR
+trap 'echo "[ERROR] line $LINENO: command exited with status $?" >> /var/log/showon-debug.log' ERR
 
 CONF=/etc/showon.conf
 # shellcheck disable=SC1090
 source "$CONF"
 
+# ---------- FIXED PATH ----------
+WWW_DIR="/var/www/html/server"
+DEBUG_LOG="/var/log/showon-debug.log"
 JSON_OUT="$WWW_DIR/online_app.json"
 TMP_COOKIE=$(mktemp /tmp/showon_cookie_XXXXXX)
 NOW=$(date +%s%3N)
@@ -66,6 +69,7 @@ fi
 # ---------------------------
 # V2Ray / Xray
 # ---------------------------
+V2_ON=0
 if [[ -n "${PANEL_URL:-}" ]]; then
   LOGIN_OK=false
   if curl -sk -c "$TMP_COOKIE" -X POST "$PANEL_URL/login" \
@@ -132,8 +136,6 @@ if [[ -n "${AGNUDP_PORT:-}" && "$AGNUDP_PORT" =~ ^[0-9]+$ && -x "$(command -v co
     fi
   fi
 fi
-
-AGNUDP_ON=${AGNUDP_ON:-0}
 
 # ---------------------------
 # Ensure numeric defaults
