@@ -130,12 +130,23 @@ EOF
 version_gt() {
   local IFS=.
   local i ver1=($1) ver2=($2)
+  
+  # เติม 0 ให้ array เท่ากัน
   for ((i=${#ver1[@]}; i<${#ver2[@]}; i++)); do ver1[i]=0; done
   for ((i=${#ver2[@]}; i<${#ver1[@]}; i++)); do ver2[i]=0; done
+
   for ((i=0; i<${#ver1[@]}; i++)); do
-    if ((10#${ver1[i]} > 10#${ver2[i]})); then
+    # ตัดทุกอย่างที่ไม่ใช่ตัวเลข
+    local num1=${ver1[i]//[^0-9]/}
+    local num2=${ver2[i]//[^0-9]/}
+
+    # ถ้าเป็นค่าว่าง ให้ถือว่า 0
+    num1=${num1:-0}
+    num2=${num2:-0}
+
+    if ((num1 > num2)); then
       return 0
-    elif ((10#${ver1[i]} < 10#${ver2[i]})); then
+    elif ((num1 < num2)); then
       return 1
     fi
   done
@@ -154,7 +165,9 @@ check_update() {
     return
   fi
 
-  remote="$(printf '%s' "$install_raw" | grep -m1 '^VERSION=' | cut -d'"' -f2)"
+  # ดึงเฉพาะตัวเลขเวอร์ชัน X.Y.Z
+  remote="$(printf '%s' "$install_raw" | grep -m1 '^VERSION=' | sed -E 's/^VERSION="([0-9.]+)".*/\1/')"
+  
   if [[ -z "$remote" ]]; then
     echo -e "${YELLOW}[WARN]${NC} พบไฟล์ Install ใน GitHub แต่หา VERSION ไม่เจอ"
     return
