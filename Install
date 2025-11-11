@@ -6,41 +6,35 @@
 # Compatible : Ubuntu 18.04+ / Debian 10+
 # =====================================================
 
-set -euo pipefail
-trap 'echo "[ERROR] line $LINENO: exit status $?" >> /var/log/showon-debug.log' ERR
-
-# ----------------- VERSION & REPO -------------------
 VERSION="V.1.0.7"
+
+# ----------------- Repo -----------------
 REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/main"
 
-# ----------------- PATHS --------------------------------
-BIN_DIR="/usr/local/bin"
+# ----------------- Paths -----------------
 WWW_DIR="/var/www/html/server"
+BIN_DIR="/usr/local/bin"
 CONF_FILE="/etc/showon.conf"
 DEBUG_LOG="/var/log/showon-debug.log"
 
-SYSTEMD_DIR="/etc/systemd/system"
-NGINX_SITES_AV="/etc/nginx/sites-available"
-NGINX_SITES_EN="/etc/nginx/sites-enabled"
-SITE_FILE="$NGINX_SITES_AV/showon"
+SCRIPT_ONLINE="$BIN_DIR/online-check.sh"
+SCRIPT_VNSTAT="$BIN_DIR/vnstat-traffic.sh"
+SCRIPT_V2RAY="$BIN_DIR/v2ray-traffic.sh"
+SCRIPT_SYSINFO="$BIN_DIR/sysinfo.sh"
 
-SERVICE_ONLINE="$SYSTEMD_DIR/online-check.service"
-SERVICE_VNSTAT="$SYSTEMD_DIR/vnstat-traffic.service"
-SERVICE_V2RAY="$SYSTEMD_DIR/v2ray-traffic.service"
-SERVICE_SYSINFO="$SYSTEMD_DIR/sysinfo.service"
+SERVICE_ONLINE="/etc/systemd/system/online-check.service"
+SERVICE_VNSTAT="/etc/systemd/system/vnstat-traffic.service"
+SERVICE_V2RAY="/etc/systemd/system/v2ray-traffic.service"
+SERVICE_SYSINFO="/etc/systemd/system/sysinfo.service"
 
-# ----------------- SOURCE FILES -----------------------
-SRC_ONLINE="$REPO_RAW/scripts/online-check.sh"
-SRC_VNSTAT="$REPO_RAW/scripts/vnstat-traffic.sh"
-SRC_V2RAY="$REPO_RAW/scripts/v2ray-traffic.sh"
-SRC_SYSINFO="$REPO_RAW/scripts/sysinfo.sh"
-SRC_INDEX="$REPO_RAW/web/index.html"
+SITE_AV="/etc/nginx/sites-available/showon"
+SITE_EN="/etc/nginx/sites-enabled/showon"
 
-# ----------------- COLORS -----------------------------
-GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; BOLD="\e[1m"; NC="\e[0m"
+# ----------------- Colors -----------------
+GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; B="\e[1m"; NC="\e[0m"
 
 # =====================================================
-# Basic helpers / environment
+# Basic Functions
 # =====================================================
 
 require_root() {
@@ -52,70 +46,37 @@ require_root() {
 
 press() { read -rp "Press Enter to continue..." _; }
 
-msg() { echo -e "$*"; }
-msg_ok() { echo -e "${GREEN}[OK]${NC} $*"; }
-msg_info() { echo -e "${CYAN}[INFO]${NC} $*"; }
-msg_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
-msg_err() { echo -e "${RED}[ERROR]${NC} $*"; }
-
-rotate_log() {
-  local max=1000000
-  if [[ -f "$DEBUG_LOG" && $(stat -c%s "$DEBUG_LOG") -gt $max ]]; then
-    mv "$DEBUG_LOG" "$DEBUG_LOG.1" || true
-    : > "$DEBUG_LOG"
-  fi
-}
-
 get_nic() {
   ip -o -4 route get 8.8.8.8 2>/dev/null \
     | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' \
     | head -n1
 }
 
-# Public IP probing (3 services), fallback to manual input
-get_public_ip() {
-  local ip
-  for url in "https://ipinfo.io/ip" "https://icanhazip.com" "https://ifconfig.me"; do
-    ip=$(curl -fsSL --max-time 5 "$url" 2>/dev/null | tr -d '[:space:]' || true)
-    if [[ -n "$ip" && "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-      echo "$ip"
-      return 0
-    fi
-  done
-  read -rp "Cannot detect public IP automatically. Enter your public IP: " ip
-  echo "$ip"
+rotate_log() {
+  local max=1000000
+  if [[ -f "$DEBUG_LOG" && $(stat -c%s "$DEBUG_LOG") -gt $max ]]; then
+    mv "$DEBUG_LOG" "$DEBUG_LOG.1"
+    : > "$DEBUG_LOG"
+  fi
 }
 
 download_or_die() {
   local url="$1" dst="$2"
-  if ! curl -fsSL --connect-timeout 10 "$url" -o "$dst"; then
-    msg_err "Download failed: $url"
+  if ! curl -fsSL "$url" -o "$dst"; then
+    echo -e "${RED}[ERROR]${NC} Download failed: $url"
     exit 1
   fi
 }
 
-ensure_pkgs() {
-  local pkgs=(curl jq net-tools psmisc nginx iproute2 ca-certificates vnstat conntrack)
-  msg_info "Installing dependencies: ${pkgs[*]}"
-  apt-get update -y >/dev/null 2>&1 || true
-  DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkgs[@]}" >/dev/null 2>&1 || true
-}
-
-ensure_dir_perms() {
-  mkdir -p "$BIN_DIR" "$WWW_DIR" "$(dirname "$DEBUG_LOG")" "$NGINX_SITES_AV" "$NGINX_SITES_EN"
-  touch "$DEBUG_LOG" || true
-  chmod 644 "$DEBUG_LOG" || true
-  chown -R root:root "$BIN_DIR" "$WWW_DIR" || true
-}
-
-# write nginx site file and set MIME enforcement for online_app files
-write_nginx_site() {
+write_nginx() {
   local port=${1:-82}
   mkdir -p "$WWW_DIR"
-  mkdir -p "$NGINX_SITES_AV" "$NGINX_SITES_EN"
-  [[ -f "$NGINX_SITES_EN/default" ]] && rm -f "$NGINX_SITES_EN/default" || true
+  mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
 
-  cat >"$SITE_FILE" <<EOF
+  [[ -f /etc/nginx/sites-enabled/default ]] && rm -f /etc/nginx/sites-enabled/default
+  [[ -f /etc/nginx/sites-available/default ]] && rm -f /etc/nginx/sites-available/default
+
+  cat >"$SITE_AV" <<EOF
 server {
     listen $port;
     server_name _;
@@ -129,698 +90,122 @@ server {
         index index.html;
         autoindex off;
         add_header Cache-Control "no-store";
-
-        # Force JSON MIME for online_app (no-ext) and online_app.json
-        location ~ /server/online_app(\.json)?\$ {
-            default_type application/json;
-            add_header Content-Type application/json;
-        }
     }
 }
 EOF
 
-  ln -sf "$SITE_FILE" "$NGINX_SITES_EN/showon"
-  if nginx -t >/dev/null 2>&1; then
-    systemctl restart nginx >/dev/null 2>&1 || true
-    msg_ok "Nginx listening on port $port (/server/)"
+  ln -sf "$SITE_AV" "$SITE_EN"
+
+  if nginx -t; then
+    systemctl restart nginx 2>/dev/null || true
   else
-    msg_warn "nginx configuration test failed; attempting restart"
-    systemctl restart nginx >/dev/null 2>&1 || true
+    echo -e "${YELLOW}[WARN]${NC} nginx config test failed, forcing restart..."
+    systemctl restart nginx 2>/dev/null || true
   fi
+
+  echo -e "${GREEN}[OK]${NC} Nginx listening on port $port (/server/)"
 }
 
-# Ensure nginx includes sites-enabled in main config (safe append)
-include_sites_enabled() {
-  local ngx_conf="/etc/nginx/nginx.conf"
-  if ! grep -q "include /etc/nginx/sites-enabled/*;" "$ngx_conf" 2>/dev/null; then
-    sed -i '/http {/a \    include /etc/nginx/sites-enabled/*;' "$ngx_conf" || true
-  fi
-}
-
-# AGN-UDP detect helper (returns "present|port")
-detect_agnudp() {
-  local present=0 port=""
-  if [[ -f /etc/hysteria/config.json ]]; then
-    port=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
-      | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//' || true)
-    [[ -n "$port" ]] && present=1
-  fi
-  if [[ "$present" -eq 0 ]]; then
-    if systemctl list-units --type=service | grep -q 'hysteria'; then
-      port=$(ss -tulnp 2>/dev/null | grep hysteria | awk '{print $5}' | cut -d: -f2 | head -n1 || true)
-      [[ -n "$port" ]] && present=1
-    fi
-    if [[ "$present" -eq 0 && -x "$(command -v hysteria)" ]]; then
-      port=$(ss -tulnp 2>/dev/null | grep hysteria | awk '{print $5}' | cut -d: -f2 | head -n1 || true)
-      [[ -n "$port" ]] && present=1
-    fi
-  fi
-  echo "${present}|${port}"
-}
-
-# Rotate debug and initialize
-rotate_log
-ensure_dir_perms
-
-# =====================================================
-# Interactive prompts defaults (will be saved to config)
-# =====================================================
-DEFAULT_LIMIT=2000
-DEFAULT_NGINX_PORT=82
-
-# load config if exists
-if [[ -f "$CONF_FILE" ]]; then
-  # shellcheck disable=SC1090
-  source "$CONF_FILE" || true
-fi
-
-# If WWW_DIR not set in config, use default constant
-WWW_DIR=${WWW_DIR:-/var/www/html/server}
-DEBUG_LOG=${DEBUG_LOG:-/var/log/showon-debug.log}
-LIMIT=${LIMIT:-$DEFAULT_LIMIT}
-
-# =====================================================
-# Print status helper (service on/off + install status)
-# =====================================================
-print_status() {
-  local s_ng s_on s_vn s_v2 s_sy c_ng c_on c_vn c_v2 c_sy
-  s_ng="OFF"; s_on="OFF"; s_vn="OFF"; s_v2="OFF"; s_sy="OFF"
-  systemctl is-active --quiet nginx && s_ng="ON"
-  [[ -f "$SERVICE_ONLINE" ]] && systemctl is-active --quiet online-check && s_on="ON"
-  [[ -f "$SERVICE_VNSTAT" ]] && systemctl is-active --quiet vnstat-traffic && s_vn="ON"
-  [[ -f "$SERVICE_V2RAY" ]] && systemctl is-active --quiet v2ray-traffic && s_v2="ON"
-  [[ -f "$SERVICE_SYSINFO" ]] && systemctl is-active --quiet sysinfo && s_sy="ON"
-  c_ng=$( [[ "$s_ng" == "ON" ]] && echo "$GREEN" || echo "$RED" )
-  c_on=$( [[ "$s_on" == "ON" ]] && echo "$GREEN" || echo "$RED" )
-  c_vn=$( [[ "$s_vn" == "ON" ]] && echo "$GREEN" || echo "$RED" )
-  c_v2=$( [[ "$s_v2" == "ON" ]] && echo "$GREEN" || echo "$RED" )
-  c_sy=$( [[ "$s_sy" == "ON" ]] && echo "$GREEN" || echo "$RED" )
-
-  echo "==============================="
-  echo "   ShowOn Script Manager ${VERSION}"
-  echo "==============================="
-  echo -e "$(printf 'NginX   : [%b%s%b]  Online Check : [%b%s%b]\n' \"$c_ng\" \"$s_ng\" \"$NC\" \"$c_on\" \"$s_on\" \"$NC\")"
-  echo -e "$(printf 'vnStat  : [%b%s%b]  V2Ray Traffic: [%b%s%b]\n' \"$c_vn\" \"$s_vn\" \"$NC\" \"$c_v2\" \"$s_v2\" \"$NC\")"
-  echo -e "$(printf 'SysInfo : [%b%s%b]  Conntrack    : [%b%s%b]\n' \"$c_sy\" \"$s_sy\" \"$NC\" \"$c_ng\" \"$(conntrack_status 2>/dev/null || echo OFF)\" \"$NC\")"
-  echo "-------------------------------"
-  echo -e "Status: $( [[ -f \"$BIN_DIR/online-check\" || -f \"$BIN_DIR/online-check.sh\" ]] && echo -e \"${GREEN}✔ Installed${NC}\" || echo -e \"${RED}✘ Not Installed${NC}\" )"
-  echo "==============================="
-}
-
-# conntrack_status helper used above
 conntrack_status() {
   if command -v conntrack >/dev/null 2>&1; then echo "ON"; else echo "OFF"; fi
 }
 
-# End of Part 1/5
+get_public_ip() {
+  local ip
+  for url in "https://ipinfo.io/ip" "https://ifconfig.me" "https://icanhazip.com"; do
+    ip=$(curl -fsSL "$url" 2>/dev/null | tr -d '[:space:]')
+    if [[ -n "$ip" && "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo "$ip"
+      return
+    fi
+  done
+  read -rp "Cannot detect Public IP. Please enter manually: " ip
+  echo "$ip"
+}
+
 # =====================================================
-# Part 2/5 - Install sub-scripts, services, JSON generator
+# Part 1 END
+# =====================================================
+# =====================================================
+# Part 2/4 - Install Script + Services + Config
 # =====================================================
 
-# Safe names for downloaded scripts (use .sh extension on disk)
-SCRIPT_ONLINE="$BIN_DIR/online-check.sh"
-SCRIPT_VNSTAT="$BIN_DIR/vnstat-traffic.sh"
-SCRIPT_V2RAY="$BIN_DIR/v2ray-traffic.sh"
-SCRIPT_SYSINFO="$BIN_DIR/sysinfo.sh"
+install_script() {
+  echo -e "${CYAN}[INFO]${NC} Installing ShowOn (${VERSION})..."
 
-# Download and install helper sub-scripts from repo
-download_subscripts() {
-  msg_info "Downloading sub-scripts from repo..."
-  mkdir -p "$BIN_DIR"
-  download_or_die "$SRC_ONLINE" "$SCRIPT_ONLINE"
-  download_or_die "$SRC_VNSTAT" "$SCRIPT_VNSTAT"
-  download_or_die "$SRC_V2RAY" "$SCRIPT_V2RAY"
-  download_or_die "$SRC_SYSINFO" "$SCRIPT_SYSINFO"
-  chmod +x "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
-  msg_ok "Sub-scripts saved into $BIN_DIR"
-}
+  # Update system
+  echo -e "${CYAN}[INFO]${NC} Updating system packages..."
+  apt update -y >/dev/null 2>&1 || true
 
-# Create systemd service file helper
-write_service() {
-  local svc_path="$1"; shift
-  local svc_content="$*"
-  echo "$svc_content" > "$svc_path"
-  chmod 644 "$svc_path"
-}
+  # Install dependencies
+  echo -e "${CYAN}[INFO]${NC} Installing dependencies..."
+  apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates vnstat conntrack >/dev/null 2>&1 || true
 
-create_systemd_services() {
-  msg_info "Creating systemd services..."
-
-  write_service "$SERVICE_ONLINE" '[Unit]
-Description=ShowOn Online Users JSON Generator
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/bin/bash -c "while true; do /usr/local/bin/online-check.sh; sleep 5; done"
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-'
-
-  write_service "$SERVICE_VNSTAT" '[Unit]
-Description=ShowOn vnStat + V2Ray Traffic JSON Generator
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/bin/bash -c "while true; do /usr/local/bin/vnstat-traffic.sh; sleep 5; done"
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-'
-
-  write_service "$SERVICE_V2RAY" '[Unit]
-Description=ShowOn V2Ray-Only Traffic JSON Generator
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/bin/bash -c "while true; do /usr/local/bin/v2ray-traffic.sh; sleep 5; done"
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-'
-
-  write_service "$SERVICE_SYSINFO" '[Unit]
-Description=ShowOn System Info JSON Generator
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/bin/bash -c "while true; do /usr/local/bin/sysinfo.sh; sleep 5; done"
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-'
-
-  systemctl daemon-reload >/dev/null 2>&1 || true
-  systemctl enable --now online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service >/dev/null 2>&1 || true
-  msg_ok "Systemd services created and enabled."
-}
-
-# ---------------------------
-# Count online users helpers
-# ---------------------------
-
-count_ssh() {
-  local cnt=0
-  if command -v ss >/dev/null 2>&1; then
-    cnt=$(ss -nt state established 2>/dev/null | awk '$3 ~ /:22$/ {c++} END {print c+0}')
-  else
-    cnt=$(netstat -nt 2>/dev/null | awk '$6 == "ESTABLISHED" && $4 ~ /:22$/ {c++} END {print c+0}')
+  # Adjust UDP conntrack timeout
+  echo -e "${CYAN}[INFO]${NC} Tuning conntrack UDP timeout → 5s"
+  sysctl -w net.netfilter.nf_conntrack_udp_timeout=5 >/dev/null 2>&1 || true
+  sysctl -w net.netfilter.nf_conntrack_udp_timeout_stream=5 >/dev/null 2>&1 || true
+  if ! grep -q "nf_conntrack_udp_timeout" /etc/sysctl.conf; then
+    echo "net.netfilter.nf_conntrack_udp_timeout=5" >> /etc/sysctl.conf
+    echo "net.netfilter.nf_conntrack_udp_timeout_stream=5" >> /etc/sysctl.conf
+    sysctl -p >/dev/null 2>&1 || true
   fi
-  echo "${cnt:-0}"
-}
 
-count_openvpn() {
-  local cnt=0
-  if [[ -f /etc/openvpn/server/openvpn-status.log ]]; then
-    cnt=$(grep -c "^CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || true)
-  fi
-  echo "${cnt:-0}"
-}
+  # Enable vnStat
+  systemctl enable vnstat >/dev/null 2>&1 || true
+  systemctl start vnstat >/dev/null 2>&1 || true
 
-count_dropbear() {
-  # Use the reliable snippet you provided
-  local cnt=0
-  if pgrep dropbear >/dev/null 2>&1; then
-    cnt=$(expr $(ps aux | grep '[d]ropbear' | grep -v grep | wc -l) - 1)
-    [[ "$cnt" -lt 0 ]] && cnt=0
-  fi
-  echo "${cnt:-0}"
-}
+  mkdir -p "$WWW_DIR" "$BIN_DIR" "$(dirname "$DEBUG_LOG")"
+  rotate_log
 
-count_v2ray() {
-  local cnt=0
-  # Check via panel (if configured) else via logs
-  # Load PANEL_URL, XUI_USER, XUI_PASS from config if present
-  if [[ -n "${PANEL_URL:-}" ]]; then
-    local tmp_cookie=$(mktemp /tmp/showon_cookie.XXXX)
-    if curl -sk -c "$tmp_cookie" -X POST "$PANEL_URL/login" -H "Content-Type: application/x-www-form-urlencoded" --data "username=$XUI_USER&password=$XUI_PASS" | grep -q '"success":true'; then
-      local resp=$(curl -sk -b "$tmp_cookie" "$PANEL_URL/panel/api/inbounds/onlines" 2>/dev/null || true)
-      if echo "$resp" | grep -q '"success":true'; then
-        cnt=$(echo "$resp" | jq '[.obj[]?] | length' 2>/dev/null || echo 0)
-      fi
+  # Detect Public IP
+  PUB_IP=$(get_public_ip)
+  echo -e "${CYAN}[INFO]${NC} Public IP detected: $PUB_IP"
+
+  # Ask for Nginx port
+  while true; do
+    read -rp "Enter Nginx Port (default 82): " NGX_PORT
+    NGX_PORT=${NGX_PORT:-82}
+
+    if ! [[ "$NGX_PORT" =~ ^[0-9]+$ ]]; then
+      echo -e "${RED}[ERROR]${NC} Must be a number."
+      continue
     fi
-    rm -f "$tmp_cookie"
-  else
-    # Fallback: check common xray logs
-    if [[ -f /var/log/xray/access.log ]]; then
-      cnt=$(grep -F 'accepted' /var/log/xray/access.log | grep -F 'email:' | awk '{print $3}' | cut -d: -f1 | sort -u | wc -l || echo 0)
+    if (( NGX_PORT < 1 || NGX_PORT > 65535 )); then
+      echo -e "${RED}[ERROR]${NC} Port must be 1-65535"
+      continue
     fi
-  fi
-  echo "${cnt:-0}"
-}
-
-count_agnudp() {
-  local cnt=0
-  local port=""
-  # Try config.json
-  if [[ -f /etc/hysteria/config.json ]]; then
-    port=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//' || true)
-  fi
-  # fallback detect via ss/conntrack
-  if [[ -z "$port" ]]; then
-    IFS='|' read -r present port <<<"$(detect_agnudp)"
-    if [[ "$present" == "0" ]]; then
-      port=""
+    if ss -tulnp | grep -w "$NGX_PORT" >/dev/null 2>&1; then
+      echo -e "${YELLOW}[WARN]${NC} Port $NGX_PORT in use, choose another."
+      continue
     fi
-  fi
+    break
+  done
+  echo -e "${GREEN}[OK]${NC} Nginx will use port: $NGX_PORT"
 
-  if [[ -n "$port" && -x "$(command -v conntrack)" ]]; then
-    local srcs=$(conntrack -L -p udp 2>/dev/null | grep "dport=$port" | grep -oP 'src=\K[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort -u || true)
-    # exclude private/local IPs
-    if [[ -n "$srcs" ]]; then
-      cnt=$(echo "$srcs" | grep -Ev '^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|169\.254\.)' | wc -l || echo 0)
-    fi
-  fi
-  echo "${cnt:-0}"
-}
+  # Get NIC
+  NIC=$(get_nic)
+  [[ -z "$NIC" ]] && NIC=$(ip -o -4 addr show up scope global | awk '{print $2}' | head -n1)
+  [[ -z "$NIC" ]] && NIC="eth0"
 
-# ---------------------------
-# Generate JSON in expected format
-# ---------------------------
-generate_online_json() {
-  # Ensure config loaded
-  if [[ -f "$CONF_FILE" ]]; then
-    # shellcheck disable=SC1090
-    source "$CONF_FILE" || true
-  fi
-
-  mkdir -p "$WWW_DIR"
-  local SSH_CNT OVPN_CNT DB_CNT V2_CNT AGN_CNT TOTAL NOW_MS JSON
-
-  SSH_CNT=$(count_ssh)
-  OVPN_CNT=$(count_openvpn)
-  DB_CNT=$(count_dropbear)
-  V2_CNT=$(count_v2ray)
-  AGN_CNT=$(count_agnudp)
-
-  TOTAL=$((SSH_CNT + OVPN_CNT + DB_CNT + V2_CNT + AGN_CNT))
-  NOW_MS=$(date +%s%3N)
+  # Default Limit
+  read -rp "Limit User Online (default 2000): " LIMIT
   LIMIT=${LIMIT:-2000}
 
-  # Compose compact array-with-object JSON like original format
-  JSON=$(printf '[{"onlines":"%s","limite":"%s","ssh":"%s","openvpn":"%s","dropbear":"%s","v2ray":"%s","agnudp":"%s","timestamp":"%s"}]' \
-    "$TOTAL" "$LIMIT" "$SSH_CNT" "$OVPN_CNT" "$DB_CNT" "$V2_CNT" "$AGN_CNT" "$NOW_MS")
-
-  # Write atomically
-  local tmpf
-  tmpf=$(mktemp "${WWW_DIR}/online_app.XXXX")
-  printf '%s' "$JSON" > "$tmpf" && mv -f "$tmpf" "$WWW_DIR/online_app.json" || true
-  # also write file without extension for legacy clients
-  printf '%s' "$JSON" > "$WWW_DIR/online_app" || true
-
-  echo "$JSON"
-}
-
-# ---------------------------
-# Create a small wrapper script in /usr/local/bin/online-check.sh
-# so service ExecStart can call it reliably
-# ---------------------------
-install_wrapper_online_check() {
-  cat > "$SCRIPT_ONLINE" <<'EOF'
-#!/bin/bash
-# Minimal wrapper to generate online_app JSON
-CONF=/etc/showon.conf
-[[ -f "$CONF" ]] && source "$CONF"
-# load helper functions if present (but keep standalone)
-# Re-implement minimal counts to avoid dependency
-count_ssh() {
-  if command -v ss >/dev/null 2>&1; then
-    ss -nt state established 2>/dev/null | awk '$3 ~ /:22$/ {c++} END {print c+0}'
-  else
-    netstat -nt 2>/dev/null | awk '$6 == "ESTABLISHED" && $4 ~ /:22$/ {c++} END {print c+0}'
-  fi
-}
-count_openvpn() { [[ -f /etc/openvpn/server/openvpn-status.log ]] && grep -c "^CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || echo 0; }
-count_dropbear() { if pgrep dropbear >/dev/null 2>&1; then expr $(ps aux | grep '[d]ropbear' | grep -v grep | wc -l) - 1 || echo 0; else echo 0; fi }
-count_v2ray() {
-  local cnt=0
-  if [[ -f /var/log/xray/access.log ]]; then
-    cnt=$(grep -F 'accepted' /var/log/xray/access.log | grep -F 'email:' | awk '{print $3}' | cut -d: -f1 | sort -u | wc -l || echo 0)
-  fi
-  echo "${cnt:-0}"
-}
-count_agnudp() {
-  local cnt=0 port
-  if [[ -f /etc/hysteria/config.json ]]; then
-    port=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//' || true)
-  fi
-  if [[ -n "$port" && -x "$(command -v conntrack)" ]]; then
-    local srcs=$(conntrack -L -p udp 2>/dev/null | grep "dport=$port" | grep -oP 'src=\K[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort -u || true)
-    if [[ -n "$srcs" ]]; then
-      cnt=$(echo "$srcs" | grep -Ev '^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|169\.254\.)' | wc -l || echo 0)
-    fi
-  fi
-  echo "${cnt:-0}"
-}
-
-SSH=$(count_ssh)
-OVPN=$(count_openvpn)
-DB=$(count_dropbear)
-V2=$(count_v2ray)
-AGN=$(count_agnudp)
-TOTAL=$((SSH + OVPN + DB + V2 + AGN))
-LIMIT=${LIMIT:-2000}
-TS=$(date +%s%3N)
-JSON=$(printf '[{"onlines":"%s","limite":"%s","ssh":"%s","openvpn":"%s","dropbear":"%s","v2ray":"%s","agnudp":"%s","timestamp":"%s"}]' "$TOTAL" "$LIMIT" "$SSH" "$OVPN" "$DB" "$V2" "$AGN" "$TS")
-
-mkdir -p "${WWW_DIR:-/var/www/html/server}"
-tmpf=$(mktemp "${WWW_DIR:-/var/www/html/server}/online_app.XXXX")
-printf '%s' "$JSON" > "$tmpf" && mv -f "$tmpf" "${WWW_DIR:-/var/www/html/server}/online_app.json"
-printf '%s' "$JSON" > "${WWW_DIR:-/var/www/html/server}/online_app"
-echo "$JSON"
+  # Write config
+  cat >"$CONF_FILE" <<EOF
+VERSION="${VERSION}"
+WWW_DIR="$WWW_DIR"
+LIMIT=${LIMIT}
+DEBUG_LOG="$DEBUG_LOG"
+NET_IFACE="$NIC"
+PUBLIC_IP="$PUB_IP"
+NGX_PORT="$NGX_PORT"
 EOF
+  chmod 600 "$CONF_FILE"
 
-  chmod +x "$SCRIPT_ONLINE"
-  msg_ok "Installed online-check wrapper at $SCRIPT_ONLINE"
-}
-
-# ---------------------------
-# One-shot installer (combines above)
-# ---------------------------
-install_all_components() {
-  require_root
-  ensure_pkgs
-  ensure_dir_perms
-  download_subscripts   # will fetch real repo scripts (but we still create wrapper)
-  install_wrapper_online_check
-  create_systemd_services
-  include_sites_enabled
-  write_nginx_site "$DEFAULT_NGINX_PORT"
-  # Generate one initial JSON
-  generate_online_json >/dev/null 2>&1 || true
-  msg_ok "Initial online_app.json generated"
-}
-
-# End of Part 2/5
-# =====================================================
-# Part 3/5 - Interactive Menu & Utilities
-# =====================================================
-
-# ---------------------------
-# Print menu helpers
-# ---------------------------
-print_status() {
-  local svc=$1
-  if systemctl is-active --quiet "$svc"; then
-    echo -e "\e[32mON\e[0m"
-  else
-    echo -e "\e[31mOFF\e[0m"
-  fi
-}
-
-show_services_status() {
-  echo "=============================="
-  echo " ShowOn Service Status"
-  echo "------------------------------"
-  printf "Online JSON Generator: %s\n" "$(print_status online-check.service)"
-  printf "vnStat Traffic Monitor: %s\n" "$(print_status vnstat-traffic.service)"
-  printf "V2Ray Traffic Monitor: %s\n" "$(print_status v2ray-traffic.service)"
-  printf "System Info Generator: %s\n" "$(print_status sysinfo.service)"
-  echo "=============================="
-}
-
-# ---------------------------
-# Utility Functions
-# ---------------------------
-check_update() {
-  msg_info "Checking for updates..."
-  local latest
-  latest=$(curl -fsSL "$UPDATE_URL/version.txt" || echo "$VERSION")
-  if [[ "$latest" != "$VERSION" ]]; then
-    echo "New version available: $latest (current: $VERSION)"
-  else
-    echo "Already up-to-date."
-  fi
-}
-
-update_script() {
-  msg_info "Updating ShowOn script..."
-  wget -qO "$0.tmp" "$UPDATE_URL/Install"
-  if [[ -s "$0.tmp" ]]; then
-    chmod +x "$0.tmp"
-    mv -f "$0.tmp" "$0"
-    echo "Updated successfully."
-  else
-    echo "Update failed."
-  fi
-}
-
-change_limit() {
-  read -rp "Enter new max limit for online users [current: ${LIMIT:-2000}]: " newlim
-  newlim=${newlim:-$LIMIT}
-  echo "LIMIT=$newlim" > "$CONF_FILE"
-  msg_ok "Limit updated to $newlim"
-}
-
-check_debug() {
-  echo "==== Debug Info ===="
-  echo "Public IP: $PUBLIC_IP"
-  echo "Network Interface: $NIC"
-  echo "Uptime: $UPTIME"
-  echo "Load: $LOAD"
-  echo "Memory Usage: $MEMORY"
-  echo "CPU Usage: $CPU"
-  echo "Users Online: $USERS_ONLINE"
-  echo "-------------------"
-  echo "Services Status:"
-  show_services_status
-  echo "==================="
-}
-
-# ---------------------------
-# Interactive Menu
-# ---------------------------
-show_menu() {
-  clear
-  echo "=============================="
-  echo " ShowOn Script Manager v$VERSION"
-  echo "=============================="
-  show_services_status
-  echo "1) Install Script"
-  echo "2) Uninstall Script"
-  echo "3) Update Script"
-  echo "4) Check Debug Log"
-  echo "5) Change Limit User Online"
-  echo "6) Setup Swap"
-  echo "0) Exit"
-  echo "=============================="
-}
-
-menu_loop() {
-  while true; do
-    show_menu
-    read -rp "Choose an option [0-6]: " choice
-    case "$choice" in
-      1)
-        install_all_components
-        read -rp "Press Enter to continue..."
-        ;;
-      2)
-        msg_info "Uninstalling ShowOn..."
-        systemctl disable --now online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service >/dev/null 2>&1
-        rm -rf "$BIN_DIR" "$WWW_DIR" "$SERVICE_ONLINE" "$SERVICE_VNSTAT" "$SERVICE_V2RAY" "$SERVICE_SYSINFO" "$CONF_FILE"
-        msg_ok "ShowOn uninstalled."
-        read -rp "Press Enter to continue..."
-        ;;
-      3)
-        update_script
-        read -rp "Press Enter to continue..."
-        ;;
-      4)
-        check_debug
-        read -rp "Press Enter to continue..."
-        ;;
-      5)
-        change_limit
-        read -rp "Press Enter to continue..."
-        ;;
-      6)
-        msg_info "Setting up swap..."
-        fallocate -l 1G /swapfile
-        chmod 600 /swapfile
-        mkswap /swapfile
-        swapon /swapfile
-        echo '/swapfile none swap sw 0 0' | tee -a /etc/fstab
-        msg_ok "Swap setup done."
-        read -rp "Press Enter to continue..."
-        ;;
-      0)
-        echo "Exiting..."
-        exit 0
-        ;;
-      *)
-        echo "Invalid option. Try again."
-        ;;
-    esac
-  done
-}
-
-# ---------------------------
-# Initialization
-# ---------------------------
-VERSION="1.0.7"
-BIN_DIR="/usr/local/bin"
-WWW_DIR=${WWW_DIR:-/var/www/html/server}
-CONF_FILE="/etc/showon.conf"
-
-SERVICE_ONLINE="/etc/systemd/system/online-check.service"
-SERVICE_VNSTAT="/etc/systemd/system/vnstat-traffic.service"
-SERVICE_V2RAY="/etc/systemd/system/v2ray-traffic.service"
-SERVICE_SYSINFO="/etc/systemd/system/sysinfo.service"
-
-UPDATE_URL="https://raw.githubusercontent.com/TspKchn/showon/main"
-
-SRC_ONLINE="$UPDATE_URL/online-check.sh"
-SRC_VNSTAT="$UPDATE_URL/vnstat-traffic.sh"
-SRC_V2RAY="$UPDATE_URL/v2ray-traffic.sh"
-SRC_SYSINFO="$UPDATE_URL/sysinfo.sh"
-
-PUBLIC_IP=$(curl -s ipinfo.io/ip || echo "0.0.0.0")
-NIC=$(ip route | grep default | awk '{print $5}' || echo "eth0")
-UPTIME=$(uptime -p)
-LOAD=$(uptime | awk -F'load average:' '{print $2}' | sed 's/^ //')
-MEMORY=$(free -m | awk 'NR==2{printf "%s/%sMB\n",$3,$2 }')
-CPU=$(top -bn1 | grep "Cpu(s)" | awk '{print int($2+$4)}%'}')
-USERS_ONLINE=$(who | wc -l)
-
-# Auto-launch menu if script is run directly
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  menu_loop
-fi
-
-# End of Part 3/5
-# =====================================================
-# Part 4/5 - Subscripts for ShowOn
-# =====================================================
-
-# ---------------------------
-# online-check.sh
-# ---------------------------
-cat > /usr/local/bin/online-check.sh <<'EOF'
-#!/bin/bash
-CONF_FILE="/etc/showon.conf"
-[[ -f "$CONF_FILE" ]] && source "$CONF_FILE"
-
-TIMESTAMP=$(date +%s%3N)
-LIMIT=${LIMIT:-2000}
-
-# SSH users
-SSH_ON=$(who | wc -l)
-
-# Dropbear users
-DB_ON=0
-if pgrep dropbear >/dev/null 2>&1; then
-  DB_ON=$(expr $(ps aux | grep '[d]ropbear' | grep -v grep | wc -l) - 1)
-  [[ "$DB_ON" -lt 0 ]] && DB_ON=0
-fi
-
-# OpenVPN users
-OVPN_ON=0
-if pgrep openvpn >/dev/null 2>&1; then
-  OVPN_ON=$(expr $(ps aux | grep '[o]penvpn' | grep -v grep | wc -l))
-fi
-
-# V2Ray users
-V2_ON=0
-if [[ -f /usr/local/bin/v2ray ]]; then
-  V2_ON=$(lsof -iTCP -sTCP:ESTABLISHED -P | grep -i v2ray | wc -l)
-fi
-
-# AGN-UDP (Hysteria)
-AGN_ON=0
-AGN_PORT=""
-if [[ -f /etc/hysteria/config.json ]]; then
-  AGN_PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null)
-  [[ -n "$AGN_PORT" ]] && AGN_ON=1
-fi
-
-JSON="[{'onlines':'$SSH_ON','limite':'$LIMIT','ssh':'$SSH_ON','openvpn':'$OVPN_ON','dropbear':'$DB_ON','v2ray':'$V2_ON','agnudp':'$AGN_ON','timestamp':'$TIMESTAMP'}]"
-# Correct JSON quotes
-JSON=$(echo "$JSON" | sed "s/'/\"/g")
-echo "$JSON" > /var/www/html/server/online_app.json
-EOF
-
-chmod +x /usr/local/bin/online-check.sh
-
-# ---------------------------
-# vnstat-traffic.sh
-# ---------------------------
-cat > /usr/local/bin/vnstat-traffic.sh <<'EOF'
-#!/bin/bash
-# vnStat + V2Ray traffic
-JSON_FILE="/var/www/html/server/vnstat.json"
-# Use vnstat CLI to collect traffic stats
-RX=$(vnstat --json | jq '.interfaces[0].traffic.total.rx')
-TX=$(vnstat --json | jq '.interfaces[0].traffic.total.tx')
-TIMESTAMP=$(date +%s%3N)
-
-echo "[{\"rx\":$RX,\"tx\":$TX,\"timestamp\":$TIMESTAMP}]" > "$JSON_FILE"
-EOF
-chmod +x /usr/local/bin/vnstat-traffic.sh
-
-# ---------------------------
-# v2ray-traffic.sh
-# ---------------------------
-cat > /usr/local/bin/v2ray-traffic.sh <<'EOF'
-#!/bin/bash
-# V2Ray traffic JSON
-JSON_FILE="/var/www/html/server/v2ray.json"
-TIMESTAMP=$(date +%s%3N)
-if [[ -f /usr/local/bin/v2ray ]]; then
-  COUNT=$(lsof -iTCP -sTCP:ESTABLISHED -P | grep -i v2ray | wc -l)
-else
-  COUNT=0
-fi
-echo "[{\"v2ray_connections\":$COUNT,\"timestamp\":$TIMESTAMP}]" > "$JSON_FILE"
-EOF
-chmod +x /usr/local/bin/v2ray-traffic.sh
-
-# ---------------------------
-# sysinfo.sh
-# ---------------------------
-cat > /usr/local/bin/sysinfo.sh <<'EOF'
-#!/bin/bash
-JSON_FILE="/var/www/html/server/sysinfo.json"
-TIMESTAMP=$(date +%s%3N)
-PUBLIC_IP=$(curl -s ipinfo.io/ip || echo "0.0.0.0")
-NIC=$(ip route | grep default | awk '{print $5}' || echo "eth0")
-UPTIME=$(uptime -p)
-LOAD=$(uptime | awk -F'load average:' '{print $2}' | sed 's/^ //')
-MEMORY=$(free -m | awk 'NR==2{printf "%s/%sMB",$3,$2}')
-CPU=$(top -bn1 | grep "Cpu(s)" | awk '{print int($2+$4)}%'}')
-USERS_ONLINE=$(who | wc -l)
-
-echo "[{\"version\":\"1.0.7\",\"public_ip\":\"$PUBLIC_IP\",\"nic\":\"$NIC\",\"uptime\":\"$UPTIME\",\"load\":\"$LOAD\",\"memory_usage\":\"$MEMORY\",\"cpu_usage\":\"$CPU\",\"users_online\":\"$USERS_ONLINE\",\"timestamp\":\"$TIMESTAMP\"}]" > "$JSON_FILE"
-EOF
-chmod +x /usr/local/bin/sysinfo.sh
-
-# End of Part 4/5
-# =====================================================
-# Part 5/5 - Services + ShowOn Command + Final Setup
-# =====================================================
-
-# ---------------------------
-# systemd Services
-# ---------------------------
-
-# online-check.service
-cat > /etc/systemd/system/online-check.service <<'EOF'
+  # Write systemd services (5s loop)
+  cat >"$SERVICE_ONLINE" <<'EOF'
 [Unit]
 Description=ShowOn Online Users JSON Generator
 After=network-online.target
@@ -836,8 +221,7 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF
 
-# vnstat-traffic.service
-cat > /etc/systemd/system/vnstat-traffic.service <<'EOF'
+  cat >"$SERVICE_VNSTAT" <<'EOF'
 [Unit]
 Description=ShowOn vnStat Traffic JSON Generator
 After=network-online.target
@@ -853,8 +237,7 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF
 
-# v2ray-traffic.service
-cat > /etc/systemd/system/v2ray-traffic.service <<'EOF'
+  cat >"$SERVICE_V2RAY" <<'EOF'
 [Unit]
 Description=ShowOn V2Ray Traffic JSON Generator
 After=network-online.target
@@ -870,8 +253,7 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF
 
-# sysinfo.service
-cat > /etc/systemd/system/sysinfo.service <<'EOF'
+  cat >"$SERVICE_SYSINFO" <<'EOF'
 [Unit]
 Description=ShowOn System Info JSON Generator
 After=network-online.target
@@ -887,44 +269,277 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF
 
-# Reload systemd daemon
-systemctl daemon-reload
+  # Reload systemd & enable
+  systemctl daemon-reload
+  systemctl enable --now online-check vnstat-traffic v2ray-traffic sysinfo >/dev/null 2>&1 || true
 
-# Enable and start all services
-systemctl enable --now online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service
+  # Write Nginx config
+  write_nginx "$NGX_PORT"
+  systemctl enable --now nginx >/dev/null 2>&1 || true
+  nginx -t && systemctl reload nginx
 
-# ---------------------------
-# showon command
-# ---------------------------
-cat > /usr/local/bin/showon <<'EOF'
-#!/bin/bash
-# ShowOn Command - Interactive Installer / Menu
-INSTALL_URL="https://raw.githubusercontent.com/TspKchn/showon/main/Install"
-TMP_FILE=$(mktemp /tmp/showon_install_XXXXXX)
+  echo -e "${GREEN}[OK]${NC} ShowOn Installed Successfully!"
+  echo -e "${CYAN}[INFO]${NC} Open: http://${PUB_IP}:${NGX_PORT}/server/"
+  press
+}
 
-# Download latest Install script
-if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$INSTALL_URL" -o "$TMP_FILE"
-elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$TMP_FILE" "$INSTALL_URL"
-else
-    echo "Error: curl or wget required" >&2
-    exit 1
-fi
+# =====================================================
+# Part 2/4 END
+# =====================================================
+# =====================================================
+# Part 3/4 - Menu, Update, Uninstall, Debug, Limit
+# =====================================================
 
-# Run temporary Install script
-bash "$TMP_FILE"
+# ShowOn Main Menu
+show_menu() {
+  clear
+  print_status
+  check_update
+  echo "1) Install Script"
+  echo "2) Uninstall Script"
+  echo "3) Update Script"
+  echo "4) Check Debug Log"
+  echo "5) Change Limit User Online"
+  echo "6) Setup Swap"
+  echo "0) Exit"
+  echo "==============================="
+  read -rp "Choose an option [0-6]: " choice
+  case "$choice" in
+    1) install_script ;;
+    2) uninstall_script ;;
+    3) update_script ;;
+    4) check_debug ;;
+    5) change_limit ;;
+    6) setup_swap ;;
+    0) exit 0 ;;
+    *) echo -e "${RED}[ERROR]${NC} Invalid choice"; sleep 1 ;;
+  esac
+  show_menu
+}
 
-# Remove temporary file
-rm -f "$TMP_FILE"
+# Update ShowOn Scripts
+update_script() {
+  echo -e "${CYAN}[INFO]${NC} Updating all ShowOn components..."
+  rotate_log
+
+  download_or_die "$SRC_ONLINE?$(date +%s)" "$SCRIPT_ONLINE"
+  download_or_die "$SRC_VNSTAT?$(date +%s)" "$SCRIPT_VNSTAT"
+  download_or_die "$SRC_V2RAY?$(date +%s)" "$SCRIPT_V2RAY"
+  download_or_die "$SRC_SYSINFO?$(date +%s)" "$SCRIPT_SYSINFO"
+  chmod +x "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
+
+  download_or_die "$SRC_INDEX?$(date +%s)" "$WWW_DIR/index.html"
+  chmod 644 "$WWW_DIR/index.html"
+
+  local TMP_SCRIPT="/tmp/Install.$$"
+  if curl -fsSL "$REPO_RAW/Install?$(date +%s)" -o "$TMP_SCRIPT"; then
+    mv "$TMP_SCRIPT" /root/Install
+    chmod +x /root/Install
+    echo -e "${GREEN}[OK]${NC} Updated Install script."
+  else
+    echo -e "${RED}[ERROR]${NC} Failed to update Install script."
+  fi
+
+  systemctl daemon-reload
+  systemctl restart online-check vnstat-traffic v2ray-traffic sysinfo 2>/dev/null || true
+  echo -e "${GREEN}[OK]${NC} Update completed."
+}
+
+# Uninstall ShowOn
+uninstall_script() {
+  echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script (Full Clean)..."
+
+  systemctl stop online-check vnstat-traffic v2ray-traffic sysinfo 2>/dev/null || true
+  systemctl disable online-check vnstat-traffic v2ray-traffic sysinfo 2>/dev/null || true
+
+  rm -f "$SERVICE_ONLINE" "$SERVICE_VNSTAT" "$SERVICE_V2RAY" "$SERVICE_SYSINFO"
+  systemctl daemon-reload
+
+  rm -f "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
+  rm -f "$CONF_FILE" "$DEBUG_LOG"
+
+  rm -f "$SITE_AV" "$SITE_EN"
+  if systemctl is-active --quiet nginx; then
+    systemctl reload nginx 2>/dev/null || true
+  fi
+
+  apt purge -y nginx conntrack >/dev/null 2>&1 || true
+  apt autoremove -y >/dev/null 2>&1 || true
+
+  sed -i '/^net\.netfilter\.nf_conntrack_udp_timeout=/d' /etc/sysctl.conf
+  sed -i '/^net\.netfilter\.nf_conntrack_udp_timeout_stream=/d' /etc/sysctl.conf
+  sysctl -p >/dev/null 2>&1 || true
+
+  echo -e "${GREEN}[SUCCESS]${NC} Uninstalled completely."
+}
+
+# Check Debug Log
+check_debug() {
+  rotate_log
+  if [[ -f "$DEBUG_LOG" ]]; then
+    tail -n 100 "$DEBUG_LOG"
+  else
+    echo "No debug log yet."
+  fi
+  press
+}
+
+# Change Limit User Online
+change_limit() {
+  if [[ ! -f "$CONF_FILE" ]]; then
+    echo -e "${RED}[ERROR]${NC} Config file not found!"
+    press; return
+  fi
+
+  source "$CONF_FILE"
+  echo -e "${CYAN}[INFO]${NC} Current Limit User Online: ${LIMIT:-2000}"
+  read -rp "Enter new Limit User Online: " NEW_LIMIT
+  if [[ -z "$NEW_LIMIT" ]]; then
+    echo -e "${YELLOW}[WARN]${NC} Limit not changed."
+    press; return
+  fi
+
+  sed -i "s/^LIMIT=.*/LIMIT=${NEW_LIMIT}/" "$CONF_FILE"
+  echo -e "${GREEN}[OK]${NC} Limit User Online updated to ${NEW_LIMIT}"
+  press
+}
+
+# Setup Swap
+setup_swap() {
+  echo -e "${CYAN}[INFO]${NC} Auto Swap Setup"
+
+  local ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+  local ram_mb=$(( ram_kb / 1024 ))
+  local swap_mb
+
+  if   (( ram_mb <= 512 )); then       swap_mb=$(( ram_mb * 2 ))
+  elif (( ram_mb <= 1024 )); then      swap_mb=$(( ram_mb * 2 ))
+  elif (( ram_mb <= 2048 )); then      swap_mb=$(( ram_mb * 1 ))
+  elif (( ram_mb <= 4096 )); then      swap_mb=$(( ram_mb * 1 ))
+  elif (( ram_mb <= 8192 )); then      swap_mb=4096
+  elif (( ram_mb <= 16384 )); then     swap_mb=4096
+  else                                 swap_mb=8192
+  fi
+
+  if swapon --show | awk 'NR>1{print $1}' | grep -q .; then
+    echo -e "${YELLOW}[WARN]${NC} Swap exists"
+    read -rp "Overwrite? (Y/n): " ans
+    if [[ -z "$ans" || "$ans" =~ ^[Yy]$ ]]; then
+      swapoff -a || true
+      sed -i '/swapfile showon/d' /etc/fstab || true
+    else
+      echo -e "${GREEN}[OK]${NC} Skip swap creation"
+      press; return
+    fi
+  fi
+
+  echo -e "${CYAN}[INFO]${NC} Creating swap ${swap_mb} MiB..."
+  fallocate -l "${swap_mb}M" /swapfile || dd if=/dev/zero of=/swapfile bs=1M count="${swap_mb}"
+  chmod 600 /swapfile
+  mkswap /swapfile >/dev/null
+  swapon /swapfile
+
+  if ! grep -q "swapfile showon" /etc/fstab; then
+    echo "/swapfile none swap sw 0 0 # swapfile showon" >> /etc/fstab
+  fi
+
+  sysctl -w vm.swappiness=10 >/dev/null
+  sysctl -w vm.vfs_cache_pressure=100 >/dev/null
+  if ! grep -q '^vm.swappiness' /etc/sysctl.conf; then echo "vm.swappiness=10" >> /etc/sysctl.conf; fi
+  if ! grep -q '^vm.vfs_cache_pressure' /etc/sysctl.conf; then echo "vm.vfs_cache_pressure=100" >> /etc/sysctl.conf; fi
+
+  echo -e "${GREEN}[OK]${NC} Swap ready:"
+  free -h
+
+  systemctl restart online-check vnstat-traffic v2ray-traffic sysinfo 2>/dev/null || true
+  echo -e "${GREEN}[OK]${NC} Restarted ShowOn services."
+  press
+}
+
+# =====================================================
+# Part 3/4 END
+# =====================================================
+# =====================================================
+# Part 4/4 - Status, Online JSON, Main Loop
+# =====================================================
+
+# Print Service Status
+print_status() {
+  local stat_nginx="OFF" stat_online="OFF" stat_vnstat="OFF" stat_v2="OFF" stat_sys="OFF"
+
+  systemctl is-active --quiet nginx && stat_nginx="ON"
+  [[ -f "$SERVICE_ONLINE" ]] && systemctl is-active --quiet online-check && stat_online="ON"
+  [[ -f "$SERVICE_VNSTAT" ]] && systemctl is-active --quiet vnstat-traffic && stat_vnstat="ON"
+  [[ -f "$SERVICE_V2RAY" ]] && systemctl is-active --quiet v2ray-traffic && stat_v2="ON"
+  [[ -f "$SERVICE_SYSINFO" ]] && systemctl is-active --quiet sysinfo && stat_sys="ON"
+
+  local c_ng=$( [[ "$stat_nginx" == "ON" ]] && echo "$GREEN" || echo "$RED" )
+  local c_on=$( [[ "$stat_online" == "ON" ]] && echo "$GREEN" || echo "$RED" )
+  local c_vn=$( [[ "$stat_vnstat" == "ON" ]] && echo "$GREEN" || echo "$RED" )
+  local c_v2=$( [[ "$stat_v2" == "ON" ]] && echo "$GREEN" || echo "$RED" )
+  local c_sy=$( [[ "$stat_sys" == "ON" ]] && echo "$GREEN" || echo "$RED" )
+  local c_ct=$( [[ "$(conntrack_status)" == "ON" ]] && echo "$GREEN" || echo "$RED" )
+
+  local installed="${RED}✘ Not Installed  ${NC}"
+  if [[ -f "$SCRIPT_ONLINE" || -f "$SCRIPT_VNSTAT" || -f "$SCRIPT_V2RAY" || -f "$SCRIPT_SYSINFO" ]]; then
+    installed="${GREEN}✔ Installed  ${NC}"
+  fi
+
+  echo "==============================="
+  echo "   ShowOn Script Manager ${VERSION}"
+  echo "==============================="
+  echo -e "$(printf 'NginX   : [%b%s%b]  Online Check : [%b%s%b]\n' "$c_ng" "$stat_nginx" "$NC" "$c_on" "$stat_online" "$NC")"
+  echo -e "$(printf 'vnStat  : [%b%s%b]  V2Ray Traffic: [%b%s%b]\n' "$c_vn" "$stat_vnstat" "$NC" "$c_v2" "$stat_v2" "$NC")"
+  echo -e "$(printf 'SysInfo : [%b%s%b]  Conntrack    : [%b%s%b]\n' "$c_sy" "$stat_sys" "$NC" "$c_ct" "$(conntrack_status)" "$NC")"
+  echo "-------------------------------"
+  echo -e "Status: $installed"
+  echo "==============================="
+}
+
+# Generate online_app.json
+generate_online_json() {
+  source "$CONF_FILE"
+  local ssh_count openvpn_count dropbear_count v2ray_count agnudp_count
+
+  ssh_count=$(sshd_status || echo 0)
+  openvpn_count=$(openvpn_status || echo 0)
+  dropbear_count=$(dropbear_status || echo 0)
+  v2ray_count=$(v2ray_status || echo 0)
+  agnudp_count=$(agnudp_status || echo 0)
+  local timestamp=$(date +%s%3N)
+
+  cat > "$WWW_DIR/online_app.json" <<EOF
+[{"onlines":"0","limite":"${LIMIT}","ssh":"${ssh_count}","openvpn":"${openvpn_count}","dropbear":"${dropbear_count}","v2ray":"${v2ray_count}","agnudp":"${agnudp_count}","timestamp":"${timestamp}"}]
 EOF
+}
 
-chmod +x /usr/local/bin/showon
-echo "[INFO] showon command installed at /usr/local/bin/showon"
+# Helper functions to count users per service
+sshd_status() {
+  ss -tunp | grep sshd | wc -l
+}
 
-# ---------------------------
-# Final message
-# ---------------------------
-echo -e "\n${GREEN}[OK]${NC} ShowOn V1.0.7 FULL Installed Successfully!"
-echo -e "${CYAN}[INFO]${NC} Access your dashboard at: http://$(curl -s ipinfo.io/ip):82/server/"
-echo -e "${CYAN}[INFO]${NC} You can run 'showon' command from anywhere to manage the system."
+openvpn_status() {
+  ss -tunp | grep openvpn | wc -l
+}
+
+dropbear_status() {
+  ss -tunp | grep dropbear | wc -l
+}
+
+v2ray_status() {
+  ss -tunp | grep v2ray | wc -l
+}
+
+agnudp_status() {
+  local present port
+  IFS='|' read -r present port <<<"$(detect_agnudp)"
+  if [[ "$present" == "1" ]]; then echo 1; else echo 0; fi
+}
+
+# Main
+require_root
+show_menu
+
+# =====================================================
+# Part 4/4 END - Full ShowOn Install Script Complete
+# =====================================================
