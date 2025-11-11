@@ -4,10 +4,11 @@
 # Author : TspKchn + ChatGPT
 # =====================================================
 
+# ----------------- เวอร์ชัน -----------------
 VERSION="V.1.0.7"
 
 # ----------------- พาธรีโป ------------------
-REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main"
+REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/main"
 
 # ----------------- ซอร์สไฟล์ ----------------
 SRC_ONLINE="$REPO_RAW/scripts/online-check.sh"
@@ -51,13 +52,6 @@ require_root() {
 
 press() { read -rp "Press Enter to continue..." _; }
 
-header() {
-  clear
-  echo "==============================="
-  echo "   ShowOn Script Manager ${VERSION}"
-  echo "==============================="
-}
-
 # ตรวจจับ NIC
 get_nic() {
   ip -o -4 route get 8.8.8.8 2>/dev/null \
@@ -82,31 +76,35 @@ download_or_die() {
     exit 1
   fi
 }
-# =====================================================
 # เขียน Nginx site
-# =====================================================
-
 write_nginx() {
   mkdir -p "$WWW_DIR"
   mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
 
-  # ถ้า config file มี PORT ใช้, ถ้าไม่มี default 82
-  source "$CONF_FILE" 2>/dev/null || PORT=82
-  PORT=${PORT:-82}
+  # ลบ default site
+  rm -f /etc/nginx/sites-enabled/default
+  rm -f /etc/nginx/sites-available/default
 
+  # Config ใหม่
   cat >"$SITE_AV" <<EOF
 server {
-    listen $PORT default_server;
+    listen 82 default_server;
     server_name _;
 
     location = / {
         return 302 /server/;
     }
+
     location /server/ {
         alias $WWW_DIR/;
         index index.html;
         autoindex off;
         add_header Cache-Control "no-store";
+
+        # บังคับ MIME สำหรับ online_app (ไม่มีนามสกุล) และ online_app.json
+        location ~ /server/online_app(\.json)?$ {
+            default_type application/json;
+        }
     }
 }
 EOF
@@ -114,48 +112,21 @@ EOF
   ln -sf "$SITE_AV" "$SITE_EN"
 
   if nginx -t; then
-    systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+    systemctl restart nginx 2>/dev/null || true
   else
-    echo -e "${YELLOW}[WARN]${NC} nginx config test failed → will try to start nginx..."
-    systemctl start nginx 2>/dev/null || true
+    echo -e "${YELLOW}[WARN]${NC} nginx config test failed, forcing restart..."
+    systemctl restart nginx 2>/dev/null || true
   fi
 
-  echo -e "${GREEN}[OK]${NC} Nginx ready at :$PORT (/server/)"
+  echo -e "${GREEN}[OK]${NC} Nginx is now listening only on port :82 (/server/)"
 }
 
-# =====================================================
-# ฟังก์ชันเปรียบเทียบเวอร์ชัน
-# version_gt ver1 ver2 -> คืนค่า 0 (true) ถ้า ver1 > ver2
-# =====================================================
-version_gt() {
-  local IFS=.
-  local i ver1=($1) ver2=($2)
-  
-  # เติม 0 ให้ array เท่ากัน
-  for ((i=${#ver1[@]}; i<${#ver2[@]}; i++)); do ver1[i]=0; done
-  for ((i=${#ver2[@]}; i<${#ver1[@]}; i++)); do ver2[i]=0; done
-
-  for ((i=0; i<${#ver1[@]}; i++)); do
-    # ตัดทุกอย่างที่ไม่ใช่ตัวเลข
-    local num1=${ver1[i]//[^0-9]/}
-    local num2=${ver2[i]//[^0-9]/}
-
-    # ถ้าเป็นค่าว่าง ให้ถือว่า 0
-    num1=${num1:-0}
-    num2=${num2:-0}
-
-    if ((num1 > num2)); then
-      return 0
-    elif ((num1 < num2)); then
-      return 1
-    fi
-  done
-  return 1
+# สถานะ conntrack (ไว้โชว์ในเมนู)
+conntrack_status() {
+  if command -v conntrack >/dev/null 2>&1; then echo "ON"; else echo "OFF"; fi
 }
 
-# =====================================================
-# ตรวจอัปเดตจากรีโมต
-# =====================================================
+# ตรวจอัปเดตจากรีโมต (อ่าน VERSION จากไฟล์ Install บน GitHub)
 check_update() {
   local remote install_raw
   install_raw="$(curl -fsSL "$REPO_RAW/Install" || true)"
@@ -165,29 +136,30 @@ check_update() {
     return
   fi
 
-  # ดึงเฉพาะตัวเลขเวอร์ชัน X.Y.Z
-  remote="$(printf '%s' "$install_raw" | grep -m1 '^VERSION=' | sed -E 's/^VERSION="([0-9.]+)".*/\1/')"
-  
+  remote="$(printf '%s' "$install_raw" | grep -m1 '^VERSION=' | cut -d'"' -f2)"
   if [[ -z "$remote" ]]; then
     echo -e "${YELLOW}[WARN]${NC} พบไฟล์ Install ใน GitHub แต่หา VERSION ไม่เจอ"
     return
   fi
 
-  if version_gt "$remote" "$VERSION"; then
-    echo -e "${CYAN}[UPDATE]${NC} มีเวอร์ชันใหม่: ${remote} (ปัจจุบัน: ${VERSION})"
-    read -rp "กด Enter เพื่ออัปเดตทันที หรือพิมพ์ n เพื่อข้าม: " ans
-    if [[ -z "$ans" || "$ans" =~ ^[Yy]$ ]]; then
-      update_script
-      press
-    fi
-  else
+  if [[ "$VERSION" == "$remote" ]]; then
     echo -e "${GREEN}[OK]${NC} You are using the latest version."
+  else
+    echo -e "${CYAN}[UPDATE]${NC} มีเวอร์ชันใหม่: ${remote} (ปัจจุบัน: ${VERSION})"
+    echo -en "กด Enter เพื่ออัปเดตทันที หรือพิมพ์ ${B}n${NC} เพื่อข้าม: "
+    read ans
+    if [[ -z "$ans" || "$ans" == "y" || "$ans" == "Y" ]]; then
+      update_script
+      # ✅ refresh + กลับไปเมนูทันที
+      clear
+      print_status
+      check_update
+      show_menu
+    fi
   fi
 }
 
-# =====================================================
-# แสดงสถานะ Service + สถานะติดตั้ง + Conntrack
-# =====================================================
+# แสดงสถานะ Service + สถานะติดตั้ง
 print_status() {
   local stat_nginx="OFF" stat_online="OFF" stat_vnstat="OFF" stat_v2="OFF" stat_sys="OFF"
 
@@ -197,30 +169,24 @@ print_status() {
   [[ -f "$SERVICE_V2RAY" ]] && systemctl is-active --quiet v2ray-traffic && stat_v2="ON"
   [[ -f "$SERVICE_SYSINFO" ]] && systemctl is-active --quiet sysinfo && stat_sys="ON"
 
-  # Conntrack status
-  if command -v conntrack >/dev/null 2>&1; then
-    CT_STAT=$(conntrack -S >/dev/null 2>&1 && echo "ON" || echo "OFF")
-  else
-    CT_STAT="OFF"
-  fi
-
-  # สี
   local c_ng=$( [[ "$stat_nginx" == "ON" ]] && echo "$GREEN" || echo "$RED" )
   local c_on=$( [[ "$stat_online" == "ON" ]] && echo "$GREEN" || echo "$RED" )
   local c_vn=$( [[ "$stat_vnstat" == "ON" ]] && echo "$GREEN" || echo "$RED" )
   local c_v2=$( [[ "$stat_v2" == "ON" ]] && echo "$GREEN" || echo "$RED" )
   local c_sy=$( [[ "$stat_sys" == "ON" ]] && echo "$GREEN" || echo "$RED" )
-  local c_ct=$( [[ "$CT_STAT" == "ON" ]] && echo "$GREEN" || echo "$RED" )
+  local c_ct=$( [[ "$(conntrack_status)" == "ON" ]] && echo "$GREEN" || echo "$RED" )
 
-  # สถานะติดตั้ง
-  local installed="${RED}Not Installed${NC}"
+  local installed="${RED}✘ Not Installed  ${NC}"
   if [[ -f "$SCRIPT_ONLINE" || -f "$SCRIPT_VNSTAT" || -f "$SCRIPT_V2RAY" || -f "$SCRIPT_SYSINFO" ]]; then
-    installed="${GREEN}Installed${NC}"
+    installed="${GREEN}✔ Installed  ${NC}"
   fi
 
-  echo -e "$(printf 'NginX        : [%b%s%b]  Online Check : [%b%s%b]\n' "$c_ng" "$stat_nginx" "$NC" "$c_on" "$stat_online" "$NC")"
-  echo -e "$(printf 'vnStat       : [%b%s%b]  V2Ray Traffic : [%b%s%b]\n' "$c_vn" "$stat_vnstat" "$NC" "$c_v2" "$stat_v2" "$NC")"
-  echo -e "$(printf 'SysInfo      : [%b%s%b]  Conntrack : [%b%s%b]\n' "$c_sy" "$stat_sys" "$NC" "$c_ct" "$CT_STAT" "$NC")"
+  echo "==============================="
+  echo "   ShowOn Script Manager ${VERSION}"
+  echo "==============================="
+  echo -e "$(printf 'NginX   : [%b%s%b]  Online Check : [%b%s%b]\n' "$c_ng" "$stat_nginx" "$NC" "$c_on" "$stat_online" "$NC")"
+  echo -e "$(printf 'vnStat  : [%b%s%b]  V2Ray Traffic: [%b%s%b]\n' "$c_vn" "$stat_vnstat" "$NC" "$c_v2" "$stat_v2" "$NC")"
+  echo -e "$(printf 'SysInfo : [%b%s%b]  Conntrack    : [%b%s%b]\n' "$c_sy" "$stat_sys" "$NC" "$c_ct" "$(conntrack_status)" "$NC")"
   echo "-------------------------------"
   echo -e "Status: $installed"
   echo "==============================="
@@ -228,19 +194,62 @@ print_status() {
 # =====================================================
 # ติดตั้ง
 # =====================================================
+
 install_script() {
   echo -e "${CYAN}[INFO]${NC} Installing ShowOn (${VERSION})..."
+
+  # 1) Update system
   echo -e "${CYAN}[INFO]${NC} Updating system packages..."
   apt update -y >/dev/null 2>&1 || true
 
+  # 2) Install dependencies (รวม nginx ด้วย)
   echo -e "${CYAN}[INFO]${NC} Installing dependencies..."
   apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates vnstat conntrack >/dev/null 2>&1 || true
 
+  # ปรับ timeout ของ conntrack UDP ให้เหลือ 5 วินาที  
+  echo -e "${CYAN}[INFO]${NC} Tuning conntrack UDP timeout → 5s"  
+  sysctl -w net.netfilter.nf_conntrack_udp_timeout=5 >/dev/null 2>&1 || true  
+  sysctl -w net.netfilter.nf_conntrack_udp_timeout_stream=5 >/dev/null 2>&1 || true  
+
+  # บันทึกถาวรลง /etc/sysctl.conf  
+  if ! grep -q "nf_conntrack_udp_timeout" /etc/sysctl.conf; then  
+    echo "net.netfilter.nf_conntrack_udp_timeout=5" >> /etc/sysctl.conf  
+    echo "net.netfilter.nf_conntrack_udp_timeout_stream=5" >> /etc/sysctl.conf  
+    sysctl -p >/dev/null 2>&1 || true  
+  fi
+
+  # 3) Enable vnstat
   systemctl enable vnstat >/dev/null 2>&1 || true
-  systemctl start vnstat >/dev/null 2>&1 || true
+  systemctl start vnstat  >/dev/null 2>&1 || true
 
   mkdir -p "$WWW_DIR" "$BIN_DIR" "$(dirname "$DEBUG_LOG")"
   rotate_log
+
+  # ======================= ตรวจ AGN-UDP (Hysteria) =======================
+  local AGN_PRESENT="0" AGN_PORT=""
+
+  # วิธีที่ 1: ตรวจจากไฟล์ config.json
+  if [[ -f /etc/hysteria/config.json ]]; then
+    AGN_PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
+      | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//')
+
+    if [[ -n "$AGN_PORT" && "$AGN_PORT" =~ ^[0-9]+$ ]]; then
+      AGN_PRESENT="1"
+      echo -e "${GREEN}[OK]${NC} AGN-UDP (Hysteria) detected from config → port: ${B}${AGN_PORT}${NC}"
+    else
+      echo -e "${YELLOW}[WARN]${NC} Found hysteria config but no valid port"
+    fi
+  fi
+
+  # วิธีที่ 2: fallback → ตรวจจาก detect_agnudp()
+  if [[ "$AGN_PRESENT" == "0" ]]; then
+    IFS='|' read -r AGN_PRESENT AGN_PORT <<<"$(detect_agnudp)"
+    if [[ "$AGN_PRESENT" == "1" ]]; then
+      echo -e "${GREEN}[OK]${NC} AGN-UDP (Hysteria) detected via systemd/binary → port: ${B}${AGN_PORT}${NC}"
+    else
+      echo -e "${CYAN}[INFO]${NC} AGN-UDP (Hysteria) not found → skipped"
+    fi
+  fi
 
   # ตรวจว่าเป็น 3x-ui หรือ Xray-Core
   local PANEL_URL XUI_USER XUI_PASS
@@ -255,16 +264,14 @@ install_script() {
     read -rp "3X-UI Password: " XUI_PASS
   else
     echo -e "${CYAN}[INFO]${NC} ตรวจพบ Xray-Core → ข้ามการตั้งค่า 3x-ui"
-    PANEL_URL=""; XUI_USER=""; XUI_PASS=""
+    PANEL_URL=""
+    XUI_USER=""
+    XUI_PASS=""
   fi
 
   # Limit
   read -rp "Limit User Online (Default: 2000): " LIMIT
   LIMIT=${LIMIT:-2000}
-
-  # เลือก port nginx
-  read -rp "Port Nginx (Default: 82): " PORT
-  PORT=${PORT:-82}
 
   # เขียน config
   NIC=$(get_nic)
@@ -282,14 +289,17 @@ XUI_USER="$XUI_USER"
 XUI_PASS="$XUI_PASS"
 
 NET_IFACE="$NIC"
-PORT=${PORT}
+
+# --- AGN-UDP (Hysteria) ---
+AGN_PRESENT=$AGN_PRESENT
+AGN_PORT="$AGN_PORT"
 EOF
   chmod 600 "$CONF_FILE"
 
   # ดาวน์โหลดสคริปต์จาก repo
   download_or_die "$SRC_ONLINE" "$SCRIPT_ONLINE"
   download_or_die "$SRC_VNSTAT" "$SCRIPT_VNSTAT"
-  download_or_die "$SRC_V2RAY" "$SCRIPT_V2RAY"
+  download_or_die "$SRC_V2RAY"  "$SCRIPT_V2RAY"
   download_or_die "$SRC_SYSINFO" "$SCRIPT_SYSINFO"
   chmod +x "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
 
@@ -299,8 +309,8 @@ EOF
 
   # Nginx
   write_nginx
-
-  # systemd services
+  systemctl enable --now nginx >/dev/null 2>&1 || true
+  # systemd services (ทุก 5 วิ)
   cat >"$SERVICE_ONLINE" <<'EOF'
 [Unit]
 Description=ShowOn Online Users JSON Generator
@@ -369,76 +379,71 @@ EOF
   systemctl daemon-reload
   systemctl enable --now online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service
 
-  # สร้างไฟล์ online_app/online_app.json เริ่มต้น
-  echo '[{"onlines":0,"limite":'"$LIMIT"',"ssh":0,"openvpn":0,"dropbear":0,"v2ray":0,"agnudp":0,"timestamp":'$(date +%s%3N)'}]' \
-    > "$WWW_DIR/online_app.json"
-  cp -f "$WWW_DIR/online_app.json" "$WWW_DIR/online_app"
-
   echo -e "${GREEN}[OK]${NC} Installed ShowOn ${VERSION}"
-  echo -e "${CYAN}[INFO]${NC} Open: http://$(curl -s ifconfig.me):$PORT/server/"
+  echo -e "${CYAN}[INFO]${NC} Open: http://$(hostname -I | awk '{print $1}'):82/server/"
   press
 }
-
 # =====================================================
-# ถอนการติดตั้ง (เวอร์ชันใหม่)
+# ถอนการติดตั้ง
 # =====================================================
 
 uninstall_script() {
   echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script (Full Clean)..."
 
-  # ----------------- หยุดและปิด service -----------------
+  # หยุดและปิด service ทั้งหมด
   systemctl stop online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
   systemctl disable online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
 
-  # ----------------- ลบ service file -----------------
+  # ลบ service file
   rm -f "$SERVICE_ONLINE" "$SERVICE_VNSTAT" "$SERVICE_V2RAY" "$SERVICE_SYSINFO"
   systemctl daemon-reload
 
-  # ----------------- ลบ script และ config -----------------
+  # ลบ script และ config
   rm -f "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
   rm -f "$CONF_FILE" "$DEBUG_LOG"
 
-  # ----------------- ลบ web server files -----------------
-  rm -rf "$WWW_DIR"/*
-
-  # ----------------- ลบ nginx site -----------------
+  # ลบ nginx site
   rm -f "$SITE_AV" "$SITE_EN"
   if systemctl is-active --quiet nginx; then
     systemctl reload nginx 2>/dev/null || true
   fi
 
-  # ----------------- ถอน nginx ถ้าต้องการ -----------------
-  # apt purge -y nginx >/dev/null 2>&1 || true
+  # ถ้าอยากถอน nginx ออกด้วย
+  apt purge -y nginx >/dev/null 2>&1 || true
 
-  # ----------------- ลบ conntrack package (ถ้ามี) -----------------
+  # ลบ conntrack ออกจากระบบ
   apt purge -y conntrack >/dev/null 2>&1 || true
   apt autoremove -y >/dev/null 2>&1 || true
 
-  # ----------------- ลบค่า timeout ของ conntrack จาก sysctl -----------------
-  sed -i '/^net\.netfilter\.nf_conntrack_/d' /etc/sysctl.conf
+  # ลบค่า timeout ของ conntrack UDP ออกจาก /etc/sysctl.conf
+  sed -i '/^net\.netfilter\.nf_conntrack_udp_timeout=/d' /etc/sysctl.conf
+  sed -i '/^net\.netfilter\.nf_conntrack_udp_timeout_stream=/d' /etc/sysctl.conf
+
+  # รีโหลด sysctl เพื่อคืนค่า default ของระบบ
   sysctl -p >/dev/null 2>&1 || true
 
-  echo -e "${GREEN}[SUCCESS]${NC} Uninstalled completely (ShowOn + conntrack config removed)."
+  echo -e "${GREEN}[SUCCESS]${NC} Uninstalled completely (ShowOn + conntrack removed)."
 }
 
 # =====================================================
-# อัปเดตสคริปต์
+# อัปเดต
 # =====================================================
+
 update_script() {
   echo -e "${CYAN}[INFO]${NC} Updating all ShowOn components..."
   rotate_log
 
-  download_or_die "$SRC_ONLINE" "$SCRIPT_ONLINE"
-  download_or_die "$SRC_VNSTAT" "$SCRIPT_VNSTAT"
-  download_or_die "$SRC_V2RAY" "$SCRIPT_V2RAY"
-  download_or_die "$SRC_SYSINFO" "$SCRIPT_SYSINFO"
+  download_or_die "$SRC_ONLINE?$(date +%s)" "$SCRIPT_ONLINE"
+  download_or_die "$SRC_VNSTAT?$(date +%s)" "$SCRIPT_VNSTAT"
+  download_or_die "$SRC_V2RAY?$(date +%s)" "$SCRIPT_V2RAY"
+  download_or_die "$SRC_SYSINFO?$(date +%s)" "$SCRIPT_SYSINFO"
   chmod +x "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
 
-  download_or_die "$SRC_INDEX" "$WWW_DIR/index.html"
+  download_or_die "$SRC_INDEX?$(date +%s)" "$WWW_DIR/index.html"
   chmod 644 "$WWW_DIR/index.html"
 
   local TMP_SCRIPT="/tmp/Install.$$"
-  if curl -fsSL "$REPO_RAW/Install" -o "$TMP_SCRIPT"; then
+  if curl -fsSL "$REPO_RAW/Install?$(date +%s)" -o "$TMP_SCRIPT"; then
     mv "$TMP_SCRIPT" /root/Install
     chmod +x /root/Install
     echo -e "${GREEN}[OK]${NC} Updated Install script."
@@ -446,13 +451,17 @@ update_script() {
     echo -e "${RED}[ERROR]${NC} Failed to update Install script."
   fi
 
+  # ✅ Reload services
+  systemctl daemon-reload
+  systemctl restart online-check vnstat-traffic v2ray-traffic sysinfo 2>/dev/null || true
+
   echo -e "${GREEN}[OK]${NC} Update completed."
-  press
 }
 
 # =====================================================
 # Debug Log / Change Limit
 # =====================================================
+
 check_debug() {
   rotate_log
   if [[ -f "$DEBUG_LOG" ]]; then
@@ -486,6 +495,7 @@ change_limit() {
 # =====================================================
 # Setup Swap (อัตโนมัติ + รีสตาร์ต service)
 # =====================================================
+
 setup_swap() {
   echo -e "${CYAN}[INFO]${NC} Auto Swap Wizard"
 
@@ -503,10 +513,10 @@ setup_swap() {
   elif (( ram_mb <= 16384 )); then     swap_mb=4096
   elif (( ram_mb <= 32768 )); then     swap_mb=8192
   elif (( ram_mb <= 65536 )); then     swap_mb=8192
-  else                                  swap_mb=8192
+  else                                 swap_mb=8192
   fi
 
-  # มี swap แล้วหรือยัง?
+  # มี swap อยู่แล้วหรือไม่
   if swapon --show | awk 'NR>1{print $1}' | grep -q .; then
     echo -e "${YELLOW}[WARN]${NC} พบ Swap เดิมอยู่แล้ว"
     read -rp "ต้องการสร้างใหม่ทับเดิมหรือไม่? (Y/n): " ans
@@ -529,7 +539,6 @@ setup_swap() {
     echo "/swapfile none swap sw 0 0 # swapfile showon" >> /etc/fstab
   fi
 
-  # ปรับ vm.swappiness & vfs_cache_pressure
   sysctl -w vm.swappiness=10 >/dev/null
   sysctl -w vm.vfs_cache_pressure=100 >/dev/null
   if ! grep -q '^vm.swappiness' /etc/sysctl.conf; then echo "vm.swappiness=10" >> /etc/sysctl.conf; fi
@@ -538,16 +547,17 @@ setup_swap() {
   echo -e "${GREEN}[OK]${NC} Swap พร้อมใช้งาน:"
   free -h
 
-  # รีสตาร์ต service
   systemctl restart online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
   echo -e "${GREEN}[OK]${NC} Restarted ShowOn services."
   press
 }
+
 # =====================================================
-# เมนูหลัก
+# เมนู
 # =====================================================
+
 show_menu() {
-  header
+  clear
   print_status
   check_update
   echo "1) Install Script"
@@ -575,115 +585,6 @@ show_menu() {
 # =====================================================
 # Main
 # =====================================================
+
 require_root
 show_menu
-# ----------------- systemd Services ------------------
-
-# Online Check Service
-cat >"$SERVICE_ONLINE" <<'EOF'
-[Unit]
-Description=ShowOn Online Users JSON Generator
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/bin/bash -c 'while true; do /usr/local/bin/online-check.sh; sleep 5; done'
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# vnStat + V2Ray Traffic Service
-cat >"$SERVICE_VNSTAT" <<'EOF'
-[Unit]
-Description=ShowOn vnStat + V2Ray Traffic JSON Generator
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/bin/bash -c 'while true; do /usr/local/bin/vnstat-traffic.sh; sleep 5; done'
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# V2Ray Traffic Only Service
-cat >"$SERVICE_V2RAY" <<'EOF'
-[Unit]
-Description=ShowOn V2Ray-Only Traffic JSON Generator
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/bin/bash -c 'while true; do /usr/local/bin/v2ray-traffic.sh; sleep 5; done'
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# System Info Service
-cat >"$SERVICE_SYSINFO" <<'EOF'
-[Unit]
-Description=ShowOn System Info JSON Generator
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/bin/bash -c 'while true; do /usr/local/bin/sysinfo.sh; sleep 5; done'
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# ----------------- ตัวอย่าง Scripts ------------------
-# ตัวอย่าง online-check.sh
-cat >"$SCRIPT_ONLINE" <<'EOF'
-#!/bin/bash
-# Dummy Online Check Script
-echo "[INFO] Generating online users JSON..."
-date +%s > /var/www/html/server/online_app.json
-EOF
-chmod +x "$SCRIPT_ONLINE"
-
-# ตัวอย่าง vnstat-traffic.sh
-cat >"$SCRIPT_VNSTAT" <<'EOF'
-#!/bin/bash
-# Dummy vnStat Traffic Script
-echo "[INFO] Generating vnStat JSON..."
-date +%s > /var/www/html/server/vnstat.json
-EOF
-chmod +x "$SCRIPT_VNSTAT"
-
-# ตัวอย่าง v2ray-traffic.sh
-cat >"$SCRIPT_V2RAY" <<'EOF'
-#!/bin/bash
-# Dummy V2Ray Traffic Script
-echo "[INFO] Generating V2Ray traffic JSON..."
-date +%s > /var/www/html/server/v2ray.json
-EOF
-chmod +x "$SCRIPT_V2RAY"
-
-# ตัวอย่าง sysinfo.sh
-cat >"$SCRIPT_SYSINFO" <<'EOF'
-#!/bin/bash
-# Dummy System Info Script
-echo "[INFO] Generating system info JSON..."
-date +%s > /var/www/html/server/sysinfo.json
-EOF
-chmod +x "$SCRIPT_SYSINFO"
-
-# ----------------- Reload Systemd ------------------
-systemctl daemon-reload
-systemctl enable --now online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service
