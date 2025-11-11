@@ -59,6 +59,20 @@ get_nic() {
     | head -n1
 }
 
+# ตรวจจับ Public IP
+get_public_ip() {
+  for url in "https://ifconfig.me/ip" "https://ipinfo.io/ip" "https://icanhazip.com"; do
+    ip=$(curl -fsSL "$url" 2>/dev/null | tr -d '[:space:]')
+    if [[ -n "$ip" ]]; then
+      echo "$ip"
+      return
+    fi
+  done
+  # fallback ถ้าไม่ได้
+  echo "127.0.0.1"
+}
+
+
 # หมุน log (1MB)
 rotate_log() {
   local max=1000000
@@ -76,8 +90,10 @@ download_or_die() {
     exit 1
   fi
 }
+
 # เขียน Nginx site
 write_nginx() {
+  local port="${1:-82}"  # ถ้าไม่ได้ใส่มา ให้ default 82
   mkdir -p "$WWW_DIR"
   mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
 
@@ -88,7 +104,7 @@ write_nginx() {
   # Config ใหม่
   cat >"$SITE_AV" <<EOF
 server {
-    listen 82 default_server;
+    listen $port default_server;
     server_name _;
 
     location = / {
@@ -101,7 +117,6 @@ server {
         autoindex off;
         add_header Cache-Control "no-store";
 
-        # บังคับ MIME สำหรับ online_app (ไม่มีนามสกุล) และ online_app.json
         location ~ /server/online_app(\.json)?$ {
             default_type application/json;
         }
@@ -118,7 +133,7 @@ EOF
     systemctl restart nginx 2>/dev/null || true
   fi
 
-  echo -e "${GREEN}[OK]${NC} Nginx is now listening only on port :82 (/server/)"
+  echo -e "${GREEN}[OK]${NC} Nginx is now listening on port: $port (/server/)"
 }
 
 # สถานะ conntrack (ไว้โชว์ในเมนู)
@@ -307,6 +322,11 @@ EOF
   download_or_die "$SRC_INDEX" "$WWW_DIR/index.html"
   chmod 644 "$WWW_DIR/index.html"
 
+  # ให้ผู้ใช้กำหนด Port Nginx
+  read -rp "Enter Nginx Port (Default 82): " PORT
+  PORT=${PORT:-82}
+  write_nginx "$PORT"
+
   # Nginx
   write_nginx
   systemctl enable --now nginx >/dev/null 2>&1 || true
@@ -380,7 +400,8 @@ EOF
   systemctl enable --now online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service
 
   echo -e "${GREEN}[OK]${NC} Installed ShowOn ${VERSION}"
-  echo -e "${CYAN}[INFO]${NC} Open: http://$(hostname -I | awk '{print $1}'):82/server/"
+  PUB_IP=$(get_public_ip)
+  echo -e "${CYAN}[INFO]${NC} Open: http://$PUB_IP:$PORT/server/"
   press
 }
 # =====================================================
