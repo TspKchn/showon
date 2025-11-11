@@ -349,22 +349,33 @@ EOF
 }
 
 # =====================================================
-# ถอนการติดตั้ง
+# ถอนการติดตั้ง (เวอร์ชันใหม่)
 # =====================================================
+
 uninstall_script() {
   echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script..."
 
+  # หยุด service
   systemctl stop online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
   systemctl disable online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
 
+  # ลบไฟล์ service
   rm -f "$SERVICE_ONLINE" "$SERVICE_VNSTAT" "$SERVICE_V2RAY" "$SERVICE_SYSINFO"
   systemctl daemon-reload
 
+  # ลบ script และ config
   rm -f "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
   rm -f "$CONF_FILE" "$DEBUG_LOG"
 
-  rm -f "$WWW_DIR/online_app" "$WWW_DIR/online_app.json" "$WWW_DIR/index.html"
+  # ลบไฟล์ Contrack / JSON / index.html
+  rm -rf "$WWW_DIR/online_app" \
+         "$WWW_DIR/online_app.json" \
+         "$WWW_DIR/vnstat.json" \
+         "$WWW_DIR/v2ray.json" \
+         "$WWW_DIR/sysinfo.json" \
+         "$WWW_DIR/index.html"
 
+  # ลบ nginx site
   rm -f "$SITE_AV" "$SITE_EN"
   if nginx -t 2>/dev/null; then
     systemctl reload nginx 2>/dev/null || true
@@ -375,6 +386,7 @@ uninstall_script() {
   echo -e "${GREEN}[SUCCESS]${NC} Uninstalled completely."
   press
 }
+
 # =====================================================
 # อัปเดต
 # =====================================================
