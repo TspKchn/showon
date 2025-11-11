@@ -1,10 +1,10 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.8 (Extended Edition)
+# ShowOn Script Manager V.1.0.7 (Extended Edition)
 # Author : TspKchn + ChatGPT
 # =====================================================
 
-VERSION="V.1.0.8"
+VERSION="V.1.0.7"
 
 # ----------------- พาธรีโป ------------------
 REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main"
