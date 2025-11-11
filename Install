@@ -1,10 +1,10 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.7 (Extended Edition)
+# ShowOn Script Manager V.1.0.8 (Extended Edition)
 # Author : TspKchn + ChatGPT
 # =====================================================
 
-VERSION="V.1.0.7"
+VERSION="V.1.0.8"
 
 # ----------------- พาธรีโป ------------------
 REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/refs/heads/main"
@@ -82,15 +82,21 @@ download_or_die() {
     exit 1
   fi
 }
-
+# =====================================================
 # เขียน Nginx site
+# =====================================================
+
 write_nginx() {
   mkdir -p "$WWW_DIR"
   mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
 
+  # ถ้า config file มี PORT ใช้, ถ้าไม่มี default 82
+  source "$CONF_FILE" 2>/dev/null || PORT=82
+  PORT=${PORT:-82}
+
   cat >"$SITE_AV" <<EOF
 server {
-    listen 82 default_server;
+    listen $PORT default_server;
     server_name _;
 
     location = / {
@@ -114,10 +120,12 @@ EOF
     systemctl start nginx 2>/dev/null || true
   fi
 
-  echo -e "${GREEN}[OK]${NC} Nginx ready at :82 (/server/)"
+  echo -e "${GREEN}[OK]${NC} Nginx ready at :$PORT (/server/)"
 }
 
-# ตรวจอัปเดตจากรีโมต (อ่าน VERSION จากไฟล์ Install บน GitHub)
+# =====================================================
+# ตรวจอัปเดต
+# =====================================================
 check_update() {
   local remote install_raw
   install_raw="$(curl -fsSL "$REPO_RAW/Install" || true)"
@@ -146,9 +154,10 @@ check_update() {
   fi
 }
 
-# แสดงสถานะ Service + สถานะติดตั้ง
+# =====================================================
+# แสดงสถานะ Service + สถานะติดตั้ง + Conntrack
+# =====================================================
 print_status() {
-  # เช็ค nginx
   local stat_nginx="OFF" stat_online="OFF" stat_vnstat="OFF" stat_v2="OFF" stat_sys="OFF"
 
   systemctl is-active --quiet nginx && stat_nginx="ON"
@@ -157,12 +166,20 @@ print_status() {
   [[ -f "$SERVICE_V2RAY" ]] && systemctl is-active --quiet v2ray-traffic && stat_v2="ON"
   [[ -f "$SERVICE_SYSINFO" ]] && systemctl is-active --quiet sysinfo && stat_sys="ON"
 
+  # Conntrack status
+  if command -v conntrack >/dev/null 2>&1; then
+    CT_STAT=$(conntrack -S >/dev/null 2>&1 && echo "ON" || echo "OFF")
+  else
+    CT_STAT="OFF"
+  fi
+
   # สี
   local c_ng=$( [[ "$stat_nginx" == "ON" ]] && echo "$GREEN" || echo "$RED" )
   local c_on=$( [[ "$stat_online" == "ON" ]] && echo "$GREEN" || echo "$RED" )
   local c_vn=$( [[ "$stat_vnstat" == "ON" ]] && echo "$GREEN" || echo "$RED" )
   local c_v2=$( [[ "$stat_v2" == "ON" ]] && echo "$GREEN" || echo "$RED" )
   local c_sy=$( [[ "$stat_sys" == "ON" ]] && echo "$GREEN" || echo "$RED" )
+  local c_ct=$( [[ "$CT_STAT" == "ON" ]] && echo "$GREEN" || echo "$RED" )
 
   # สถานะติดตั้ง
   local installed="${RED}Not Installed${NC}"
@@ -172,7 +189,7 @@ print_status() {
 
   echo -e "$(printf 'NginX        : [%b%s%b]  Online Check : [%b%s%b]\n' "$c_ng" "$stat_nginx" "$NC" "$c_on" "$stat_online" "$NC")"
   echo -e "$(printf 'vnStat       : [%b%s%b]  V2Ray Traffic : [%b%s%b]\n' "$c_vn" "$stat_vnstat" "$NC" "$c_v2" "$stat_v2" "$NC")"
-  echo -e "$(printf 'SysInfo      : [%b%s%b]\n' "$c_sy" "$stat_sys" "$NC")"
+  echo -e "$(printf 'SysInfo      : [%b%s%b]  Conntrack : [%b%s%b]\n' "$c_sy" "$stat_sys" "$NC" "$c_ct" "$CT_STAT" "$NC")"
   echo "-------------------------------"
   echo -e "Status: $installed"
   echo "==============================="
@@ -180,14 +197,13 @@ print_status() {
 # =====================================================
 # ติดตั้ง
 # =====================================================
-
 install_script() {
   echo -e "${CYAN}[INFO]${NC} Installing ShowOn (${VERSION})..."
   echo -e "${CYAN}[INFO]${NC} Updating system packages..."
   apt update -y >/dev/null 2>&1 || true
 
   echo -e "${CYAN}[INFO]${NC} Installing dependencies..."
-  apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates vnstat >/dev/null 2>&1 || true
+  apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates vnstat conntrack >/dev/null 2>&1 || true
 
   systemctl enable vnstat >/dev/null 2>&1 || true
   systemctl start vnstat >/dev/null 2>&1 || true
@@ -215,6 +231,10 @@ install_script() {
   read -rp "Limit User Online (Default: 2000): " LIMIT
   LIMIT=${LIMIT:-2000}
 
+  # เลือก port nginx
+  read -rp "Port Nginx (Default: 82): " PORT
+  PORT=${PORT:-82}
+
   # เขียน config
   NIC=$(get_nic)
   [[ -z "$NIC" ]] && NIC=$(ip -o -4 addr show up scope global | awk '{print $2}' | head -n1)
@@ -231,6 +251,7 @@ XUI_USER="$XUI_USER"
 XUI_PASS="$XUI_PASS"
 
 NET_IFACE="$NIC"
+PORT=${PORT}
 EOF
   chmod 600 "$CONF_FILE"
 
@@ -323,14 +344,13 @@ EOF
   cp -f "$WWW_DIR/online_app.json" "$WWW_DIR/online_app"
 
   echo -e "${GREEN}[OK]${NC} Installed ShowOn ${VERSION}"
-  echo -e "${CYAN}[INFO]${NC} Open: http://$(hostname -I | awk '{print $1}'):82/server/"
+  echo -e "${CYAN}[INFO]${NC} Open: http://$(curl -s ifconfig.me):$PORT/server/"
   press
 }
 
 # =====================================================
 # ถอนการติดตั้ง
 # =====================================================
-
 uninstall_script() {
   echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script..."
 
@@ -355,11 +375,9 @@ uninstall_script() {
   echo -e "${GREEN}[SUCCESS]${NC} Uninstalled completely."
   press
 }
-
 # =====================================================
 # อัปเดต
 # =====================================================
-
 update_script() {
   echo -e "${CYAN}[INFO]${NC} Updating all ShowOn components..."
   rotate_log
@@ -389,7 +407,6 @@ update_script() {
 # =====================================================
 # Debug Log / Change Limit
 # =====================================================
-
 check_debug() {
   rotate_log
   if [[ -f "$DEBUG_LOG" ]]; then
@@ -419,10 +436,10 @@ change_limit() {
   echo -e "${GREEN}[OK]${NC} คุณได้เปลี่ยน Limit User Online แล้วเป็น ${NEW_LIMIT} คน"
   press
 }
+
 # =====================================================
 # Setup Swap (อัตโนมัติ + รีสตาร์ต service)
 # =====================================================
-
 setup_swap() {
   echo -e "${CYAN}[INFO]${NC} Auto Swap Wizard"
 
@@ -480,11 +497,9 @@ setup_swap() {
   echo -e "${GREEN}[OK]${NC} Restarted ShowOn services."
   press
 }
-
 # =====================================================
 # เมนูหลัก
 # =====================================================
-
 show_menu() {
   header
   print_status
@@ -514,6 +529,115 @@ show_menu() {
 # =====================================================
 # Main
 # =====================================================
-
 require_root
 show_menu
+# ----------------- systemd Services ------------------
+
+# Online Check Service
+cat >"$SERVICE_ONLINE" <<'EOF'
+[Unit]
+Description=ShowOn Online Users JSON Generator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -c 'while true; do /usr/local/bin/online-check.sh; sleep 5; done'
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# vnStat + V2Ray Traffic Service
+cat >"$SERVICE_VNSTAT" <<'EOF'
+[Unit]
+Description=ShowOn vnStat + V2Ray Traffic JSON Generator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -c 'while true; do /usr/local/bin/vnstat-traffic.sh; sleep 5; done'
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# V2Ray Traffic Only Service
+cat >"$SERVICE_V2RAY" <<'EOF'
+[Unit]
+Description=ShowOn V2Ray-Only Traffic JSON Generator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -c 'while true; do /usr/local/bin/v2ray-traffic.sh; sleep 5; done'
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# System Info Service
+cat >"$SERVICE_SYSINFO" <<'EOF'
+[Unit]
+Description=ShowOn System Info JSON Generator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -c 'while true; do /usr/local/bin/sysinfo.sh; sleep 5; done'
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# ----------------- ตัวอย่าง Scripts ------------------
+# ตัวอย่าง online-check.sh
+cat >"$SCRIPT_ONLINE" <<'EOF'
+#!/bin/bash
+# Dummy Online Check Script
+echo "[INFO] Generating online users JSON..."
+date +%s > /var/www/html/server/online_app.json
+EOF
+chmod +x "$SCRIPT_ONLINE"
+
+# ตัวอย่าง vnstat-traffic.sh
+cat >"$SCRIPT_VNSTAT" <<'EOF'
+#!/bin/bash
+# Dummy vnStat Traffic Script
+echo "[INFO] Generating vnStat JSON..."
+date +%s > /var/www/html/server/vnstat.json
+EOF
+chmod +x "$SCRIPT_VNSTAT"
+
+# ตัวอย่าง v2ray-traffic.sh
+cat >"$SCRIPT_V2RAY" <<'EOF'
+#!/bin/bash
+# Dummy V2Ray Traffic Script
+echo "[INFO] Generating V2Ray traffic JSON..."
+date +%s > /var/www/html/server/v2ray.json
+EOF
+chmod +x "$SCRIPT_V2RAY"
+
+# ตัวอย่าง sysinfo.sh
+cat >"$SCRIPT_SYSINFO" <<'EOF'
+#!/bin/bash
+# Dummy System Info Script
+echo "[INFO] Generating system info JSON..."
+date +%s > /var/www/html/server/sysinfo.json
+EOF
+chmod +x "$SCRIPT_SYSINFO"
+
+# ----------------- Reload Systemd ------------------
+systemctl daemon-reload
+systemctl enable --now online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service
