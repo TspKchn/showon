@@ -131,40 +131,22 @@ count_ssh
 log_debug "SSH unique count: $SSH_ON"
 
 # ===============================================
-#  2) Dropbear Online (ESTABLISHED sessions)
+#  2) Dropbear Online (Accurate via ps)
 # ===============================================
 DB_ON=0
 
 count_dropbear() {
-  # พยายามใช้ ss -tnp ก่อน (ละเอียดกว่า)
-  if command -v ss >/dev/null 2>&1; then
-    local tmp
-    tmp="$(mktemp)"
-    ss -tnp 2>/dev/null \
-      | awk '/dropbear/ && /ESTAB/ {print $5}' \
-      | awk -F: '{print $1}' > "$tmp"
+  # Dropbear จะมี 1 main process + 1 ต่อ 1 connection
+  # เราลบ 1 ออกไป
+  DB_ON=$(expr $(ps aux | grep '[d]ropbear' | wc -l) - 1)
 
-    if [[ -s "$tmp" ]]; then
-      DB_ON=$(
-        cat "$tmp" \
-        | grep -Ev "$INTERNAL_REGEX" 2>/dev/null \
-        | { if [[ -n "$LOCAL_IPS_REGEX" ]]; then grep -Ev "$LOCAL_IPS_REGEX" 2>/dev/null; else cat; fi; } \
-        | wc -l
-      )
-    else
-      DB_ON=0
-    fi
-    rm -f "$tmp"
-  elif command -v netstat >/dev/null 2>&1; then
-    DB_ON=$(netstat -tnp 2>/dev/null \
-      | awk '/dropbear/ && /ESTABLISHED/ {c++} END{print c+0}')
-  else
-    DB_ON=0
-  fi
+  # ถ้าติดลบ → ตั้งเป็น 0
+  [[ $DB_ON -lt 0 ]] && DB_ON=0
+
+  log_debug "Dropbear accurate count: $DB_ON"
 }
 
 count_dropbear
-log_debug "Dropbear sessions count: $DB_ON"
 
 # ===============================================
 #  3) OpenVPN Online (จาก openvpn-status.log)
