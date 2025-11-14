@@ -1,208 +1,377 @@
 #!/bin/bash
-# =====================================================
-# online-check.sh - ShowOn Online Users Checker (FIXED AGN-UDP COUNT)
-# รองรับ: SSH / OpenVPN / Dropbear / 3x-ui / Xray-Core / AGN-UDP (Hysteria)
-# Author: TspKchn + ChatGPT
-# Compatible: Ubuntu 18.04+
-# =====================================================
+# ===============================================
+#  ShowOn Online Checker (Fixed / Unified)
+#  - Ubuntu 18.04 / 20.04 / 22.04
+#  - ใช้ค่าจาก /etc/showon.conf (Install script)
+#  - Outputs:
+#      $WWW_DIR/online_app
+#      $WWW_DIR/online_app.json
+# ===============================================
 
-set -euo pipefail
-trap 'echo "[ERROR] line $LINENO: command exited with status $?" >> "$DEBUG_LOG"' ERR
+# ไม่ใช้ -e เพื่อกัน service ตายง่ายเกินไป
+set -u -o pipefail
 
-CONF=/etc/showon.conf
-# shellcheck disable=SC1090
-source "$CONF"
+# -------- Default config --------
+CONF="/etc/showon.conf"
 
-JSON_OUT="$WWW_DIR/online_app.json"
-TMP_COOKIE=$(mktemp /tmp/showon_cookie_XXXXXX)
-NOW=$(date +%s%3N)
+WWW_DIR_DEFAULT="/var/www/html/server"
+DEBUG_LOG_DEFAULT="/var/log/showon-debug.log"
+LIMIT_DEFAULT=2000
+NET_IFACE_DEFAULT="eth0"
 
-SSH_ON=0; OVPN_ON=0; DB_ON=0; V2_ON=0; AGNUDP_ON=0
+# ค่า default เริ่มต้น
+WWW_DIR="$WWW_DIR_DEFAULT"
+DEBUG_LOG="$DEBUG_LOG_DEFAULT"
+LIMIT="$LIMIT_DEFAULT"
+NET_IFACE="$NET_IFACE_DEFAULT"
+PANEL_URL=""
+XUI_USER=""
+XUI_PASS=""
+AGN_PRESENT=0
+AGN_PORT=""
 
-# ==== Log Rotate (1MB) ====
+# โหลด config ถ้ามี
+if [[ -f "$CONF" ]]; then
+  # shellcheck disable=SC1090
+  . "$CONF"
+fi
+
+# กันค่าที่ว่าง / null
+WWW_DIR=${WWW_DIR:-$WWW_DIR_DEFAULT}
+DEBUG_LOG=${DEBUG_LOG:-$DEBUG_LOG_DEFAULT}
+LIMIT=${LIMIT:-$LIMIT_DEFAULT}
+NET_IFACE=${NET_IFACE:-$NET_IFACE_DEFAULT}
+PANEL_URL=${PANEL_URL:-""}
+XUI_USER=${XUI_USER:-""}
+XUI_PASS=${XUI_PASS:-""}
+AGN_PRESENT=${AGN_PRESENT:-0}
+AGN_PORT=${AGN_PORT:-""}
+
+# -------- เตรียมโฟลเดอร์ / log --------
+mkdir -p "$WWW_DIR"
+mkdir -p "$(dirname "$DEBUG_LOG")"
+touch "$DEBUG_LOG"
+
+ONLINE_JSON="$WWW_DIR/online_app.json"
+ONLINE_TXT="$WWW_DIR/online_app"
+NOW="$(date +%s%3N)"
+
+# cookie ชั่วคราวสำหรับ 3X-UI
+TMP_COOKIE="$(mktemp /tmp/showon_cookie_XXXXXX || echo /tmp/showon_cookie_cookie)"
+
+# -------- Logging helpers --------
+log() {
+  echo "[$(date '+%F %T')] $*" >> "$DEBUG_LOG"
+}
+
+log_debug() {
+  echo "[$(date '+%F %T')] $*" >> "$DEBUG_LOG"
+}
+
+# -------- Log rotation (1MB) --------
 rotate_log() {
-  local max=1000000
-  if [[ -f "$DEBUG_LOG" && $(stat -c%s "$DEBUG_LOG") -gt $max ]]; then
-    mv "$DEBUG_LOG" "$DEBUG_LOG.1"
-    : > "$DEBUG_LOG"
+  local max=1000000 size=0
+  if [[ -f "$DEBUG_LOG" ]]; then
+    size=$(stat -c%s "$DEBUG_LOG" 2>/dev/null || echo 0)
+    if (( size > max )); then
+      : > "$DEBUG_LOG"
+    fi
   fi
 }
 rotate_log
 
-# ---------------------------
-# Helper: join local IPv4s as regex (for filtering self/addrs)
-# ---------------------------
+log "=== ONLINE CHECK START ==="
+
+# -------- Regex IP ภายใน / Local --------
+INTERNAL_REGEX='^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|169\.254\.)'
+
 local_ipv4_regex() {
-  ip -o -4 addr show up scope global \
+  ip -o -4 addr show up scope global 2>/dev/null \
     | awk '{print $4}' \
     | cut -d/ -f1 \
-    | paste -sd'|' -
+    | paste -sd '|' - 2>/dev/null || true
 }
 
-# ---------------------------
-# SSH (tcp/22 established)
-# ---------------------------
-if command -v ss >/dev/null 2>&1; then
-  SSH_ON=$(ss -nt state established 2>/dev/null | awk '$3 ~ /:22$/ {c++} END {print c+0}')
-else
-  SSH_ON=$(netstat -nt 2>/dev/null | awk '$6 == "ESTABLISHED" && $4 ~ /:22$/ {c++} END {print c+0}')
-fi
+LOCAL_IPS_REGEX="$(local_ipv4_regex || true)"
 
-# ---------------------------
-# OpenVPN
-# ---------------------------
-if [[ -f /etc/openvpn/server/openvpn-status.log ]]; then
-  OVPN_ON=$(grep -c "^CLIENT_LIST" /etc/openvpn/server/openvpn-status.log || true)
-fi
+# ===============================================
+#  1) SSH Online (unique remote IP by port)
+# ===============================================
+SSH_ON=0
+SSH_PORTS=(22 443 8880)
 
-# ---------------------------
-# Dropbear (Fixed Counting)
-# ---------------------------
+count_ssh() {
+  local tmp
+  tmp="$(mktemp)"
+  for p in "${SSH_PORTS[@]}"; do
+    if command -v ss >/dev/null 2>&1; then
+      ss -tn state established 2>/dev/null \
+        | awk -v p=":$p$" '$4 ~ p {split($5,a,":"); print a[1]}' >> "$tmp"
+    elif command -v netstat >/dev/null 2>&1; then
+      netstat -tn 2>/dev/null \
+        | awk -v p=":$p" '$6=="ESTABLISHED" && $4 ~ p {split($5,a,":"); print a[1]}' >> "$tmp"
+    fi
+  done
+
+  if [[ -s "$tmp" ]]; then
+    SSH_ON=$(
+      sort -u "$tmp" \
+      | grep -Ev "$INTERNAL_REGEX" 2>/dev/null \
+      | { if [[ -n "$LOCAL_IPS_REGEX" ]]; then grep -Ev "$LOCAL_IPS_REGEX" 2>/dev/null; else cat; fi; } \
+      | wc -l
+    )
+  else
+    SSH_ON=0
+  fi
+
+  rm -f "$tmp"
+}
+
+count_ssh
+log_debug "SSH unique count: $SSH_ON"
+
+# ===============================================
+#  2) Dropbear Online (ESTABLISHED sessions)
+# ===============================================
 DB_ON=0
-if pgrep dropbear >/dev/null 2>&1; then
-  DB_ON=$(expr $(ps aux | grep '[d]ropbear' | grep -v grep | wc -l) - 1)
-  [[ "$DB_ON" -lt 0 ]] && DB_ON=0
-fi
 
-# ---------------------------
-# V2Ray / Xray
-# ---------------------------
+count_dropbear() {
+  # พยายามใช้ ss -tnp ก่อน (ละเอียดกว่า)
+  if command -v ss >/dev/null 2>&1; then
+    local tmp
+    tmp="$(mktemp)"
+    ss -tnp 2>/dev/null \
+      | awk '/dropbear/ && /ESTAB/ {print $5}' \
+      | awk -F: '{print $1}' > "$tmp"
+
+    if [[ -s "$tmp" ]]; then
+      DB_ON=$(
+        cat "$tmp" \
+        | grep -Ev "$INTERNAL_REGEX" 2>/dev/null \
+        | { if [[ -n "$LOCAL_IPS_REGEX" ]]; then grep -Ev "$LOCAL_IPS_REGEX" 2>/dev/null; else cat; fi; } \
+        | wc -l
+      )
+    else
+      DB_ON=0
+    fi
+    rm -f "$tmp"
+  elif command -v netstat >/dev/null 2>&1; then
+    DB_ON=$(netstat -tnp 2>/dev/null \
+      | awk '/dropbear/ && /ESTABLISHED/ {c++} END{print c+0}')
+  else
+    DB_ON=0
+  fi
+}
+
+count_dropbear
+log_debug "Dropbear sessions count: $DB_ON"
+
+# ===============================================
+#  3) OpenVPN Online (จาก openvpn-status.log)
+# ===============================================
+OVPN_ON=0
+
+count_openvpn() {
+  local status="/etc/openvpn/server/openvpn-status.log"
+  if [[ -f "$status" ]]; then
+    # นับบรรทัด CLIENT_LIST
+    if ! OVPN_ON=$(grep -c '^CLIENT_LIST' "$status" 2>/dev/null); then
+      OVPN_ON=0
+    fi
+  else
+    OVPN_ON=0
+  fi
+}
+
+count_openvpn
+log_debug "OpenVPN count: $OVPN_ON"
+
+# ===============================================
+#  4) V2Ray / Xray — รองรับ 3X-UI + XrayCore
+# ===============================================
+V2_ON=0
+
 if [[ -n "${PANEL_URL:-}" ]]; then
   LOGIN_OK=false
-  # ลอง 2 รูปแบบ form/json
+  RESP=""
+
+  # --- TRY LOGIN (FORM) ---
   if curl -sk -c "$TMP_COOKIE" -X POST "$PANEL_URL/login" \
        -H "Content-Type: application/x-www-form-urlencoded" \
-       --data "username=$XUI_USER&password=$XUI_PASS" | grep -q '"success":true'; then
-    LOGIN_OK=true
-  elif curl -sk -c "$TMP_COOKIE" -X POST "$PANEL_URL/login" \
-       -H "Content-Type: application/json" \
-       -d "{\"username\":\"$XUI_USER\",\"password\":\"$XUI_PASS\"}" | grep -q '"success":true'; then
+       --data "username=$XUI_USER&password=$XUI_PASS" 2>/dev/null \
+       | grep -q '"success":true'; then
     LOGIN_OK=true
   fi
 
+  # --- TRY LOGIN (JSON BODY) ---
+  if ! $LOGIN_OK; then
+    if curl -sk -c "$TMP_COOKIE" -X POST "$PANEL_URL/login" \
+         -H "Content-Type: application/json" \
+         -d "{\"username\":\"$XUI_USER\",\"password\":\"$XUI_PASS\"}" 2>/dev/null \
+         | grep -q '"success":true'; then
+      LOGIN_OK=true
+    fi
+  fi
+
   if $LOGIN_OK; then
-    RESP=$(curl -sk -b "$TMP_COOKIE" "$PANEL_URL/panel/api/inbounds/onlines" || true)
+    # --- 1) ลอง /inbounds/onlines ก่อน ---
+    RESP="$(curl -sk -b "$TMP_COOKIE" "$PANEL_URL/panel/api/inbounds/onlines" 2>/dev/null || true)"
+
     if echo "$RESP" | grep -q '"success":true'; then
-      V2_ON=$(echo "$RESP" | jq '[.obj[]?] | length')
+      V2_ON=$(echo "$RESP" | jq '[.obj[]?] | length' 2>/dev/null || echo 0)
     else
-      RESP=$(curl -sk -b "$TMP_COOKIE" "$PANEL_URL/panel/api/inbounds/list" || true)
+      # --- 2) ถ้า onlines ใช้ไม่ได้ → fallback /inbounds/list ---
+      RESP="$(curl -sk -b "$TMP_COOKIE" "$PANEL_URL/panel/api/inbounds/list" 2>/dev/null || true)"
       if echo "$RESP" | grep -q '"success":true'; then
         V2_ON=$(echo "$RESP" | jq --argjson now "$NOW" '
           [ .obj[]?.clientStats[]?
             | select(.lastOnline != null and ($now - .lastOnline) < 5000)
-          ] | length')
+          ] | length' 2>/dev/null || echo 0)
       fi
     fi
+
+    # Debug log 3X-UI
     {
       echo "[$(date '+%F %T')] 3x-ui API response"
       echo "$RESP" | jq '.' 2>/dev/null || echo "$RESP"
       echo "→ V2 clients counted: $V2_ON"
       echo
     } >> "$DEBUG_LOG"
+  else
+    log "3x-ui login failed (PANEL_URL set but auth not success)"
   fi
+
 else
-  # Xray-core only (fallback via logs)
+  # ========== NO PANEL_URL → Xray-core log fallback ==========
   if [[ -f /usr/local/etc/xray/config.json || -f /etc/xray/config.json ]]; then
     if [[ -f /var/log/xray/vless_ntls.log ]]; then
-      V2_ON=$(grep -F 'accepted' /var/log/xray/vless_ntls.log | grep -F 'email:' \
-                | awk '{print $3}' | cut -d: -f1 | sort -u | wc -l)
+      V2_ON=$(
+        grep -F 'accepted' /var/log/xray/vless_ntls.log 2>/dev/null \
+          | grep -F 'email:' 2>/dev/null \
+          | awk '{print $3}' \
+          | cut -d: -f1 \
+          | sort -u | wc -l
+      )
     elif [[ -f /var/log/xray/access.log ]]; then
-      V2_ON=$(grep -F 'accepted' /var/log/xray/access.log | grep -F 'email:' \
-                | awk '{print $3}' | cut -d: -f1 | sort -u | wc -l)
+      V2_ON=$(
+        grep -F 'accepted' /var/log/xray/access.log 2>/dev/null \
+          | grep -F 'email:' 2>/dev/null \
+          | awk '{print $3}' \
+          | cut -d: -f1 \
+          | sort -u | wc -l
+      )
     fi
   fi
 fi
 
-# ---------------------------
-# AGN-UDP (Hysteria) — FIX: อย่าให้ "ค้าง 1" อีก
-# แนวคิด:
-#   1) ดึงพอร์ตจาก /etc/hysteria/config.json
-#   2) ดึงรายชื่อ IPv4 ของเครื่องทั้งหมด เพื่อเอาไปกรองทิ้ง
-#   3) อ่าน conntrack UDP เฉพาะ dport ตรงกับ Hysteria
-#   4) กรอง src ที่เป็น IP เครื่องเอง, loopback, docker/kube, link-local
-#   5) unique และนับ
-# ---------------------------
+log_debug "V2/Xray count: $V2_ON"
+
+# ===============================================
+#  5) AGN-UDP / Hysteria Online (via conntrack)
+# ===============================================
 AGNUDP_ON=0
 
-# 1) port
-AGNUDP_PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
-  | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//')
+count_agnudp() {
+  # ต้องมี AGN_PRESENT=1 + AGN_PORT + conntrack
+  if [[ "${AGN_PRESENT}" != "1" ]]; then
+    AGNUDP_ON=0
+    return
+  fi
+  if [[ -z "${AGN_PORT}" ]]; then
+    AGNUDP_ON=0
+    return
+  fi
+  if ! command -v conntrack >/dev/null 2>&1; then
+    AGNUDP_ON=0
+    return
+  fi
 
-# 2) local addresses (เครื่องนี้ทุก interface)
-LOCAL_IPS_REGEX="$(local_ipv4_regex || true)"
-# regex สำหรับเครือข่ายภายใน/พิเศษ ที่ไม่ใช่ client ภายนอกจริง
-# - 127.0.0.0/8, 10.0.0.0/8, 172.16-31, 192.168.0.0/16, docker 172.17, link-local 169.254
-INTERNAL_REGEX='^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|172\.17\.|169\.254\.)'
+  local raw filtered
+  raw="$(
+    conntrack -L -p udp 2>/dev/null \
+      | grep -F "dport=${AGN_PORT}" 2>/dev/null \
+      | awk '{
+          for (i=1;i<=NF;i++) {
+            if ($i ~ /^src=/) {
+              gsub(/^src=/,"",$i);
+              print $i
+            }
+          }
+        }'
+  )"
 
-if [[ -n "${AGNUDP_PORT:-}" && "$AGNUDP_PORT" =~ ^[0-9]+$ && -x "$(command -v conntrack)" ]]; then
-  # 3) อ่าน conntrack
-  # หมายเหตุ: บางดิสโทร conntrack แสดงเป็น "dport=XXXXX" บางครั้ง "dst=<ip> sport=XXXXX dport=YYYYY"
-  # เรา grep ด้วย "dport=<PORT>" โดยตรง
-  RAW_SRC=$(conntrack -L -p udp 2>/dev/null \
-              | grep -F "dport=$AGNUDP_PORT" \
-              | awk '{for(i=1;i<=NF;i++) if($i ~ /^src=/) {sub(/^src=/,"",$i); print $i}}' \
-              | awk 'NF') || true
+  if [[ -z "$raw" ]]; then
+    AGNUDP_ON=0
+    return
+  fi
 
-  if [[ -n "${RAW_SRC:-}" ]]; then
-    # 4) กรอง: ip เครื่องเอง + internal ranges
-    FILTERED=$(echo "$RAW_SRC" \
-      | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
-      | { if [[ -n "$LOCAL_IPS_REGEX" ]]; then grep -Ev "$LOCAL_IPS_REGEX"; else cat; fi; } \
-      | grep -Ev "$INTERNAL_REGEX" \
-      | sort -u) || true
+  filtered="$(
+    echo "$raw" \
+      | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' 2>/dev/null \
+      | grep -Ev "$INTERNAL_REGEX" 2>/dev/null
+  )"
 
-    # 5) นับ
-    if [[ -n "${FILTERED:-}" ]]; then
-      AGNUDP_ON=$(echo "$FILTERED" | wc -l)
-    else
-      AGNUDP_ON=0
-    fi
+  if [[ -n "$LOCAL_IPS_REGEX" ]]; then
+    filtered="$(echo "$filtered" | grep -Ev "$LOCAL_IPS_REGEX" 2>/dev/null || true)"
+  fi
+
+  if [[ -n "$filtered" ]]; then
+    AGNUDP_ON="$(echo "$filtered" | sort -u | wc -l)"
   else
     AGNUDP_ON=0
   fi
-fi
+}
 
-# กัน null → 0
-AGNUDP_ON=${AGNUDP_ON:-0}
+count_agnudp
+log_debug "AGN-UDP count: $AGNUDP_ON"
 
-# Debug block
-{
-  echo "[$(date '+%F %T')] AGN-UDP DEBUG"
-  echo "Hysteria port: ${AGNUDP_PORT:-N/A}"
-  echo "Local IP regex: ${LOCAL_IPS_REGEX:-<none>}"
-  echo "Filtered AGN-UDP client IPs:"
-  if [[ -n "${FILTERED:-}" ]]; then
-    echo "$FILTERED"
-  else
-    echo "<none>"
-  fi
-  echo "Count: $AGNUDP_ON"
-  echo
-} >> "$DEBUG_LOG"
-
-# ---------------------------
-# Ensure numeric defaults
-# ---------------------------
+# ===============================================
+#  6) สรุปผลรวม + เขียน JSON
+# ===============================================
 SSH_ON=${SSH_ON:-0}
-OVPN_ON=${OVPN_ON:-0}
 DB_ON=${DB_ON:-0}
+OVPN_ON=${OVPN_ON:-0}
 V2_ON=${V2_ON:-0}
 AGNUDP_ON=${AGNUDP_ON:-0}
 LIMIT=${LIMIT:-2000}
 
-TOTAL=$((SSH_ON + OVPN_ON + DB_ON + V2_ON + AGNUDP_ON))
+TOTAL=$(( SSH_ON + DB_ON + OVPN_ON + V2_ON + AGNUDP_ON ))
 
-# ---------------------------
-# Output JSON (overwrite)
-# ---------------------------
-mkdir -p "$WWW_DIR"
+JSON_DATA=$(
+  cat <<EOF
+[{"onlines":"$TOTAL","limite":"$LIMIT","ssh":"$SSH_ON","openvpn":"$OVPN_ON","dropbear":"$DB_ON","v2ray":"$V2_ON","agnudp":"$AGNUDP_ON","timestamp":"$NOW"}]
+EOF
+)
 
-JSON_DATA="[{\"onlines\":\"$TOTAL\",\"limite\":\"$LIMIT\",\"ssh\":\"$SSH_ON\",\"openvpn\":\"$OVPN_ON\",\"dropbear\":\"$DB_ON\",\"v2ray\":\"$V2_ON\",\"agnudp\":\"$AGNUDP_ON\",\"timestamp\":\"$NOW\"}]"
+echo -n "$JSON_DATA" > "$ONLINE_JSON"
+echo -n "$JSON_DATA" > "$ONLINE_TXT"
 
-# export เป็น online_app.json
-echo -n "$JSON_DATA" > "$WWW_DIR/online_app.json"
+# ===============================================
+#  7) แก้ permission กัน 403 / Loading...
+# ===============================================
+chmod 755 /var/www/html 2>/dev/null || true
+chmod 755 "$WWW_DIR" 2>/dev/null || true
+find "$WWW_DIR" -type f -exec chmod 644 {} \; 2>/dev/null || true
 
-# export เป็น online_app (ไม่มีนามสกุล แต่เนื้อหาเดียวกัน)
-echo -n "$JSON_DATA" > "$WWW_DIR/online_app"
+log "ONLINE: total=$TOTAL ssh=$SSH_ON ovpn=$OVPN_ON dropbear=$DB_ON v2=$V2_ON agnudp=$AGNUDP_ON"
+log "Wrote: $ONLINE_JSON (and online_app)"
+log "=== ONLINE CHECK END ==="
 
-rm -f "$TMP_COOKIE"
+# ลบ cookie ชั่วคราว
+rm -f "$TMP_COOKIE" 2>/dev/null || true
+
+# ===============================================
+#  8) Console output (สำหรับรันด้วยมือ)
+# ===============================================
+echo "---------------------------------------------"
+echo "  🟢 SSH Online      : $SSH_ON"
+echo "  🟢 Dropbear Online : $DB_ON"
+echo "  🟢 OpenVPN Online  : $OVPN_ON"
+echo "  🟢 V2Ray Online    : $V2_ON"
+echo "  🟢 AGN UDP Online  : $AGNUDP_ON"
+echo "---------------------------------------------"
+echo "  🔸 TOTAL ONLINE    : $TOTAL"
+echo "  🔸 OUTPUT FILE     : $ONLINE_JSON"
+echo "---------------------------------------------"
+
+exit 0
