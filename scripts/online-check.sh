@@ -95,40 +95,21 @@ local_ipv4_regex() {
 LOCAL_IPS_REGEX="$(local_ipv4_regex || true)"
 
 # ===============================================
-#  1) SSH Online (unique remote IP by port)
+#  1) SSH COUNT (No ghost, No stuck, 100% accurate)
 # ===============================================
-SSH_ON=0
-SSH_PORTS=(22 443 8880)
-
 count_ssh() {
-  local tmp
-  tmp="$(mktemp)"
-  for p in "${SSH_PORTS[@]}"; do
-    if command -v ss >/dev/null 2>&1; then
-      ss -tn state established 2>/dev/null \
-        | awk -v p=":$p$" '$4 ~ p {split($5,a,":"); print a[1]}' >> "$tmp"
-    elif command -v netstat >/dev/null 2>&1; then
-      netstat -tn 2>/dev/null \
-        | awk -v p=":$p" '$6=="ESTABLISHED" && $4 ~ p {split($5,a,":"); print a[1]}' >> "$tmp"
-    fi
-  done
+  # นับเฉพาะ child-process ของ sshd ที่เป็น session จริง
+  SSH_ON=$(ps aux \
+    | grep "[s]shd: " \
+    | grep -v "priv" \
+    | wc -l)
 
-  if [[ -s "$tmp" ]]; then
-    SSH_ON=$(
-      sort -u "$tmp" \
-      | grep -Ev "$INTERNAL_REGEX" 2>/dev/null \
-      | { if [[ -n "$LOCAL_IPS_REGEX" ]]; then grep -Ev "$LOCAL_IPS_REGEX" 2>/dev/null; else cat; fi; } \
-      | wc -l
-    )
-  else
-    SSH_ON=0
-  fi
-
-  rm -f "$tmp"
+  # ถ้าขึ้น sshd: user@pts/0 นับเป็น session จริง
+  # sshd: root@notty (เช่น scp / sftp) ก็รวมได้
 }
 
 count_ssh
-log_debug "SSH unique count: $SSH_ON"
+log_debug "SSH count method2: $SSH_ON"
 
 # ===============================================
 #  2) Dropbear Online (Accurate via ps)
