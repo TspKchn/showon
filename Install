@@ -1,26 +1,24 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.9 (GIVPN-compatible)
+# ShowOn Script Manager V.1.0.8 (GIVPN-compatible)
 # Author : TspKchn + ChatGPT
 # - WWW_DIR set to /home/vps/public_html/server
 # - Appends nginx server block into /etc/nginx/conf.d/vps.conf (no overwrite)
 # - Local version saved at /etc/showon-version
+# - Uninstall will remove conntrack always and remove only SHOWON block,
+#   and will ask only whether to remove nginx package.
 # =====================================================
 
-# ----------------- เวอร์ชัน -----------------
-VERSION="V.1.0.9"
-
-# ----------------- พาธรีโป ------------------
+VERSION="V.1.0.8"
 REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/main"
 
-# ----------------- ซอร์สไฟล์ ----------------
 SRC_ONLINE="$REPO_RAW/scripts/online-check.sh"
 SRC_VNSTAT="$REPO_RAW/scripts/vnstat-traffic.sh"
 SRC_V2RAY="$REPO_RAW/scripts/v2ray-traffic.sh"
 SRC_SYSINFO="$REPO_RAW/scripts/sysinfo.sh"
 SRC_INDEX="$REPO_RAW/web/index.html"
 
-# ----------------- ตำแหน่งติดตั้ง ----------
+# Install locations
 WWW_DIR="/home/vps/public_html/server"
 BIN_DIR="/usr/local/bin"
 CONF_FILE="/etc/showon.conf"
@@ -39,13 +37,11 @@ SERVICE_SYSINFO="/etc/systemd/system/sysinfo.service"
 
 VPS_CONF="/etc/nginx/conf.d/vps.conf"
 
-# ----------------- สี ------------------------
 GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; B="\e[1m"; NC="\e[0m"
 
 # =====================================================
-# ฟังก์ชันพื้นฐาน
+# Basic helpers
 # =====================================================
-
 require_root() {
   if [[ $EUID -ne 0 ]]; then
     echo -e "${RED}[ERROR]${NC} Please run as root."
@@ -55,14 +51,12 @@ require_root() {
 
 press() { read -rp "Press Enter to continue..." _; }
 
-# ตรวจจับ NIC
 get_nic() {
   ip -o -4 route get 8.8.8.8 2>/dev/null \
     | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' \
     | head -n1
 }
 
-# ตรวจจับ Public IP
 get_public_ip() {
   for url in "https://ifconfig.me/ip" "https://ipinfo.io/ip" "https://icanhazip.com"; do
     ip=$(curl -fsSL "$url" 2>/dev/null | tr -d '[:space:]')
@@ -71,11 +65,9 @@ get_public_ip() {
       return
     fi
   done
-  # fallback ถ้าไม่ได้
   echo "127.0.0.1"
 }
 
-# อ่าน local version (เก็บไว้ที่ /etc/showon-version)
 get_local_version() {
   if [[ -f "$VERSION_FILE" ]]; then
     cat "$VERSION_FILE"
@@ -84,10 +76,7 @@ get_local_version() {
   fi
 }
 
-# ตรวจ AGN-UDP แบบปลอดภัย
 detect_agnudp() {
-  # คืนค่าในรูปแบบ: "HAS_AGN|PORT"
-  # ถ้าไม่มี → "0|"
   local port=""
   if systemctl list-units --type=service 2>/dev/null | grep -qi "hysteria"; then
     port=$(ss -tulnp 2>/dev/null | awk '/hysteria/ && /udp/ {print $5}' | head -n1 | sed 's/.*://')
@@ -101,7 +90,6 @@ detect_agnudp() {
   echo "0|"
 }
 
-# หมุน log (1MB)
 rotate_log() {
   local max=1000000
   if [[ -f "$DEBUG_LOG" && $(stat -c%s "$DEBUG_LOG") -gt $max ]]; then
@@ -110,10 +98,8 @@ rotate_log() {
   fi
 }
 
-# ดึงไฟล์แบบ fail-fast
 download_or_die() {
   local url="$1" dst="$2"
-  # สร้างพาธปลายทางถ้าเป็นไดเรกทอรี
   mkdir -p "$(dirname "$dst")"
   if ! curl -fsSL "$url" -o "$dst"; then
     echo -e "${RED}[ERROR]${NC} Download failed: $url"
@@ -121,7 +107,6 @@ download_or_die() {
   fi
 }
 
-# สร้างคำสั่ง global "showon" ที่ดึงสคริปต์ล่าสุดจาก GitHub
 install_showon_command() {
   cat > /usr/local/bin/showon <<'SH'
 #!/bin/bash
@@ -130,26 +115,25 @@ SH
   chmod +x /usr/local/bin/showon
 }
 
-# เขียน Nginx ลง /etc/nginx/conf.d/vps.conf (append server block ใหม่เท่านั้น)
-# ใช้โครงสร้าง /server/ + JSON + online_app, online_app.json ฯลฯ
+# =====================================================
+# Nginx write - append SHOWON block to /etc/nginx/conf.d/vps.conf
+# =====================================================
 write_nginx() {
-  local port="${1:-82}"  # default 82
+  local port="${1:-82}"
   local webpath="$WWW_DIR"
+
   mkdir -p "$(dirname "$VPS_CONF")"
   mkdir -p "$webpath"
   mkdir -p /var/log/nginx
 
-  # ถ้าไม่มีไฟล์ vps.conf ให้สร้าง
   if [[ ! -f "$VPS_CONF" ]]; then
     echo "# vps.conf (created by ShowOn Installer)" > "$VPS_CONF"
   fi
 
-  # ถ้ามีบล็อกอยู่แล้ว → ไม่เพิ่มซ้ำ (ตามตัวเลือกของคุณ)
   if grep -q "==== SHOWON AUTOCONFIG BEGIN ====" "$VPS_CONF"; then
     echo -e "${YELLOW}[WARN]${NC} ShowOn Nginx block already exists in $VPS_CONF, skipping append."
   else
     echo -e "${CYAN}[INFO]${NC} Appending ShowOn server block to $VPS_CONF (port $port)..."
-    # ใส่ heredoc โดยต้อง escape $ ที่ต้องการให้ nginx ใช้จริง
     cat >> "$VPS_CONF" <<EOF
 
 # ==== SHOWON AUTOCONFIG BEGIN ====
@@ -186,7 +170,7 @@ server {
   }
 
   # PHP handling if ever needed (keeps compatibility)
-  location ~ \.php\$ {
+  location ~ \.php$ {
     include /etc/nginx/fastcgi_params;
     fastcgi_pass 127.0.0.1:9000;
     fastcgi_index index.php;
@@ -197,7 +181,6 @@ server {
 EOF
   fi
 
-  # ทดสอบ config และ reload nginx แบบปลอดภัย
   if nginx -t >/dev/null 2>&1; then
     systemctl reload nginx >/dev/null 2>&1 || systemctl restart nginx >/dev/null 2>&1 || true
     echo -e "${GREEN}[OK]${NC} Nginx reloaded successfully."
@@ -208,23 +191,24 @@ EOF
   echo -e "${GREEN}[OK]${NC} ShowOn should be available on port: $port"
 }
 
-# สถานะ conntrack (ไว้โชว์ในเมนู)
 conntrack_status() {
   if command -v conntrack >/dev/null 2>&1; then echo "ON"; else echo "OFF"; fi
 }
 
-# ตรวจอัปเดตจากรีโมต (อ่าน VERSION จากไฟล์ Install บน GitHub)
+# =====================================================
+# Update check (skips if not installed)
+# =====================================================
 check_update() {
   local install_raw remote local_ver ans
   install_raw="$(curl -fsSL "$REPO_RAW/Install" || true)"
   if [[ -z "$install_raw" ]]; then
-    echo -e "${YELLOW}[WARN]${NC} ไม่สามารถเช็คเวอร์ชันจาก GitHub ได้"
+    echo -e "${YELLOW}[WARN]${NC} Cannot check GitHub for updates."
     return
   fi
 
   remote="$(printf '%s' "$install_raw" | grep -m1 '^VERSION=' | cut -d'"' -f2)"
   if [[ -z "$remote" ]]; then
-    echo -e "${YELLOW}[WARN]${NC} พบไฟล์ Install ใน GitHub แต่หา VERSION ไม่เจอ"
+    echo -e "${YELLOW}[WARN]${NC} Found Install on GitHub but no VERSION line."
     return
   fi
 
@@ -233,7 +217,6 @@ check_update() {
   echo -e "${CYAN}[INFO]${NC} Local version : ${B}${local_ver}${NC}"
   echo -e "${CYAN}[INFO]${NC} Latest version: ${B}${remote}${NC}"
 
-  # ถ้ายังไม่เคยติดตั้ง ให้ข้ามการ update
   if [[ "$local_ver" == "None" ]]; then
     echo -e "${YELLOW}[INFO]${NC} Script not installed locally. Run 'Install Script' first."
     return
@@ -242,8 +225,8 @@ check_update() {
   if [[ "$local_ver" == "$remote" ]]; then
     echo -e "${GREEN}[OK]${NC} You are using the latest version."
   else
-    echo -e "${CYAN}[UPDATE]${NC} มีเวอร์ชันใหม่: ${remote} (ปัจจุบันติดตั้ง: ${local_ver})"
-    echo -en "กด Enter เพื่ออัปเดตทันที หรือพิมพ์ ${B}n${NC} เพื่อข้าม: "
+    echo -e "${CYAN}[UPDATE]${NC} New version available: ${remote} (installed: ${local_ver})"
+    echo -en "Press Enter to update now, or type ${B}n${NC} to skip: "
     read ans
     if [[ -z "$ans" || "$ans" == "y" || "$ans" == "Y" ]]; then
       update_script
@@ -255,7 +238,9 @@ check_update() {
   fi
 }
 
-# แสดงสถานะ Service + สถานะติดตั้ง
+# =====================================================
+# Status output
+# =====================================================
 print_status() {
   local stat_nginx="OFF" stat_online="OFF" stat_vnstat="OFF" stat_v2="OFF" stat_sys="OFF"
 
@@ -263,7 +248,7 @@ print_status() {
   [[ -f "$SERVICE_ONLINE" ]] && systemctl is-active --quiet online-check && stat_online="ON"
   [[ -f "$SERVICE_VNSTAT" ]] && systemctl is-active --quiet vnstat-traffic && stat_vnstat="ON"
   [[ -f "$SERVICE_V2RAY" ]] && systemctl is-active --quiet v2ray-traffic && stat_v2="ON"
-  [[ -f "$SERVICE_SYSINFO" ]] && systemctl.is-active --quiet sysinfo 2>/dev/null && stat_sys="ON" || stat_sys="${stat_sys}"
+  [[ -f "$SERVICE_SYSINFO" ]] && systemctl is-active --quiet sysinfo && stat_sys="ON"
 
   local c_ng=$( [[ "$stat_nginx" == "ON" ]] && echo "$GREEN" || echo "$RED" )
   local c_on=$( [[ "$stat_online" == "ON" ]] && echo "$GREEN" || echo "$RED" )
@@ -289,21 +274,17 @@ print_status() {
 }
 
 # =====================================================
-# ติดตั้ง
+# Install
 # =====================================================
-
 install_script() {
   echo -e "${CYAN}[INFO]${NC} Installing ShowOn (${VERSION})..."
 
-  # Update packages
   echo -e "${CYAN}[INFO]${NC} Updating system packages..."
   apt update -y >/dev/null 2>&1 || true
 
-  # Install dependencies
   echo -e "${CYAN}[INFO]${NC} Installing dependencies..."
   apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates vnstat conntrack >/dev/null 2>&1 || true
 
-  # Tuning conntrack UDP timeout
   echo -e "${CYAN}[INFO]${NC} Tuning conntrack UDP timeout → 5s"
   sysctl -w net.netfilter.nf_conntrack_udp_timeout=5 >/dev/null 2>&1 || true
   sysctl -w net.netfilter.nf_conntrack_udp_timeout_stream=5 >/dev/null 2>&1 || true
@@ -314,15 +295,14 @@ install_script() {
     sysctl -p >/dev/null 2>&1 || true
   fi
 
-  # Enable vnstat
   systemctl enable vnstat >/dev/null 2>&1 || true
-  systemctl start vnstat  >/dev/null 2>&1 || true
+  systemctl start vnstat >/dev/null 2>&1 || true
 
   mkdir -p "$WWW_DIR" "$BIN_DIR" "$(dirname "$DEBUG_LOG")"
   rotate_log
 
-  # detect hysteria
   local AGN_PRESENT="0" AGN_PORT=""
+
   if [[ -f /etc/hysteria/config.json ]]; then
     AGN_PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
       | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//')
@@ -343,7 +323,6 @@ install_script() {
     fi
   fi
 
-  # check x-ui
   local PANEL_URL XUI_USER XUI_PASS
   if [[ -d /etc/x-ui ]]; then
     echo -e "${CYAN}[INFO]${NC} Detected 3x-ui → configure API access"
@@ -357,16 +336,13 @@ install_script() {
     XUI_PASS=""
   fi
 
-  # Limit
   read -rp "Limit User Online (Default: 2000): " LIMIT
   LIMIT=${LIMIT:-2000}
 
-  # NIC
   NIC=$(get_nic)
   [[ -z "$NIC" ]] && NIC=$(ip -o -4 addr show up scope global | awk '{print $2}' | head -n1)
   [[ -z "$NIC" ]] && NIC="eth0"
 
-  # write conf
   cat >"$CONF_FILE" <<EOF
 VERSION="${VERSION}"
 WWW_DIR="$WWW_DIR"
@@ -403,7 +379,7 @@ EOF
   write_nginx "$PORT"
   systemctl enable --now nginx >/dev/null 2>&1 || true
 
-  # systemd services
+  # create services
   cat >"$SERVICE_ONLINE" <<'EOF'
 [Unit]
 Description=ShowOn Online Users JSON Generator
@@ -471,10 +447,10 @@ EOF
   systemctl daemon-reload
   systemctl enable --now online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service
 
-  # create showon command
+  # install showon command
   install_showon_command
 
-  # write local version file
+  # write local version
   echo "$VERSION" > "$VERSION_FILE"
 
   echo -e "${GREEN}[OK]${NC} Installed ShowOn ${VERSION}"
@@ -484,13 +460,12 @@ EOF
 }
 
 # =====================================================
-# ถอนการติดตั้ง
+# Uninstall
 # =====================================================
-
 uninstall_script() {
   echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script (Full Clean)..."
 
-  # stop and disable services
+  # stop services if exist
   systemctl stop online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
   systemctl disable online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
 
@@ -502,31 +477,39 @@ uninstall_script() {
   rm -f "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
   rm -f "$CONF_FILE" "$DEBUG_LOG" "$VERSION_FILE"
 
-  # remove nginx block from vps.conf
+  # remove SHOWON block from vps.conf (only the block between BEGIN/END)
   if [[ -f "$VPS_CONF" ]] && grep -q "==== SHOWON AUTOCONFIG BEGIN ====" "$VPS_CONF"; then
     echo -e "${CYAN}[INFO]${NC} Removing ShowOn Nginx block from $VPS_CONF"
     awk '
-      /==== SHOWON AUTOCONFIG BEGIN ====/ {skip=1}
-      /==== SHOWON AUTOCONFIG END ====/   {skip=0; next}
+      /==== SHOWON AUTOCONFIG BEGIN ====/ {skip=1; next}
+      /==== SHOWON AUTOCONFIG END ====/ {skip=0; next}
       skip != 1 {print}
     ' "$VPS_CONF" > "${VPS_CONF}.tmp" && mv "${VPS_CONF}.tmp" "$VPS_CONF"
   fi
 
+  # reload nginx if active
   if systemctl is-active --quiet nginx; then
     systemctl reload nginx 2>/dev/null || true
   fi
 
-  # ask before purging nginx/conntrack to avoid breaking givpn
-  read -rp "ต้องการถอนการติดตั้ง nginx และ conntrack ออกจากระบบด้วยหรือไม่? (y/N): " rmng
+  # ALWAYS remove conntrack package and purge it (no prompt)
+  echo -e "${YELLOW}[INFO]${NC} Removing conntrack package (purge) to clean system..."
+  apt purge -y conntrack >/dev/null 2>&1 || true
+  apt autoremove -y >/dev/null 2>&1 || true
+
+  # ask only about nginx removal (as requested)
+  read -rp "ต้องการถอนการติดตั้ง nginx ออกจากระบบด้วยหรือไม่? (y/N): " rmng
   if [[ "$rmng" =~ ^[Yy]$ ]]; then
-    apt purge -y nginx conntrack >/dev/null 2>&1 || true
+    apt purge -y nginx >/dev/null 2>&1 || true
     apt autoremove -y >/dev/null 2>&1 || true
+    echo -e "${GREEN}[OK]${NC} Nginx removed."
+  else
+    echo -e "${CYAN}[INFO]${NC} Kept nginx installed."
   fi
 
-  # remove conntrack entries from sysctl.conf
-  sed -i '/^net\.netfilter\.nf_conntrack_udp_timeout=/d' /etc/sysctl.conf
-  sed -i '/^net\.netfilter\.nf_conntrack_udp_timeout_stream=/d' /etc/sysctl.conf
-
+  # remove conntrack sysctl lines if present
+  sed -i '/^net\.netfilter\.nf_conntrack_udp_timeout=/d' /etc/sysctl.conf 2>/dev/null || true
+  sed -i '/^net\.netfilter\.nf_conntrack_udp_timeout_stream=/d' /etc/sysctl.conf 2>/dev/null || true
   sysctl -p >/dev/null 2>&1 || true
 
   echo -e "${GREEN}[SUCCESS]${NC} Uninstalled ShowOn (services + config cleaned)."
@@ -534,14 +517,13 @@ uninstall_script() {
 }
 
 # =====================================================
-# อัปเดต
+# Update
 # =====================================================
-
 update_script() {
   echo -e "${CYAN}[INFO]${NC} Updating all ShowOn components..."
   rotate_log
 
-  # ensure WWW_DIR exists before writing index.html
+  # ensure WWW_DIR exists
   mkdir -p "$WWW_DIR"
 
   download_or_die "$SRC_ONLINE?$(date +%s)" "$SCRIPT_ONLINE"
@@ -574,13 +556,12 @@ update_script() {
 }
 
 # =====================================================
-# Debug Log / Change Limit
+# Debug / Change Limit
 # =====================================================
-
 check_debug() {
   rotate_log
   if [[ -f "$DEBUG_LOG" ]]; then
-    tail -n 100 "$DEBUG_LOG"
+    tail -n 200 "$DEBUG_LOG"
   else
     echo "No debug log yet."
   fi
@@ -598,28 +579,25 @@ change_limit() {
   echo -e "${CYAN}[INFO]${NC} Current Limit User Online: ${LIMIT:-2000}"
   read -rp "Enter new Limit User Online: " NEW_LIMIT
   if [[ -z "$NEW_LIMIT" ]]; then
-    echo -e "${YELLOW}[WARN]${NC} ไม่ได้เปลี่ยนค่า"
+    echo -e "${YELLOW}[WARN]${NC} Not changed"
     press; return
   fi
 
   sed -i "s/^LIMIT=.*/LIMIT=${NEW_LIMIT}/" "$CONF_FILE"
-  echo -e "${GREEN}[OK]${NC} คุณได้เปลี่ยน Limit User Online แล้วเป็น ${NEW_LIMIT} คน"
+  echo -e "${GREEN}[OK]${NC} Limit changed to ${NEW_LIMIT}"
   press
 }
 
 # =====================================================
-# Setup Swap (อัตโนมัติ + รีสตาร์ต service)
+# Swap helper
 # =====================================================
-
 setup_swap() {
   echo -e "${CYAN}[INFO]${NC} Auto Swap Wizard"
 
-  # ขนาด RAM (MiB)
   local ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
   local ram_mb=$(( ram_kb / 1024 ))
-
-  # กำหนดสัดส่วน swap ตามช่วง RAM
   local swap_mb
+
   if   (( ram_mb <= 512 )); then       swap_mb=$(( ram_mb * 2 ))
   elif (( ram_mb <= 1024 )); then      swap_mb=$(( ram_mb * 2 ))
   elif (( ram_mb <= 2048 )); then      swap_mb=$(( ram_mb * 1 ))
@@ -631,15 +609,14 @@ setup_swap() {
   else                                 swap_mb=8192
   fi
 
-  # มี swap อยู่แล้วหรือไม่
   if swapon --show | awk 'NR>1{print $1}' | grep -q .; then
-    echo -e "${YELLOW}[WARN]${NC} พบ Swap เดิมอยู่แล้ว"
-    read -rp "ต้องการสร้างใหม่ทับเดิมหรือไม่? (Y/n): " ans
+    echo -e "${YELLOW}[WARN]${NC} Swap exists"
+    read -rp "Create new swap and replace existing? (Y/n): " ans
     if [[ -z "$ans" || "$ans" =~ ^[Yy]$ ]]; then
       swapoff -a || true
       sed -i '/swapfile showon/d' /etc/fstab || true
     else
-      echo -e "${GREEN}[OK]${NC} ข้ามการสร้าง Swap ใหม่"
+      echo -e "${GREEN}[OK]${NC} Skip creating new swap"
       press; return
     fi
   fi
@@ -659,7 +636,7 @@ setup_swap() {
   if ! grep -q '^vm.swappiness' /etc/sysctl.conf; then echo "vm.swappiness=10" >> /etc/sysctl.conf; fi
   if ! grep -q '^vm.vfs_cache_pressure' /etc/sysctl.conf; then echo "vm.vfs_cache_pressure=100" >> /etc/sysctl.conf; fi
 
-  echo -e "${GREEN}[OK]${NC} Swap พร้อมใช้งาน:"
+  echo -e "${GREEN}[OK]${NC} Swap ready:"
   free -h
 
   systemctl restart online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
@@ -668,9 +645,8 @@ setup_swap() {
 }
 
 # =====================================================
-# เมนู
+# Menu
 # =====================================================
-
 show_menu() {
   clear
   print_status
@@ -700,6 +676,5 @@ show_menu() {
 # =====================================================
 # Main
 # =====================================================
-
 require_root
 show_menu
