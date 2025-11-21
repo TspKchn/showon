@@ -1,11 +1,14 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.8 (Extended Edition)
-# Author : TspKchn + ChatGPT (VPN compatible)
+# ShowOn Script Manager V.1.0.9 (GIVPN-compatible)
+# Author : TspKchn + ChatGPT
+# - WWW_DIR set to /home/vps/public_html/server
+# - Appends nginx server block into /etc/nginx/conf.d/vps.conf (no overwrite)
+# - Local version saved at /etc/showon-version
 # =====================================================
 
 # ----------------- เวอร์ชัน -----------------
-VERSION="V.1.0.8"
+VERSION="V.1.0.9"
 
 # ----------------- พาธรีโป ------------------
 REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/main"
@@ -18,11 +21,11 @@ SRC_SYSINFO="$REPO_RAW/scripts/sysinfo.sh"
 SRC_INDEX="$REPO_RAW/web/index.html"
 
 # ----------------- ตำแหน่งติดตั้ง ----------
-# ปรับให้ใช้ root เดียวกับ givpn
 WWW_DIR="/home/vps/public_html/server"
 BIN_DIR="/usr/local/bin"
 CONF_FILE="/etc/showon.conf"
 DEBUG_LOG="/var/log/showon-debug.log"
+VERSION_FILE="/etc/showon-version"
 
 SCRIPT_ONLINE="$BIN_DIR/online-check.sh"
 SCRIPT_VNSTAT="$BIN_DIR/vnstat-traffic.sh"
@@ -34,9 +37,7 @@ SERVICE_VNSTAT="/etc/systemd/system/vnstat-traffic.service"
 SERVICE_V2RAY="/etc/systemd/system/v2ray-traffic.service"
 SERVICE_SYSINFO="/etc/systemd/system/sysinfo.service"
 
-# เดิมเคยใช้ sites-available / sites-enabled แต่ตอนนี้เราย้ายไปใช้ conf.d/vps.conf
-SITE_AV="/etc/nginx/sites-available/showon"
-SITE_EN="/etc/nginx/sites-enabled/showon"
+VPS_CONF="/etc/nginx/conf.d/vps.conf"
 
 # ----------------- สี ------------------------
 GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; CYAN="\e[36m"; B="\e[1m"; NC="\e[0m"
@@ -74,10 +75,10 @@ get_public_ip() {
   echo "127.0.0.1"
 }
 
-# อ่าน local version (เก็บไว้ใน /etc/showon-version)
+# อ่าน local version (เก็บไว้ที่ /etc/showon-version)
 get_local_version() {
-  if [[ -f /etc/showon-version ]]; then
-    cat /etc/showon-version
+  if [[ -f "$VERSION_FILE" ]]; then
+    cat "$VERSION_FILE"
   else
     echo "None"
   fi
@@ -112,34 +113,44 @@ rotate_log() {
 # ดึงไฟล์แบบ fail-fast
 download_or_die() {
   local url="$1" dst="$2"
+  # สร้างพาธปลายทางถ้าเป็นไดเรกทอรี
+  mkdir -p "$(dirname "$dst")"
   if ! curl -fsSL "$url" -o "$dst"; then
     echo -e "${RED}[ERROR]${NC} Download failed: $url"
     exit 1
   fi
 }
 
+# สร้างคำสั่ง global "showon" ที่ดึงสคริปต์ล่าสุดจาก GitHub
+install_showon_command() {
+  cat > /usr/local/bin/showon <<'SH'
+#!/bin/bash
+bash <(curl -fsSL https://raw.githubusercontent.com/TspKchn/showon/main/Install)
+SH
+  chmod +x /usr/local/bin/showon
+}
+
 # เขียน Nginx ลง /etc/nginx/conf.d/vps.conf (append server block ใหม่เท่านั้น)
 # ใช้โครงสร้าง /server/ + JSON + online_app, online_app.json ฯลฯ
 write_nginx() {
-  local port="${1:-82}"  # ถ้าไม่ได้ใส่มา ให้ default 82
-  local VPS_CONF="/etc/nginx/conf.d/vps.conf"
-  local WEBPATH="$WWW_DIR"
-
+  local port="${1:-82}"  # default 82
+  local webpath="$WWW_DIR"
   mkdir -p "$(dirname "$VPS_CONF")"
-  mkdir -p "$WEBPATH"
+  mkdir -p "$webpath"
   mkdir -p /var/log/nginx
 
-  # ถ้าไม่มีไฟล์ vps.conf ให้สร้างเปล่า ๆ ไว้ก่อน เผื่อเครื่องยังไม่มี vpn เขียนมา
+  # ถ้าไม่มีไฟล์ vps.conf ให้สร้าง
   if [[ ! -f "$VPS_CONF" ]]; then
     echo "# vps.conf (created by ShowOn Installer)" > "$VPS_CONF"
   fi
 
-  # ถ้ามี block ShowOn อยู่แล้ว ไม่ต้อง append ซ้ำ (ตัวเลือก 2)
+  # ถ้ามีบล็อกอยู่แล้ว → ไม่เพิ่มซ้ำ (ตามตัวเลือกของคุณ)
   if grep -q "==== SHOWON AUTOCONFIG BEGIN ====" "$VPS_CONF"; then
-    echo -e "${YELLOW}[WARN]${NC} ShowOn Nginx block already exists in $VPS_CONF, skip append."
+    echo -e "${YELLOW}[WARN]${NC} ShowOn Nginx block already exists in $VPS_CONF, skipping append."
   else
     echo -e "${CYAN}[INFO]${NC} Appending ShowOn server block to $VPS_CONF (port $port)..."
-    cat >>"$VPS_CONF" <<EOF
+    # ใส่ heredoc โดยต้อง escape $ ที่ต้องการให้ nginx ใช้จริง
+    cat >> "$VPS_CONF" <<EOF
 
 # ==== SHOWON AUTOCONFIG BEGIN ====
 server {
@@ -150,7 +161,7 @@ server {
   error_log  /var/log/nginx/showon-error.log error;
 
   # Root ของ ShowOn
-  root $WEBPATH;
+  root $webpath;
 
   # Redirect root → /server/
   location = / {
@@ -159,7 +170,7 @@ server {
 
   # Main Directory for ShowOn
   location /server/ {
-        alias $WEBPATH/;
+        alias $webpath/;
         index index.html;
         autoindex off;
 
@@ -173,19 +184,28 @@ server {
             default_type application/json;
         }
   }
+
+  # PHP handling if ever needed (keeps compatibility)
+  location ~ \.php\$ {
+    include /etc/nginx/fastcgi_params;
+    fastcgi_pass 127.0.0.1:9000;
+    fastcgi_index index.php;
+    fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+  }
 }
 # ==== SHOWON AUTOCONFIG END ====
 EOF
   fi
 
-  if nginx -t; then
-    systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+  # ทดสอบ config และ reload nginx แบบปลอดภัย
+  if nginx -t >/dev/null 2>&1; then
+    systemctl reload nginx >/dev/null 2>&1 || systemctl restart nginx >/dev/null 2>&1 || true
     echo -e "${GREEN}[OK]${NC} Nginx reloaded successfully."
   else
-    echo -e "${RED}[ERROR]${NC} Nginx config test failed! Please check $VPS_CONF"
+    echo -e "${RED}[ERROR]${NC} Nginx config invalid! Check $VPS_CONF"
   fi
 
-  echo -e "${GREEN}[OK]${NC} Nginx is now listening on port: $port (ShowOn)"
+  echo -e "${GREEN}[OK]${NC} ShowOn should be available on port: $port"
 }
 
 # สถานะ conntrack (ไว้โชว์ในเมนู)
@@ -195,9 +215,8 @@ conntrack_status() {
 
 # ตรวจอัปเดตจากรีโมต (อ่าน VERSION จากไฟล์ Install บน GitHub)
 check_update() {
-  local remote install_raw local_ver
+  local install_raw remote local_ver ans
   install_raw="$(curl -fsSL "$REPO_RAW/Install" || true)"
-
   if [[ -z "$install_raw" ]]; then
     echo -e "${YELLOW}[WARN]${NC} ไม่สามารถเช็คเวอร์ชันจาก GitHub ได้"
     return
@@ -213,6 +232,12 @@ check_update() {
 
   echo -e "${CYAN}[INFO]${NC} Local version : ${B}${local_ver}${NC}"
   echo -e "${CYAN}[INFO]${NC} Latest version: ${B}${remote}${NC}"
+
+  # ถ้ายังไม่เคยติดตั้ง ให้ข้ามการ update
+  if [[ "$local_ver" == "None" ]]; then
+    echo -e "${YELLOW}[INFO]${NC} Script not installed locally. Run 'Install Script' first."
+    return
+  fi
 
   if [[ "$local_ver" == "$remote" ]]; then
     echo -e "${GREEN}[OK]${NC} You are using the latest version."
@@ -238,7 +263,7 @@ print_status() {
   [[ -f "$SERVICE_ONLINE" ]] && systemctl is-active --quiet online-check && stat_online="ON"
   [[ -f "$SERVICE_VNSTAT" ]] && systemctl is-active --quiet vnstat-traffic && stat_vnstat="ON"
   [[ -f "$SERVICE_V2RAY" ]] && systemctl is-active --quiet v2ray-traffic && stat_v2="ON"
-  [[ -f "$SERVICE_SYSINFO" ]] && systemctl is-active --quiet sysinfo && stat_sys="ON"
+  [[ -f "$SERVICE_SYSINFO" ]] && systemctl.is-active --quiet sysinfo 2>/dev/null && stat_sys="ON" || stat_sys="${stat_sys}"
 
   local c_ng=$( [[ "$stat_nginx" == "ON" ]] && echo "$GREEN" || echo "$RED" )
   local c_on=$( [[ "$stat_online" == "ON" ]] && echo "$GREEN" || echo "$RED" )
@@ -270,42 +295,37 @@ print_status() {
 install_script() {
   echo -e "${CYAN}[INFO]${NC} Installing ShowOn (${VERSION})..."
 
-  # 1) Update system
+  # Update packages
   echo -e "${CYAN}[INFO]${NC} Updating system packages..."
   apt update -y >/dev/null 2>&1 || true
 
-  # 2) Install dependencies (รวม nginx ด้วย)
+  # Install dependencies
   echo -e "${CYAN}[INFO]${NC} Installing dependencies..."
   apt install -y curl jq net-tools psmisc nginx iproute2 ca-certificates vnstat conntrack >/dev/null 2>&1 || true
 
-  # ปรับ timeout ของ conntrack UDP ให้เหลือ 5 วินาที  
-  echo -e "${CYAN}[INFO]${NC} Tuning conntrack UDP timeout → 5s"  
-  sysctl -w net.netfilter.nf_conntrack_udp_timeout=5 >/dev/null 2>&1 || true  
-  sysctl -w net.netfilter.nf_conntrack_udp_timeout_stream=5 >/dev/null 2>&1 || true  
+  # Tuning conntrack UDP timeout
+  echo -e "${CYAN}[INFO]${NC} Tuning conntrack UDP timeout → 5s"
+  sysctl -w net.netfilter.nf_conntrack_udp_timeout=5 >/dev/null 2>&1 || true
+  sysctl -w net.netfilter.nf_conntrack_udp_timeout_stream=5 >/dev/null 2>&1 || true
 
-  # บันทึกถาวรลง /etc/sysctl.conf  
-  if ! grep -q "nf_conntrack_udp_timeout" /etc/sysctl.conf; then  
-    echo "net.netfilter.nf_conntrack_udp_timeout=5" >> /etc/sysctl.conf  
-    echo "net.netfilter.netfilter.nf_conntrack_udp_timeout_stream=5" >> /etc/sysctl.conf 2>/dev/null || \
+  if ! grep -q "nf_conntrack_udp_timeout" /etc/sysctl.conf 2>/dev/null; then
+    echo "net.netfilter.nf_conntrack_udp_timeout=5" >> /etc/sysctl.conf
     echo "net.netfilter.nf_conntrack_udp_timeout_stream=5" >> /etc/sysctl.conf
-    sysctl -p >/dev/null 2>&1 || true  
+    sysctl -p >/dev/null 2>&1 || true
   fi
 
-  # 3) Enable vnstat
+  # Enable vnstat
   systemctl enable vnstat >/dev/null 2>&1 || true
   systemctl start vnstat  >/dev/null 2>&1 || true
 
   mkdir -p "$WWW_DIR" "$BIN_DIR" "$(dirname "$DEBUG_LOG")"
   rotate_log
 
-  # ======================= ตรวจ AGN-UDP (Hysteria) =======================
+  # detect hysteria
   local AGN_PRESENT="0" AGN_PORT=""
-
-  # วิธีที่ 1: ตรวจจากไฟล์ config.json
   if [[ -f /etc/hysteria/config.json ]]; then
     AGN_PORT=$(jq -r '.listen // empty' /etc/hysteria/config.json 2>/dev/null \
       | sed -E 's/^\[::\]://; s/^[^:]*://; s/[^0-9].*$//')
-
     if [[ -n "$AGN_PORT" && "$AGN_PORT" =~ ^[0-9]+$ ]]; then
       AGN_PRESENT="1"
       echo -e "${GREEN}[OK]${NC} AGN-UDP (Hysteria) detected from config → port: ${B}${AGN_PORT}${NC}"
@@ -314,7 +334,6 @@ install_script() {
     fi
   fi
 
-  # วิธีที่ 2: fallback → ตรวจจาก detect_agnudp()
   if [[ "$AGN_PRESENT" == "0" ]]; then
     IFS='|' read -r AGN_PRESENT AGN_PORT <<<"$(detect_agnudp)"
     if [[ "$AGN_PRESENT" == "1" ]]; then
@@ -324,19 +343,15 @@ install_script() {
     fi
   fi
 
-  # ตรวจว่าเป็น 3x-ui หรือ Xray-Core
+  # check x-ui
   local PANEL_URL XUI_USER XUI_PASS
   if [[ -d /etc/x-ui ]]; then
-    echo -e "${CYAN}[INFO]${NC} ตรวจพบ 3x-ui → ตั้งค่าการเชื่อมต่อ API"
-    echo "  👉 กรุณา 'วางลิงก์หน้าล็อกอินทั้งเส้น' เช่น:"
-    echo "     https://IP:PORT/RandomPath"
-    read -rp "3X-UI URL (copy login link): " PANEL_URL
+    echo -e "${CYAN}[INFO]${NC} Detected 3x-ui → configure API access"
+    read -rp "3X-UI URL (copy login link) : " PANEL_URL
     PANEL_URL="$(echo "$PANEL_URL" | sed 's:/*$::')"
-
     read -rp "3X-UI Username: " XUI_USER
     read -rp "3X-UI Password: " XUI_PASS
   else
-    echo -e "${CYAN}[INFO]${NC} ตรวจพบ Xray-Core → ข้ามการตั้งค่า 3x-ui"
     PANEL_URL=""
     XUI_USER=""
     XUI_PASS=""
@@ -346,11 +361,12 @@ install_script() {
   read -rp "Limit User Online (Default: 2000): " LIMIT
   LIMIT=${LIMIT:-2000}
 
-  # เขียน config
+  # NIC
   NIC=$(get_nic)
   [[ -z "$NIC" ]] && NIC=$(ip -o -4 addr show up scope global | awk '{print $2}' | head -n1)
   [[ -z "$NIC" ]] && NIC="eth0"
 
+  # write conf
   cat >"$CONF_FILE" <<EOF
 VERSION="${VERSION}"
 WWW_DIR="$WWW_DIR"
@@ -369,24 +385,25 @@ AGN_PORT="$AGN_PORT"
 EOF
   chmod 600 "$CONF_FILE"
 
-  # ดาวน์โหลดสคริปต์จาก repo
+  # download scripts
   download_or_die "$SRC_ONLINE" "$SCRIPT_ONLINE"
   download_or_die "$SRC_VNSTAT" "$SCRIPT_VNSTAT"
-  download_or_die "$SRC_V2RAY"  "$SCRIPT_V2RAY"
+  download_or_die "$SRC_V2RAY" "$SCRIPT_V2RAY"
   download_or_die "$SRC_SYSINFO" "$SCRIPT_SYSINFO"
   chmod +x "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
 
+  # prepare www
   mkdir -p "$WWW_DIR"
-  download_or_die "$SRC_INDEX" "$WWW_DIR/index.html"
+  download_or_die "$SRC_INDEX?$(date +%s)" "$WWW_DIR/index.html"
   chmod 644 "$WWW_DIR/index.html"
 
-  # ให้ผู้ใช้กำหนด Port Nginx แล้ว append ลง vps.conf
+  # ask port and write nginx block
   read -rp "Enter Nginx Port for ShowOn (Default 82): " PORT
   PORT=${PORT:-82}
   write_nginx "$PORT"
   systemctl enable --now nginx >/dev/null 2>&1 || true
 
-  # systemd services (ทุก 5 วิ)
+  # systemd services
   cat >"$SERVICE_ONLINE" <<'EOF'
 [Unit]
 Description=ShowOn Online Users JSON Generator
@@ -451,12 +468,14 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF
 
-  # เริ่มใช้งาน
   systemctl daemon-reload
   systemctl enable --now online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service
 
-  # บันทึก local version
-  echo "$VERSION" > /etc/showon-version
+  # create showon command
+  install_showon_command
+
+  # write local version file
+  echo "$VERSION" > "$VERSION_FILE"
 
   echo -e "${GREEN}[OK]${NC} Installed ShowOn ${VERSION}"
   PUB_IP=$(get_public_ip)
@@ -471,20 +490,19 @@ EOF
 uninstall_script() {
   echo -e "${CYAN}[INFO]${NC} Uninstalling ShowOn Script (Full Clean)..."
 
-  # หยุดและปิด service ทั้งหมด
+  # stop and disable services
   systemctl stop online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
   systemctl disable online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
 
-  # ลบ service file
+  # remove service files
   rm -f "$SERVICE_ONLINE" "$SERVICE_VNSTAT" "$SERVICE_V2RAY" "$SERVICE_SYSINFO"
   systemctl daemon-reload
 
-  # ลบ script และ config
+  # remove scripts and config
   rm -f "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
-  rm -f "$CONF_FILE" "$DEBUG_LOG" /etc/showon-version
+  rm -f "$CONF_FILE" "$DEBUG_LOG" "$VERSION_FILE"
 
-  # ลบ nginx block ของ ShowOn ออกจาก /etc/nginx/conf.d/vps.conf
-  local VPS_CONF="/etc/nginx/conf.d/vps.conf"
+  # remove nginx block from vps.conf
   if [[ -f "$VPS_CONF" ]] && grep -q "==== SHOWON AUTOCONFIG BEGIN ====" "$VPS_CONF"; then
     echo -e "${CYAN}[INFO]${NC} Removing ShowOn Nginx block from $VPS_CONF"
     awk '
@@ -494,22 +512,21 @@ uninstall_script() {
     ' "$VPS_CONF" > "${VPS_CONF}.tmp" && mv "${VPS_CONF}.tmp" "$VPS_CONF"
   fi
 
-  if systemctl.is-active --quiet nginx 2>/dev/null; then
+  if systemctl is-active --quiet nginx; then
     systemctl reload nginx 2>/dev/null || true
   fi
 
-  # เดิมเคย purge nginx + conntrack ทิ้ง ตอนนี้ถามก่อนเพื่อไม่ให้กระทบ vpn
+  # ask before purging nginx/conntrack to avoid breaking givpn
   read -rp "ต้องการถอนการติดตั้ง nginx และ conntrack ออกจากระบบด้วยหรือไม่? (y/N): " rmng
   if [[ "$rmng" =~ ^[Yy]$ ]]; then
     apt purge -y nginx conntrack >/dev/null 2>&1 || true
     apt autoremove -y >/dev/null 2>&1 || true
   fi
 
-  # ลบค่า timeout ของ conntrack UDP ออกจาก /etc/sysctl.conf
+  # remove conntrack entries from sysctl.conf
   sed -i '/^net\.netfilter\.nf_conntrack_udp_timeout=/d' /etc/sysctl.conf
   sed -i '/^net\.netfilter\.nf_conntrack_udp_timeout_stream=/d' /etc/sysctl.conf
 
-  # รีโหลด sysctl เพื่อคืนค่า default ของระบบ
   sysctl -p >/dev/null 2>&1 || true
 
   echo -e "${GREEN}[SUCCESS]${NC} Uninstalled ShowOn (services + config cleaned)."
@@ -523,6 +540,9 @@ uninstall_script() {
 update_script() {
   echo -e "${CYAN}[INFO]${NC} Updating all ShowOn components..."
   rotate_log
+
+  # ensure WWW_DIR exists before writing index.html
+  mkdir -p "$WWW_DIR"
 
   download_or_die "$SRC_ONLINE?$(date +%s)" "$SCRIPT_ONLINE"
   download_or_die "$SRC_VNSTAT?$(date +%s)" "$SCRIPT_VNSTAT"
@@ -542,12 +562,12 @@ update_script() {
     echo -e "${RED}[ERROR]${NC} Failed to update Install script."
   fi
 
-  # ✅ Reload services
+  # reload services safely
   systemctl daemon-reload
   systemctl restart online-check vnstat-traffic v2ray-traffic sysinfo 2>/dev/null || true
 
-  # อัปเดต local version ตามสคริปต์ปัจจุบัน
-  echo "$VERSION" > /etc/showon-version
+  # update local version file
+  echo "$VERSION" > "$VERSION_FILE"
 
   echo -e "${GREEN}[OK]${NC} Update completed."
   press
@@ -642,7 +662,7 @@ setup_swap() {
   echo -e "${GREEN}[OK]${NC} Swap พร้อมใช้งาน:"
   free -h
 
-  systemctl.restart online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
+  systemctl restart online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
   echo -e "${GREEN}[OK]${NC} Restarted ShowOn services."
   press
 }
