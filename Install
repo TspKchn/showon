@@ -1,11 +1,11 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.8-givpn (Extended Edition)
-# Author : TspKchn + ChatGPT (GIVPN compatible)
+# ShowOn Script Manager V.1.0.8 (Extended Edition)
+# Author : TspKchn + ChatGPT (VPN compatible)
 # =====================================================
 
 # ----------------- เวอร์ชัน -----------------
-VERSION="V.1.0.8-givpn"
+VERSION="V.1.0.8"
 
 # ----------------- พาธรีโป ------------------
 REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/main"
@@ -117,7 +117,7 @@ write_nginx() {
   mkdir -p "$WWW_DIR"
   mkdir -p /var/log/nginx
 
-  # ถ้าไม่มีไฟล์ vps.conf ให้สร้างเปล่า ๆ ไว้ก่อน เผื่อเครื่องยังไม่มี givpn เขียนมา
+  # ถ้าไม่มีไฟล์ vps.conf ให้สร้างเปล่า ๆ ไว้ก่อน เผื่อเครื่องยังไม่มี vpn เขียนมา
   if [[ ! -f "$VPS_CONF" ]]; then
     echo "# vps.conf (created by ShowOn Installer)" > "$VPS_CONF"
   fi
@@ -465,7 +465,7 @@ uninstall_script() {
     systemctl reload nginx 2>/dev/null || true
   fi
 
-  # เดิมเคย purge nginx + conntrack ทิ้ง ตอนนี้ถามก่อนเพื่อไม่ให้กระทบ givpn
+  # เดิมเคย purge nginx + conntrack ทิ้ง ตอนนี้ถามก่อนเพื่อไม่ให้กระทบ vpn
   read -rp "ต้องการถอนการติดตั้ง nginx และ conntrack ออกจากระบบด้วยหรือไม่? (y/N): " rmng
   if [[ "$rmng" =~ ^[Yy]$ ]]; then
     apt purge -y nginx conntrack >/dev/null 2>&1 || true
