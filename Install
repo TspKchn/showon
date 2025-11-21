@@ -1,11 +1,11 @@
 #!/bin/bash
 # =====================================================
-# ShowOn Script Manager V.1.0.7 (Extended Edition)
-# Author : TspKchn + ChatGPT
+# ShowOn Script Manager V.1.0.8-givpn (Extended Edition)
+# Author : TspKchn + ChatGPT (GIVPN compatible)
 # =====================================================
 
 # ----------------- เวอร์ชัน -----------------
-VERSION="V.1.0.7"
+VERSION="V.1.0.8-givpn"
 
 # ----------------- พาธรีโป ------------------
 REPO_RAW="https://raw.githubusercontent.com/TspKchn/showon/main"
@@ -33,6 +33,7 @@ SERVICE_VNSTAT="/etc/systemd/system/vnstat-traffic.service"
 SERVICE_V2RAY="/etc/systemd/system/v2ray-traffic.service"
 SERVICE_SYSINFO="/etc/systemd/system/sysinfo.service"
 
+# เดิมเคยใช้ sites-available / sites-enabled แต่ตอนนี้เราย้ายไปใช้ conf.d/vps.conf
 SITE_AV="/etc/nginx/sites-available/showon"
 SITE_EN="/etc/nginx/sites-enabled/showon"
 
@@ -72,6 +73,22 @@ get_public_ip() {
   echo "127.0.0.1"
 }
 
+# ตรวจ AGN-UDP แบบปลอดภัย
+detect_agnudp() {
+  # คืนค่าในรูปแบบ: "HAS_AGN|PORT"
+  # ถ้าไม่มี → "0|"
+  local port=""
+  if systemctl list-units --type=service 2>/dev/null | grep -qi "hysteria"; then
+    port=$(ss -tulnp 2>/dev/null | awk '/hysteria/ && /udp/ {print $5}' | head -n1 | sed 's/.*://')
+    if [[ -n "$port" && "$port" =~ ^[0-9]+$ ]]; then
+      echo "1|$port"
+      return
+    fi
+    echo "1|"
+    return
+  fi
+  echo "0|"
+}
 
 # หมุน log (1MB)
 rotate_log() {
@@ -91,49 +108,60 @@ download_or_die() {
   fi
 }
 
-# เขียน Nginx site
+# เขียน Nginx ลง /etc/nginx/conf.d/vps.conf (append server block ใหม่เท่านั้น)
 write_nginx() {
   local port="${1:-82}"  # ถ้าไม่ได้ใส่มา ให้ default 82
+  local VPS_CONF="/etc/nginx/conf.d/vps.conf"
+
+  mkdir -p "$(dirname "$VPS_CONF")"
   mkdir -p "$WWW_DIR"
-  mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+  mkdir -p /var/log/nginx
 
-  # ลบ default site
-  rm -f /etc/nginx/sites-enabled/default
-  rm -f /etc/nginx/sites-available/default
-
-  # Config ใหม่
-  cat >"$SITE_AV" <<EOF
-server {
-    listen $port default_server;
-    server_name _;
-
-    location = / {
-        return 302 /server/;
-    }
-
-    location /server/ {
-        alias $WWW_DIR/;
-        index index.html;
-        autoindex off;
-        add_header Cache-Control "no-store";
-
-        location ~ /server/online_app(\.json)?$ {
-            default_type application/json;
-        }
-    }
-}
-EOF
-
-  ln -sf "$SITE_AV" "$SITE_EN"
-
-  if nginx -t; then
-    systemctl restart nginx 2>/dev/null || true
-  else
-    echo -e "${YELLOW}[WARN]${NC} nginx config test failed, forcing restart..."
-    systemctl restart nginx 2>/dev/null || true
+  # ถ้าไม่มีไฟล์ vps.conf ให้สร้างเปล่า ๆ ไว้ก่อน เผื่อเครื่องยังไม่มี givpn เขียนมา
+  if [[ ! -f "$VPS_CONF" ]]; then
+    echo "# vps.conf (created by ShowOn Installer)" > "$VPS_CONF"
   fi
 
-  echo -e "${GREEN}[OK]${NC} Nginx is now listening on port: $port (/server/)"
+  # ถ้ามี block ShowOn อยู่แล้ว ไม่ต้อง append ซ้ำ (ตัวเลือก 2 ของคุณ)
+  if grep -q "==== SHOWON AUTOCONFIG BEGIN ====" "$VPS_CONF"; then
+    echo -e "${YELLOW}[WARN]${NC} ShowOn Nginx block already exists in $VPS_CONF, skip append."
+  else
+    echo -e "${CYAN}[INFO]${NC} Appending ShowOn server block to $VPS_CONF (port $port)..."
+    cat >>"$VPS_CONF" <<EOF
+
+# ==== SHOWON AUTOCONFIG BEGIN ====
+server {
+  listen       $port;
+  server_name  127.0.0.1 localhost;
+
+  access_log /var/log/nginx/showon-access.log;
+  error_log  /var/log/nginx/showon-error.log error;
+  root   $WWW_DIR;
+
+  location / {
+    index  index.html index.htm index.php;
+    try_files \$uri \$uri/ /index.php?\$args;
+  }
+
+  location ~ \.php\$ {
+    include /etc/nginx/fastcgi_params;
+    fastcgi_pass  127.0.0.1:9000;
+    fastcgi_index index.php;
+    fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+  }
+}
+# ==== SHOWON AUTOCONFIG END ====
+EOF
+  fi
+
+  if nginx -t; then
+    systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+    echo -e "${GREEN}[OK]${NC} Nginx reloaded successfully."
+  else
+    echo -e "${RED}[ERROR]${NC} Nginx config test failed! Please check $VPS_CONF"
+  fi
+
+  echo -e "${GREEN}[OK]${NC} Nginx is now listening on port: $port (ShowOn)"
 }
 
 # สถานะ conntrack (ไว้โชว์ในเมนู)
@@ -165,7 +193,6 @@ check_update() {
     read ans
     if [[ -z "$ans" || "$ans" == "y" || "$ans" == "Y" ]]; then
       update_script
-      # ✅ refresh + กลับไปเมนูทันที
       clear
       print_status
       check_update
@@ -206,6 +233,7 @@ print_status() {
   echo -e "Status: $installed"
   echo "==============================="
 }
+
 # =====================================================
 # ติดตั้ง
 # =====================================================
@@ -322,14 +350,12 @@ EOF
   download_or_die "$SRC_INDEX" "$WWW_DIR/index.html"
   chmod 644 "$WWW_DIR/index.html"
 
-  # ให้ผู้ใช้กำหนด Port Nginx
-  read -rp "Enter Nginx Port (Default 82): " PORT
+  # ให้ผู้ใช้กำหนด Port Nginx แล้ว append ลง vps.conf
+  read -rp "Enter Nginx Port for ShowOn (Default 82): " PORT
   PORT=${PORT:-82}
   write_nginx "$PORT"
-
-  # Nginx
-  write_nginx
   systemctl enable --now nginx >/dev/null 2>&1 || true
+
   # systemd services (ทุก 5 วิ)
   cat >"$SERVICE_ONLINE" <<'EOF'
 [Unit]
@@ -401,9 +427,10 @@ EOF
 
   echo -e "${GREEN}[OK]${NC} Installed ShowOn ${VERSION}"
   PUB_IP=$(get_public_ip)
-  echo -e "${CYAN}[INFO]${NC} Open: http://$PUB_IP:$PORT/server/"
+  echo -e "${CYAN}[INFO]${NC} Open: http://$PUB_IP:$PORT/"
   press
 }
+
 # =====================================================
 # ถอนการติดตั้ง
 # =====================================================
@@ -423,18 +450,27 @@ uninstall_script() {
   rm -f "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
   rm -f "$CONF_FILE" "$DEBUG_LOG"
 
-  # ลบ nginx site
-  rm -f "$SITE_AV" "$SITE_EN"
+  # ลบ nginx block ของ ShowOn ออกจาก /etc/nginx/conf.d/vps.conf
+  local VPS_CONF="/etc/nginx/conf.d/vps.conf"
+  if [[ -f "$VPS_CONF" ]] && grep -q "==== SHOWON AUTOCONFIG BEGIN ====" "$VPS_CONF"; then
+    echo -e "${CYAN}[INFO]${NC} Removing ShowOn Nginx block from $VPS_CONF"
+    awk '
+      /==== SHOWON AUTOCONFIG BEGIN ====/ {skip=1}
+      /==== SHOWON AUTOCONFIG END ====/   {skip=0; next}
+      skip != 1 {print}
+    ' "$VPS_CONF" > "${VPS_CONF}.tmp" && mv "${VPS_CONF}.tmp" "$VPS_CONF"
+  fi
+
   if systemctl is-active --quiet nginx; then
     systemctl reload nginx 2>/dev/null || true
   fi
 
-  # ถ้าอยากถอน nginx ออกด้วย
-  apt purge -y nginx >/dev/null 2>&1 || true
-
-  # ลบ conntrack ออกจากระบบ
-  apt purge -y conntrack >/dev/null 2>&1 || true
-  apt autoremove -y >/dev/null 2>&1 || true
+  # เดิมเคย purge nginx + conntrack ทิ้ง ตอนนี้ถามก่อนเพื่อไม่ให้กระทบ givpn
+  read -rp "ต้องการถอนการติดตั้ง nginx และ conntrack ออกจากระบบด้วยหรือไม่? (y/N): " rmng
+  if [[ "$rmng" =~ ^[Yy]$ ]]; then
+    apt purge -y nginx conntrack >/dev/null 2>&1 || true
+    apt autoremove -y >/dev/null 2>&1 || true
+  fi
 
   # ลบค่า timeout ของ conntrack UDP ออกจาก /etc/sysctl.conf
   sed -i '/^net\.netfilter\.nf_conntrack_udp_timeout=/d' /etc/sysctl.conf
@@ -443,7 +479,8 @@ uninstall_script() {
   # รีโหลด sysctl เพื่อคืนค่า default ของระบบ
   sysctl -p >/dev/null 2>&1 || true
 
-  echo -e "${GREEN}[SUCCESS]${NC} Uninstalled completely (ShowOn + conntrack removed)."
+  echo -e "${GREEN}[SUCCESS]${NC} Uninstalled ShowOn (services + config cleaned)."
+  press
 }
 
 # =====================================================
@@ -477,6 +514,7 @@ update_script() {
   systemctl restart online-check vnstat-traffic v2ray-traffic sysinfo 2>/dev/null || true
 
   echo -e "${GREEN}[OK]${NC} Update completed."
+  press
 }
 
 # =====================================================
