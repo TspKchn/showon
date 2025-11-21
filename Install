@@ -18,7 +18,8 @@ SRC_SYSINFO="$REPO_RAW/scripts/sysinfo.sh"
 SRC_INDEX="$REPO_RAW/web/index.html"
 
 # ----------------- ตำแหน่งติดตั้ง ----------
-WWW_DIR="/var/www/html/server"
+# ปรับให้ใช้ root เดียวกับ givpn
+WWW_DIR="/home/vps/public_html/server"
 BIN_DIR="/usr/local/bin"
 CONF_FILE="/etc/showon.conf"
 DEBUG_LOG="/var/log/showon-debug.log"
@@ -73,6 +74,15 @@ get_public_ip() {
   echo "127.0.0.1"
 }
 
+# อ่าน local version (เก็บไว้ใน /etc/showon-version)
+get_local_version() {
+  if [[ -f /etc/showon-version ]]; then
+    cat /etc/showon-version
+  else
+    echo "None"
+  fi
+}
+
 # ตรวจ AGN-UDP แบบปลอดภัย
 detect_agnudp() {
   # คืนค่าในรูปแบบ: "HAS_AGN|PORT"
@@ -109,12 +119,14 @@ download_or_die() {
 }
 
 # เขียน Nginx ลง /etc/nginx/conf.d/vps.conf (append server block ใหม่เท่านั้น)
+# ใช้โครงสร้าง /server/ + JSON + online_app, online_app.json ฯลฯ
 write_nginx() {
   local port="${1:-82}"  # ถ้าไม่ได้ใส่มา ให้ default 82
   local VPS_CONF="/etc/nginx/conf.d/vps.conf"
+  local WEBPATH="$WWW_DIR"
 
   mkdir -p "$(dirname "$VPS_CONF")"
-  mkdir -p "$WWW_DIR"
+  mkdir -p "$WEBPATH"
   mkdir -p /var/log/nginx
 
   # ถ้าไม่มีไฟล์ vps.conf ให้สร้างเปล่า ๆ ไว้ก่อน เผื่อเครื่องยังไม่มี vpn เขียนมา
@@ -122,7 +134,7 @@ write_nginx() {
     echo "# vps.conf (created by ShowOn Installer)" > "$VPS_CONF"
   fi
 
-  # ถ้ามี block ShowOn อยู่แล้ว ไม่ต้อง append ซ้ำ (ตัวเลือก 2 ของคุณ)
+  # ถ้ามี block ShowOn อยู่แล้ว ไม่ต้อง append ซ้ำ (ตัวเลือก 2)
   if grep -q "==== SHOWON AUTOCONFIG BEGIN ====" "$VPS_CONF"; then
     echo -e "${YELLOW}[WARN]${NC} ShowOn Nginx block already exists in $VPS_CONF, skip append."
   else
@@ -136,18 +148,30 @@ server {
 
   access_log /var/log/nginx/showon-access.log;
   error_log  /var/log/nginx/showon-error.log error;
-  root   $WWW_DIR;
 
-  location / {
-    index  index.html index.htm index.php;
-    try_files \$uri \$uri/ /index.php?\$args;
+  # Root ของ ShowOn
+  root $WEBPATH;
+
+  # Redirect root → /server/
+  location = / {
+        return 302 /server/;
   }
 
-  location ~ \.php\$ {
-    include /etc/nginx/fastcgi_params;
-    fastcgi_pass  127.0.0.1:9000;
-    fastcgi_index index.php;
-    fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+  # Main Directory for ShowOn
+  location /server/ {
+        alias $WEBPATH/;
+        index index.html;
+        autoindex off;
+
+        # ไฟล์ .json ทั้งหมดต้องเป็น JSON
+        location ~* \.(json)$ {
+            default_type application/json;
+        }
+
+        # ไฟล์ JSON ไม่มีนามสกุล เช่น online_app, sys_info ฯลฯ
+        location ~ /server/(online_app|sys_info|v2ray_traffic|vnstat_traffic)$ {
+            default_type application/json;
+        }
   }
 }
 # ==== SHOWON AUTOCONFIG END ====
@@ -171,7 +195,7 @@ conntrack_status() {
 
 # ตรวจอัปเดตจากรีโมต (อ่าน VERSION จากไฟล์ Install บน GitHub)
 check_update() {
-  local remote install_raw
+  local remote install_raw local_ver
   install_raw="$(curl -fsSL "$REPO_RAW/Install" || true)"
 
   if [[ -z "$install_raw" ]]; then
@@ -185,10 +209,15 @@ check_update() {
     return
   fi
 
-  if [[ "$VERSION" == "$remote" ]]; then
+  local_ver="$(get_local_version)"
+
+  echo -e "${CYAN}[INFO]${NC} Local version : ${B}${local_ver}${NC}"
+  echo -e "${CYAN}[INFO]${NC} Latest version: ${B}${remote}${NC}"
+
+  if [[ "$local_ver" == "$remote" ]]; then
     echo -e "${GREEN}[OK]${NC} You are using the latest version."
   else
-    echo -e "${CYAN}[UPDATE]${NC} มีเวอร์ชันใหม่: ${remote} (ปัจจุบัน: ${VERSION})"
+    echo -e "${CYAN}[UPDATE]${NC} มีเวอร์ชันใหม่: ${remote} (ปัจจุบันติดตั้ง: ${local_ver})"
     echo -en "กด Enter เพื่ออัปเดตทันที หรือพิมพ์ ${B}n${NC} เพื่อข้าม: "
     read ans
     if [[ -z "$ans" || "$ans" == "y" || "$ans" == "Y" ]]; then
@@ -257,7 +286,8 @@ install_script() {
   # บันทึกถาวรลง /etc/sysctl.conf  
   if ! grep -q "nf_conntrack_udp_timeout" /etc/sysctl.conf; then  
     echo "net.netfilter.nf_conntrack_udp_timeout=5" >> /etc/sysctl.conf  
-    echo "net.netfilter.nf_conntrack_udp_timeout_stream=5" >> /etc/sysctl.conf  
+    echo "net.netfilter.netfilter.nf_conntrack_udp_timeout_stream=5" >> /etc/sysctl.conf 2>/dev/null || \
+    echo "net.netfilter.nf_conntrack_udp_timeout_stream=5" >> /etc/sysctl.conf
     sysctl -p >/dev/null 2>&1 || true  
   fi
 
@@ -425,9 +455,12 @@ EOF
   systemctl daemon-reload
   systemctl enable --now online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service
 
+  # บันทึก local version
+  echo "$VERSION" > /etc/showon-version
+
   echo -e "${GREEN}[OK]${NC} Installed ShowOn ${VERSION}"
   PUB_IP=$(get_public_ip)
-  echo -e "${CYAN}[INFO]${NC} Open: http://$PUB_IP:$PORT/"
+  echo -e "${CYAN}[INFO]${NC} Open: http://$PUB_IP:$PORT/server/"
   press
 }
 
@@ -448,7 +481,7 @@ uninstall_script() {
 
   # ลบ script และ config
   rm -f "$SCRIPT_ONLINE" "$SCRIPT_VNSTAT" "$SCRIPT_V2RAY" "$SCRIPT_SYSINFO"
-  rm -f "$CONF_FILE" "$DEBUG_LOG"
+  rm -f "$CONF_FILE" "$DEBUG_LOG" /etc/showon-version
 
   # ลบ nginx block ของ ShowOn ออกจาก /etc/nginx/conf.d/vps.conf
   local VPS_CONF="/etc/nginx/conf.d/vps.conf"
@@ -461,7 +494,7 @@ uninstall_script() {
     ' "$VPS_CONF" > "${VPS_CONF}.tmp" && mv "${VPS_CONF}.tmp" "$VPS_CONF"
   fi
 
-  if systemctl is-active --quiet nginx; then
+  if systemctl.is-active --quiet nginx 2>/dev/null; then
     systemctl reload nginx 2>/dev/null || true
   fi
 
@@ -504,7 +537,7 @@ update_script() {
   if curl -fsSL "$REPO_RAW/Install?$(date +%s)" -o "$TMP_SCRIPT"; then
     mv "$TMP_SCRIPT" /root/Install
     chmod +x /root/Install
-    echo -e "${GREEN}[OK]${NC} Updated Install script."
+    echo -e "${GREEN}[OK]${NC} Updated Install script (saved as /root/Install)."
   else
     echo -e "${RED}[ERROR]${NC} Failed to update Install script."
   fi
@@ -512,6 +545,9 @@ update_script() {
   # ✅ Reload services
   systemctl daemon-reload
   systemctl restart online-check vnstat-traffic v2ray-traffic sysinfo 2>/dev/null || true
+
+  # อัปเดต local version ตามสคริปต์ปัจจุบัน
+  echo "$VERSION" > /etc/showon-version
 
   echo -e "${GREEN}[OK]${NC} Update completed."
   press
@@ -606,7 +642,7 @@ setup_swap() {
   echo -e "${GREEN}[OK]${NC} Swap พร้อมใช้งาน:"
   free -h
 
-  systemctl restart online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
+  systemctl.restart online-check.service vnstat-traffic.service v2ray-traffic.service sysinfo.service 2>/dev/null || true
   echo -e "${GREEN}[OK]${NC} Restarted ShowOn services."
   press
 }
